@@ -16,7 +16,6 @@ bytes = { version = "1.10.1", default-features = false }
 cbc = { version = "0.1.2", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
 chacha20 = { version = "0.9.1", default-features = false, features = ["zeroize"] }
-chrono = { version = "0.4.40", default-features = false, features = ["alloc"] }
 curve25519-elligator2 = { version = "0.1.0-alpha.2", default-features = false, features = ["elligator2", "alloc"] }
 data-encoding = { version = "2.8.0", default-features = false, features = ["alloc"] }
 ecb = { version = "0.1.2", default-features = false, features = ["alloc"] }

@@ -24,14 +24,9 @@ use crate::{
     runtime::Runtime,
 };
 
-use chrono::DateTime;
 use hashbrown::HashSet;
 
-use alloc::{
-    collections::BTreeMap,
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
 /// Score adjustment when floodfill doesn't answer to a query.
 const LOOKUP_REPLY_NOT_RECEIVED_SCORE: isize = -5isize;
@@ -107,10 +102,46 @@ impl<R: Runtime> Dht<R> {
 
     /// Get today's UTC date.
     fn utc_date() -> String {
-        DateTime::from_timestamp(R::time_since_epoch().as_secs() as i64, 0u32)
-            .expect("to succeed")
-            .format("%Y%m%d")
-            .to_string()
+        const SECONDS_PER_DAY: u64 = 86_400;
+        const MONTH_DAYS_NORMAL: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const MONTH_DAYS_LEAP: [u8; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+
+        let secs = R::time_since_epoch().as_secs();
+        let mut days = secs / SECONDS_PER_DAY;
+        let mut year = 1970u32;
+
+        // Advance whole years until we find the correct year
+        loop {
+            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+            let year_days = if is_leap { 366 } else { 365 };
+
+            if days < year_days {
+                break;
+            }
+
+            days -= year_days;
+            year += 1;
+        }
+
+        // Determine month and day
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let month_days = if is_leap {
+            &MONTH_DAYS_LEAP
+        } else {
+            &MONTH_DAYS_NORMAL
+        };
+
+        let mut month = 1u8;
+        for &days_in_month in month_days.iter() {
+            if days < days_in_month as u64 {
+                break;
+            }
+            days -= days_in_month as u64;
+            month += 1;
+        }
+
+        let day = days + 1;
+        format!("{:04}{:02}{:02}", year, month, day)
     }
 
     /// Insert new router into [`Dht`].

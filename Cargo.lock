@@ -1596,7 +1596,6 @@ dependencies = [
  "cbc",
  "chacha20",
  "chacha20poly1305",
- "chrono",
  "curve25519-elligator2",
  "data-encoding",
  "ecb",
