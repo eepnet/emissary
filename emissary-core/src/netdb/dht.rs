@@ -107,8 +107,8 @@ impl<R: Runtime> Dht<R> {
         const DAYS_PER_100_YEARS: u64 = 25 * DAYS_PER_4_YEARS - 1;
         const DAYS_PER_400_YEARS: u64 = 4 * DAYS_PER_100_YEARS + 1;
         const SECONDS_PER_DAY: u64 = 86_400;
-        const MONTH_DAYS_NORMAL: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        const MONTH_DAYS_LEAP: [u8; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        const CUMUL_NORMAL: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        const CUMUL_LEAP: [u16; 12] = [0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
 
         let mut days = unix_timestamp / SECONDS_PER_DAY;
         let mut year = 1970;
@@ -149,22 +149,19 @@ impl<R: Runtime> Dht<R> {
 
         // Determine month and day
         let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-        let month_days = if is_leap {
-            &MONTH_DAYS_LEAP
-        } else {
-            &MONTH_DAYS_NORMAL
+        let cumul_days = if is_leap { &CUMUL_LEAP } else { &CUMUL_NORMAL };
+
+        let month = match cumul_days.binary_search(&(days as u16)) {
+            Ok(m) => m,
+            Err(m) => m - 1,
         };
 
-        let mut month = 1u8;
-        for &days_in_month in month_days.iter() {
-            if days < days_in_month as u64 {
-                break;
-            }
-            days -= days_in_month as u64;
-            month += 1;
-        }
-
-        alloc::format!("{:04}{:02}{:02}", year, month, days + 1)
+        alloc::format!(
+            "{:04}{:02}{:02}",
+            year,
+            month + 1,
+            days as u16 - cumul_days[month] + 1
+        )
     }
 
     /// Insert new router into [`Dht`].
