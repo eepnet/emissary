@@ -37,11 +37,11 @@ use futures::future::{BoxFuture, FutureExt};
 
 /// Message expiration threshold.
 ///
-/// If all the fragments of a message have not been received within 30 seconds,
+/// If all the fragments of a message have not been received within 45 seconds,
 /// the [`Fragment`] is destroyed.
 ///
 /// This is to prevent unbounded accumulation of incomplete I2NP messages.
-const MSG_EXPIRATION_THRESHOLD: Duration = Duration::from_secs(10);
+const MSG_EXPIRATION_THRESHOLD: Duration = Duration::from_secs(45);
 
 /// Garbage collection interval.
 const GARBAGE_COLLECTION_INTERVAL: Duration = Duration::from_secs(45);
