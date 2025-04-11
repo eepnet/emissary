@@ -100,27 +100,51 @@ impl<R: Runtime> Dht<R> {
         }
     }
 
-    /// Get today's UTC date.
-    fn utc_date() -> String {
+    /// Get UTC date from the unix timestamp.
+    fn utc_date(unix_timestamp: u64) -> String {
+        const DAYS_PER_YEAR: u64 = 365;
+        const DAYS_PER_4_YEARS: u64 = 4 * DAYS_PER_YEAR + 1;
+        const DAYS_PER_100_YEARS: u64 = 25 * DAYS_PER_4_YEARS - 1;
+        const DAYS_PER_400_YEARS: u64 = 4 * DAYS_PER_100_YEARS + 1;
         const SECONDS_PER_DAY: u64 = 86_400;
         const MONTH_DAYS_NORMAL: [u8; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
         const MONTH_DAYS_LEAP: [u8; 12] = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-        let secs = R::time_since_epoch().as_secs();
-        let mut days = secs / SECONDS_PER_DAY;
-        let mut year = 1970u32;
+        let mut days = unix_timestamp / SECONDS_PER_DAY;
+        let mut year = 1970;
 
-        // Advance whole years until we find the correct year
-        loop {
-            let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-            let year_days = if is_leap { 366 } else { 365 };
+        // Advance by 400-year chunks
+        {
+            let num_400_years = days / DAYS_PER_400_YEARS;
+            year += num_400_years * 400;
+            days -= num_400_years * DAYS_PER_400_YEARS;
+        }
 
-            if days < year_days {
-                break;
+        // Advance by 100-year chunks (up to 3 to avoid leap overcount)
+        {
+            let mut num_100_years = days / DAYS_PER_100_YEARS;
+            if num_100_years > 3 {
+                num_100_years = 3;
             }
+            year += num_100_years * 100;
+            days -= num_100_years * DAYS_PER_100_YEARS;
+        }
 
-            days -= year_days;
-            year += 1;
+        // Advance by 4-year chunks
+        {
+            let num_4_years = days / DAYS_PER_4_YEARS;
+            year += num_4_years * 4;
+            days -= num_4_years * DAYS_PER_4_YEARS;
+        }
+
+        // Advance by single years (up to 3)
+        {
+            let mut num_years = days / DAYS_PER_YEAR;
+            if num_years > 3 {
+                num_years = 3;
+            }
+            year += num_years;
+            days -= num_years * DAYS_PER_YEAR;
         }
 
         // Determine month and day
@@ -140,8 +164,7 @@ impl<R: Runtime> Dht<R> {
             month += 1;
         }
 
-        let day = days + 1;
-        format!("{:04}{:02}{:02}", year, month, day)
+        alloc::format!("{:04}{:02}{:02}", year, month, days + 1)
     }
 
     /// Insert new router into [`Dht`].
@@ -173,8 +196,12 @@ impl<R: Runtime> Dht<R> {
         key: impl AsRef<[u8]>,
         limit: usize,
     ) -> impl Iterator<Item = RouterId> + '_ {
-        let target =
-            Key::from(Sha256::new().update(&key).update(Self::utc_date().as_str()).finalize());
+        let target = Key::from(
+            Sha256::new()
+                .update(&key)
+                .update(Self::utc_date(R::time_since_epoch().as_secs()).as_str())
+                .finalize(),
+        );
 
         self.routing_table.closest(target, limit)
     }
@@ -186,8 +213,12 @@ impl<R: Runtime> Dht<R> {
         limit: usize,
         ignore: &'a HashSet<RouterId>,
     ) -> impl Iterator<Item = RouterId> + 'a {
-        let target =
-            Key::from(Sha256::new().update(&key).update(Self::utc_date().as_str()).finalize());
+        let target = Key::from(
+            Sha256::new()
+                .update(&key)
+                .update(Self::utc_date(R::time_since_epoch().as_secs()).as_str())
+                .finalize(),
+        );
 
         self.routing_table.closest_with_ignore(target, limit, ignore)
     }
@@ -198,8 +229,12 @@ impl<R: Runtime> Dht<R> {
             return None;
         }
 
-        let target =
-            Key::from(Sha256::new().update(&key).update(Self::utc_date().as_str()).finalize());
+        let target = Key::from(
+            Sha256::new()
+                .update(&key)
+                .update(Self::utc_date(R::time_since_epoch().as_secs()).as_str())
+                .finalize(),
+        );
         let mut routers = routers
             .iter()
             .map(|router_id| {
@@ -222,8 +257,12 @@ impl<R: Runtime> Dht<R> {
             return HashSet::new();
         }
 
-        let target =
-            Key::from(Sha256::new().update(&key).update(Self::utc_date().as_str()).finalize());
+        let target = Key::from(
+            Sha256::new()
+                .update(&key)
+                .update(Self::utc_date(R::time_since_epoch().as_secs()).as_str())
+                .finalize(),
+        );
         let routers = routers
             .iter()
             .map(|router_id| {
@@ -243,6 +282,8 @@ impl<R: Runtime> Dht<R> {
 
 #[cfg(test)]
 mod tests {
+    use core::u64;
+
     use super::*;
     use crate::{
         crypto::{base32_decode, base64_decode},
@@ -308,5 +349,15 @@ mod tests {
             closest[2],
             RouterId::from(&base64_decode("o8qvvGZroVu1Jlo-9ICTamn5t8XlnNq49oJ2QywLVUQ=").unwrap())
         );
+    }
+
+    #[tokio::test]
+    async fn utc_date() {
+        type D = Dht<MockRuntime>;
+
+        assert_eq!("19700101", D::utc_date(0));
+        assert_eq!("20241212", D::utc_date(1733998283));
+        assert_eq!("5845540512231109", D::utc_date(u64::MAX));
+        assert_eq!("2922770265961205", D::utc_date(i64::MAX as u64)); // actual max unix timestamp
     }
 }
