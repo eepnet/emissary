@@ -397,8 +397,9 @@ impl<T: Tunnel> PendingTunnel<T> {
             (TunnelDirection::Inbound, MessageType::ShortTunnelBuild) => message.payload.to_vec(),
 
             // for outbound builds the reply can be received in `OutboundTunnelBuildReply`
-            (TunnelDirection::Outbound, MessageType::OutboundTunnelBuildReply) =>
-                message.payload.to_vec(),
+            (TunnelDirection::Outbound, MessageType::OutboundTunnelBuildReply) => {
+                message.payload.to_vec()
+            }
 
             // outbound reply can also be wrapped in a `GarlicMessage`
             (TunnelDirection::Outbound, MessageType::Garlic) => {
@@ -444,8 +445,9 @@ impl<T: Tunnel> PendingTunnel<T> {
                         }
                     )
                 }) {
-                    Some(GarlicMessageBlock::GarlicClove { message_body, .. }) =>
-                        message_body.to_vec(),
+                    Some(GarlicMessageBlock::GarlicClove { message_body, .. }) => {
+                        message_body.to_vec()
+                    }
                     _ => {
                         tracing::warn!(
                             target: LOG_TARGET,
@@ -570,7 +572,7 @@ impl<T: Tunnel> PendingTunnel<T> {
                 TunnelBuilder::new(self.name, self.tunnel_id, self.receiver),
                 |builder, hop| builder.with_hop(hop),
             )
-            .build::<R>())
+            .build())
     }
 
     /// Get reference to pending tunnel's hops.
@@ -856,14 +858,15 @@ mod test {
         };
 
         match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
-            Err(error) =>
+            Err(error) => {
                 for (i, (_, result)) in error.into_iter().enumerate() {
                     if i % 2 == 0 {
                         assert_eq!(result, Some(Err(TunnelError::TunnelRejected(30))));
                     } else {
                         assert_eq!(result, Some(Ok(())));
                     }
-                },
+                }
+            }
             _ => panic!("invalid result"),
         }
     }

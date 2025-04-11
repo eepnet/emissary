@@ -212,7 +212,7 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     outbound: HashMap<TunnelId, OutboundTunnel<R>>,
 
     /// Pending inbound tunnels.
-    pending_inbound: TunnelBuildListener<R, InboundTunnel>,
+    pending_inbound: TunnelBuildListener<R, InboundTunnel<R>>,
 
     /// Pending outbound tunnels.
     pending_outbound: TunnelBuildListener<R, OutboundTunnel<R>>,
@@ -594,7 +594,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
             let (tunnel_id, tunnel_rx) =
                 self.routing_table.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
 
-            match PendingTunnel::<InboundTunnel>::create_tunnel::<R>(TunnelBuildParameters {
+            match PendingTunnel::<InboundTunnel<R>>::create_tunnel::<R>(TunnelBuildParameters {
                 hops,
                 name: self.config.name.clone(),
                 noise: self.router_ctx.noise().clone(),
@@ -813,8 +813,9 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
 
                         match select(message_rx, Box::pin(R::delay(TUNNEL_TEST_EXPIRATION))).await {
                             Either::Right((_, _)) => (outbound, inbound, Err(Error::Timeout)),
-                            Either::Left((Err(_), _)) =>
-                                (outbound, inbound, Err(Error::Channel(ChannelError::Closed))),
+                            Either::Left((Err(_), _)) => {
+                                (outbound, inbound, Err(Error::Channel(ChannelError::Closed)))
+                            }
                             Either::Left((Ok(_), _)) => (outbound, inbound, Ok(started.elapsed())),
                         }
                     }),
@@ -1047,7 +1048,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                 (feedback_tx, 0usize),
                                 |(mut feedback_tx, count), message| {
                                     match feedback_tx.take() {
-                                        Some(feedback_tx) =>
+                                        Some(feedback_tx) => {
                                             if let Err(error) =
                                                 self.routing_table.send_message_with_feedback(
                                                     router_id.clone(),
@@ -1062,8 +1063,9 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                                     ?error,
                                                     "failed to send tunnel message to router",
                                                 );
-                                            },
-                                        None =>
+                                            }
+                                        }
+                                        None => {
                                             if let Err(error) = self
                                                 .routing_table
                                                 .send_message(router_id.clone(), message)
@@ -1075,7 +1077,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                                     ?error,
                                                     "failed to send tunnel message to router",
                                                 );
-                                            },
+                                            }
+                                        }
                                     }
 
                                     (None, count + 1)

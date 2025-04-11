@@ -19,12 +19,32 @@
 use crate::{
     i2np::{tunnel::data::DeliveryInstructions, Message},
     primitives::MessageId,
+    runtime::{Instant, Runtime},
 };
 
 use hashbrown::HashMap;
 
 use alloc::{collections::BTreeMap, vec::Vec};
-use core::{fmt, iter};
+use core::{
+    fmt,
+    future::Future,
+    iter,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+use futures::future::{BoxFuture, FutureExt};
+
+/// Message expiration threshold.
+///
+/// If all the fragments of a message have not been received within 30 seconds,
+/// the [`Fragment`] is destroyed.
+///
+/// This is to prevent unbounded accumulation of incomplete I2NP messages.
+const MSG_EXPIRATION_THRESHOLD: Duration = Duration::from_secs(10);
+
+/// Garbage collection interval.
+const GARBAGE_COLLECTION_INTERVAL: Duration = Duration::from_secs(45);
 
 /// Owned delivery instructions.
 pub enum OwnedDeliveryInstructions {
@@ -51,8 +71,9 @@ impl fmt::Debug for OwnedDeliveryInstructions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Local => f.debug_struct("OwnedDeliveryInstructions::Local").finish(),
-            Self::Router { .. } =>
-                f.debug_struct("OwnedDeliveryInstructions::Router").finish_non_exhaustive(),
+            Self::Router { .. } => {
+                f.debug_struct("OwnedDeliveryInstructions::Router").finish_non_exhaustive()
+            }
             Self::Tunnel { tunnel_id, .. } => f
                 .debug_struct("OwnedDeliveryInstructions::Tunnel")
                 .field("tunnel", &tunnel_id)
@@ -77,8 +98,7 @@ impl<'a> From<&'a DeliveryInstructions<'a>> for OwnedDeliveryInstructions {
 }
 
 /// I2NP message fragment buffer.
-#[derive(Default)]
-pub struct Fragment {
+pub struct Fragment<R: Runtime> {
     /// Delivery instructions for the I2NP message.
     ///
     /// `None` if last first hasn't been received.
@@ -99,9 +119,25 @@ pub struct Fragment {
 
     /// Total size of the I2NP message.
     total_size: usize,
+
+    /// When was the [`Fragment`] created.
+    created: R::Instant,
 }
 
-impl Fragment {
+impl<R: Runtime> Default for Fragment<R> {
+    fn default() -> Self {
+        Self {
+            delivery_instructions: Default::default(),
+            first_fragment: Default::default(),
+            fragments: Default::default(),
+            num_fragments: Default::default(),
+            total_size: Default::default(),
+            created: R::now(),
+        }
+    }
+}
+
+impl<R: Runtime> Fragment<R> {
     /// Check if [`Fragment`] is ready for assembly.
     pub fn is_ready(&self) -> bool {
         self.num_fragments.is_some()
@@ -128,16 +164,20 @@ impl Fragment {
 }
 
 /// Fragment handler.
-pub struct FragmentHandler {
+pub struct FragmentHandler<R: Runtime> {
     /// Pending messages.
-    messages: HashMap<MessageId, Fragment>,
+    messages: HashMap<MessageId, Fragment<R>>,
+
+    /// Garbage collection timer.
+    gc_timer: BoxFuture<'static, ()>,
 }
 
-impl FragmentHandler {
+impl<R: Runtime> FragmentHandler<R> {
     /// Create new [`FragmentHandler`].
     pub fn new() -> Self {
         Self {
             messages: HashMap::new(),
+            gc_timer: Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL)),
         }
     }
 
@@ -202,6 +242,30 @@ impl FragmentHandler {
             .is_ready()
             .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
             .flatten()
+    }
+}
+
+impl<R: Runtime> Future for FragmentHandler<R> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        futures::ready!(self.gc_timer.poll_unpin(cx));
+
+        self.messages
+            .iter()
+            .filter_map(|(key, value)| {
+                (value.created.elapsed() >= MSG_EXPIRATION_THRESHOLD).then_some(*key)
+            })
+            .collect::<Vec<_>>()
+            .iter()
+            .for_each(|key| {
+                self.messages.remove(key);
+            });
+
+        self.gc_timer = Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL));
+        let _ = self.gc_timer.poll_unpin(cx);
+
+        Poll::Pending
     }
 }
 

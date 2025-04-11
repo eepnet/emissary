@@ -189,12 +189,7 @@ impl<R: Runtime> OutboundTunnel<R> {
 }
 
 impl<R: Runtime> Tunnel for OutboundTunnel<R> {
-    fn new<U>(
-        name: Str,
-        tunnel_id: TunnelId,
-        _receiver: ReceiverKind,
-        hops: Vec<TunnelHop>,
-    ) -> Self {
+    fn new(name: Str, tunnel_id: TunnelId, _receiver: ReceiverKind, hops: Vec<TunnelHop>) -> Self {
         // generate random padding bytes used in `TunnelData` messages
         let padding_bytes = {
             let mut padding_bytes = [0u8; 1028];
