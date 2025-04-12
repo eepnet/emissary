@@ -348,11 +348,7 @@ impl<R: Runtime> ProfileStorage<R> {
             }
         };
 
-        let standard = standard
-            .into_iter()
-            .flatten()
-            .chain(untracked.into_iter())
-            .collect::<HashSet<_>>();
+        let standard = standard.into_iter().flatten().chain(untracked).collect::<HashSet<_>>();
 
         let (standard, untracked) = {
             let (total, routers, untracked) = standard.iter().fold(

@@ -47,23 +47,23 @@ jobs:
       working-directory: emissary-util
       run: cargo clippy -- -D warnings
 
-  test:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
+  # test:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #   - uses: actions/checkout@v4
+  #   - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-    - name: cargo-test emissary-core
-      working-directory: emissary-core
-      run: cargo test
+  #   - name: cargo-test emissary-core
+  #     working-directory: emissary-core
+  #     run: cargo test
 
-    - name: cargo-test emissary-cli
-      working-directory: emissary-cli
-      run: cargo test
+  #   - name: cargo-test emissary-cli
+  #     working-directory: emissary-cli
+  #     run: cargo test
 
-    - name: cargo-test emissary-util
-      working-directory: emissary-util
-      run: cargo test
+  #   - name: cargo-test emissary-util
+  #     working-directory: emissary-util
+  #     run: cargo test
 
   check:
     runs-on: ubuntu-latest

@@ -444,7 +444,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             }
         }
 
-        return self.tunnels.values().cloned().collect();
+        self.tunnels.values().cloned().collect()
     }
 
     /// Register the tunnel ID of a local inbound tunnel that's about to expire
