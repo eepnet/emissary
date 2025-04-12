@@ -121,40 +121,51 @@ impl<R: Runtime> Dht<R> {
         }
 
         // Advance by 100-year chunks (up to 3 to avoid leap overcount)
-        {
-            let mut num_100_years = days / DAYS_PER_100_YEARS;
-            if num_100_years > 3 {
-                num_100_years = 3;
+        while days >= DAYS_PER_100_YEARS {
+            if (year % 400) / 100 == 3 {
+                break;
             }
-            year += num_100_years * 100;
-            days -= num_100_years * DAYS_PER_100_YEARS;
+
+            year += 100;
+            days -= DAYS_PER_100_YEARS;
         }
 
-        // Advance by 4-year chunks
-        {
-            let num_4_years = days / DAYS_PER_4_YEARS;
-            year += num_4_years * 4;
-            days -= num_4_years * DAYS_PER_4_YEARS;
-        }
-
-        // Advance by single years (up to 3)
-        {
-            let mut num_years = days / DAYS_PER_YEAR;
-            if num_years > 3 {
-                num_years = 3;
+        // Advance by 4-year chunks (up to 24 to avoid century years overcount)
+        while days >= DAYS_PER_4_YEARS {
+            if (year % 100) / 4 == 24 && (year % 400) / 100 != 3 {
+                break;
             }
-            year += num_years;
-            days -= num_years * DAYS_PER_YEAR;
+
+            year += 4;
+            days -= DAYS_PER_4_YEARS;
         }
 
-        // Determine month and day
-        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
-        let cumul_days = if is_leap { &CUMUL_LEAP } else { &CUMUL_NORMAL };
+        let is_leap_year =
+            |year: u64| -> bool { (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0) };
 
-        let month = match cumul_days.binary_search(&(days as u16)) {
-            Ok(m) => m,
-            Err(m) => m - 1,
+        // Advance by single year
+        loop {
+            let days_in_year = if is_leap_year(year) {
+                DAYS_PER_YEAR + 1
+            } else {
+                DAYS_PER_YEAR
+            };
+
+            if days < days_in_year {
+                break;
+            }
+
+            days -= days_in_year;
+            year += 1;
+        }
+
+        let cumul_days = if is_leap_year(year) {
+            &CUMUL_LEAP
+        } else {
+            &CUMUL_NORMAL
         };
+
+        let month = (0..11).find(|&m| cumul_days[m + 1] > days as u16).unwrap_or(11);
 
         alloc::format!(
             "{:04}{:02}{:02}",
@@ -279,8 +290,6 @@ impl<R: Runtime> Dht<R> {
 
 #[cfg(test)]
 mod tests {
-    use core::u64;
-
     use super::*;
     use crate::{
         crypto::{base32_decode, base64_decode},
@@ -353,8 +362,30 @@ mod tests {
         type D = Dht<MockRuntime>;
 
         assert_eq!("19700101", D::utc_date(0));
-        assert_eq!("20241212", D::utc_date(1733998283));
+        assert_eq!("19700101", D::utc_date(1));
+        assert_eq!("19700101", D::utc_date(59));
+        assert_eq!("19700101", D::utc_date(86399));
+        assert_eq!("19700102", D::utc_date(86400));
+
         assert_eq!("5845540512231109", D::utc_date(u64::MAX));
-        assert_eq!("2922770265961205", D::utc_date(i64::MAX as u64)); // actual max unix timestamp
+        assert_eq!("2922770265961204", D::utc_date(i64::MAX as u64));
+
+        assert_eq!("20290724", D::utc_date(1879574397));
+        assert_eq!("20250531", D::utc_date(1748652952));
+        assert_eq!("19801231", D::utc_date(347081248));
+
+        assert_eq!("20231130", D::utc_date(1701388799));
+        assert_eq!("20231201", D::utc_date(1701388800));
+        assert_eq!("20241212", D::utc_date(1733998283));
+
+        assert_eq!("20240228", D::utc_date(1709164799));
+        assert_eq!("20240229", D::utc_date(1709164800));
+        assert_eq!("20000228", D::utc_date(951782399));
+        assert_eq!("20000229", D::utc_date(951782400));
+        assert_eq!("20230228", D::utc_date(1677628799));
+        assert_eq!("20230301", D::utc_date(1677628800));
+
+        assert_eq!("20991231", D::utc_date(4102444799));
+        assert_eq!("21000101", D::utc_date(4102444800));
     }
 }
