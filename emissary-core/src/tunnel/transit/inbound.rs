@@ -327,20 +327,22 @@ mod tests {
         } = TunnelPoolBuildParameters::new(Default::default());
 
         let (pending, router_id, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
-                name: Str::from("tunnel-pool"),
-                noise: ibep_noise.clone(),
-                message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id: TunnelId::random(),
-                    router_id: Bytes::from(RouterId::random().to_vec()),
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
+                    name: Str::from("tunnel-pool"),
+                    noise: ibep_noise.clone(),
+                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id: TunnelId::random(),
+                        router_id: Bytes::from(RouterId::random().to_vec()),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         assert_eq!(router_id, ibgw_router_info.identity.id());
@@ -448,20 +450,22 @@ mod tests {
         } = TunnelPoolBuildParameters::new(Default::default());
 
         let (pending, router_id, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
-                name: Str::from("tunnel-pool"),
-                noise: ibep_noise.clone(),
-                message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id: TunnelId::random(),
-                    router_id: Bytes::from(RouterId::random().to_vec()),
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
+                    name: Str::from("tunnel-pool"),
+                    noise: ibep_noise.clone(),
+                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id: TunnelId::random(),
+                        router_id: Bytes::from(RouterId::random().to_vec()),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         assert_eq!(router_id, ibgw_router_info.identity.id());

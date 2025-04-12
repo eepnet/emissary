@@ -799,18 +799,20 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
 
             match result {
                 Ok((router, message, maybe_feedback_tx)) => match maybe_feedback_tx {
-                    None =>
+                    None => {
                         if let Err(error) = self.routing_table.send_message(router, message) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                        },
-                    Some(tx) =>
+                        }
+                    }
+                    Some(tx) => {
                         if let Err(error) = self.routing_table.send_message_with_feedback(
                             router.clone(),
                             message,
                             tx,
                         ) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                        },
+                        }
+                    }
                 },
                 Err(error) => tracing::debug!(
                     target: LOG_TARGET,
@@ -1047,20 +1049,22 @@ mod tests {
             .unzip();
 
         let (_pending_tunnel, _next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {

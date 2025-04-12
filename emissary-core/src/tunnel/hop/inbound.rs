@@ -343,6 +343,7 @@ impl<R: Runtime> Future for InboundTunnel<R> {
                 },
             }
         }
+
         // poll fragment handler
         //
         // the futures don't return anything but must be polled so they make progress
@@ -366,12 +367,14 @@ mod tests {
     #[test]
     fn hop_roles() {
         assert_eq!(
-            InboundTunnel::hop_roles(NonZeroUsize::new(1).unwrap()).collect::<Vec<_>>(),
+            InboundTunnel::<MockRuntime>::hop_roles(NonZeroUsize::new(1).unwrap())
+                .collect::<Vec<_>>(),
             vec![HopRole::InboundGateway]
         );
 
         assert_eq!(
-            InboundTunnel::hop_roles(NonZeroUsize::new(3).unwrap()).collect::<Vec<_>>(),
+            InboundTunnel::<MockRuntime>::hop_roles(NonZeroUsize::new(3).unwrap())
+                .collect::<Vec<_>>(),
             vec![
                 HopRole::InboundGateway,
                 HopRole::Participant,

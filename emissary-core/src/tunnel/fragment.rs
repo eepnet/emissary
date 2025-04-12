@@ -22,9 +22,16 @@ use crate::{
     runtime::{Instant, Runtime},
 };
 
-use hashbrown::HashMap;
+use futures::future::{BoxFuture, FutureExt};
+use hashbrown::{
+    hash_map::{Entry, OccupiedEntry},
+    HashMap,
+};
 
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    vec::Vec,
+};
 use core::{
     fmt,
     future::Future,
@@ -33,7 +40,6 @@ use core::{
     task::{Context, Poll},
     time::Duration,
 };
-use futures::future::{BoxFuture, FutureExt};
 
 /// Message expiration threshold.
 ///
@@ -42,9 +48,6 @@ use futures::future::{BoxFuture, FutureExt};
 ///
 /// This is to prevent unbounded accumulation of incomplete I2NP messages.
 const MSG_EXPIRATION_THRESHOLD: Duration = Duration::from_secs(45);
-
-/// Garbage collection interval.
-const GARBAGE_COLLECTION_INTERVAL: Duration = Duration::from_secs(45);
 
 /// Owned delivery instructions.
 pub enum OwnedDeliveryInstructions {
@@ -168,8 +171,12 @@ pub struct FragmentHandler<R: Runtime> {
     /// Pending messages.
     messages: HashMap<MessageId, Fragment<R>>,
 
-    /// Garbage collection timer.
-    gc_timer: BoxFuture<'static, ()>,
+    /// Queue of `MessageId`, pushed on insertion into `Self::messages` (and thus ordered by
+    /// expiration time) and popped in `Self::poll` when expired or the message no longer exists
+    message_first_seen_queue: VecDeque<MessageId>,
+
+    /// Timer for when the earliest expiring message expires
+    next_expiration_timer: Option<BoxFuture<'static, ()>>,
 }
 
 impl<R: Runtime> FragmentHandler<R> {
@@ -177,7 +184,24 @@ impl<R: Runtime> FragmentHandler<R> {
     pub fn new() -> Self {
         Self {
             messages: HashMap::new(),
-            gc_timer: Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL)),
+            message_first_seen_queue: VecDeque::new(),
+            next_expiration_timer: None,
+        }
+    }
+
+    /// Equivalent to `Entry::or_default()`, except returns the entry itself instead of a mutable
+    /// reference and inserts the `MessageId` into the first seen queue if `MessageId` was not
+    /// already in the map
+    fn get_or_create_message_fragment(
+        &mut self,
+        message_id: MessageId,
+    ) -> OccupiedEntry<'_, MessageId, Fragment<R>> {
+        match self.messages.entry(message_id) {
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(vacant_entry) => {
+                self.message_first_seen_queue.push_back(message_id);
+                vacant_entry.insert_entry(Default::default())
+            }
         }
     }
 
@@ -190,17 +214,15 @@ impl<R: Runtime> FragmentHandler<R> {
         delivery_instructions: &DeliveryInstructions,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.first_fragment = Some(payload.to_vec());
         message.delivery_instructions =
             Some(OwnedDeliveryInstructions::from(delivery_instructions));
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
     }
 
     /// Handle middle fragment.
@@ -212,15 +234,13 @@ impl<R: Runtime> FragmentHandler<R> {
         sequence: usize,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.fragments.insert(sequence, payload.to_vec());
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
     }
 
     /// Handle last fragment.
@@ -232,16 +252,14 @@ impl<R: Runtime> FragmentHandler<R> {
         sequence: usize,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.fragments.insert(sequence, payload.to_vec());
         message.num_fragments = Some(sequence);
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
     }
 }
 
@@ -249,21 +267,36 @@ impl<R: Runtime> Future for FragmentHandler<R> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        futures::ready!(self.gc_timer.poll_unpin(cx));
+        if let Some(next_expiration_timer) = &mut self.next_expiration_timer {
+            futures::ready!(next_expiration_timer.poll_unpin(cx));
+        }
 
-        self.messages
-            .iter()
-            .filter_map(|(key, value)| {
-                (value.created.elapsed() >= MSG_EXPIRATION_THRESHOLD).then_some(*key)
-            })
-            .collect::<Vec<_>>()
-            .iter()
-            .for_each(|key| {
-                self.messages.remove(key);
-            });
+        // TODO: In rust 1.86 this can become `pop_if`
+        while let Some(message_id) = self.message_first_seen_queue.front().copied() {
+            match self.messages.entry(message_id) {
+                Entry::Occupied(fragment_entry) => {
+                    if fragment_entry.get().created.elapsed() >= MSG_EXPIRATION_THRESHOLD {
+                        fragment_entry.remove();
+                    } else {
+                        break;
+                    }
+                }
+                Entry::Vacant(_) => {}
+            }
 
-        self.gc_timer = Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL));
-        let _ = self.gc_timer.poll_unpin(cx);
+            self.message_first_seen_queue.pop_front();
+        }
+
+        if let Some(message_id) = self.message_first_seen_queue.front() {
+            let next_fragment_elapsed =
+                self.messages.get(message_id).expect("to exist").created.elapsed();
+
+            self.next_expiration_timer = Some(Box::pin(R::delay(
+                MSG_EXPIRATION_THRESHOLD - next_fragment_elapsed,
+            )));
+        } else {
+            self.next_expiration_timer = None;
+        }
 
         Poll::Pending
     }
@@ -309,7 +342,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -351,7 +384,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
 
         let mut fragments = split(2, message);
 
@@ -388,7 +421,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
         assert_eq!(fragments.len(), 4);
 
@@ -428,7 +461,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -456,5 +489,140 @@ mod tests {
         assert_eq!(message.message_id, 1338u32);
         assert_eq!(message.message_type, MessageType::Data);
         assert_eq!(message.payload, vec![0u8; 1337]);
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_incomplete() {
+        let message_id = MessageId::from(1338);
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        // last fragment is delivered first
+        assert!(handler.first_fragment(message_id, &DeliveryInstructions::Local, &[0]).is_none());
+
+        // poll the handler to verify garbage collection doesn't remove messages below the
+        // expiration
+        assert!(tokio::time::timeout(Duration::from_secs(1), &mut handler).await.is_err());
+        assert!(!handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(MSG_EXPIRATION_THRESHOLD, &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_complete() {
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        let message_id = MessageId::from(1337);
+        let expiration = MockRuntime::time_since_epoch();
+        let message = MessageBuilder::standard()
+            .with_expiration(expiration)
+            .with_message_type(MessageType::Data)
+            .with_message_id(1338u32)
+            .with_payload(&vec![0u8; 1337])
+            .build();
+        let mut fragments = split(4, message);
+
+        assert_eq!(fragments.len(), 4);
+        assert!(handler
+            .first_fragment(
+                message_id,
+                &DeliveryInstructions::Local,
+                &fragments.pop_front().unwrap(),
+            )
+            .is_none());
+
+        assert!(handler
+            .middle_fragment(message_id, 1, &fragments.pop_front().unwrap())
+            .is_none());
+
+        assert!(handler.last_fragment(message_id, 3, &fragments.pop_back().unwrap()).is_none());
+
+        // poll the handler to verify garbage collection doesn't remove messages below the
+        // expiration
+        assert!(tokio::time::timeout(Duration::from_secs(1), &mut handler).await.is_err());
+        assert!(!handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        let (_message, _delivery_instructions) =
+            handler.middle_fragment(message_id, 2, &fragments.pop_front().unwrap()).unwrap();
+
+        assert!(handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(MSG_EXPIRATION_THRESHOLD, &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_multiple() {
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        // Interleave: first message that will expire, second message that will complete, third
+        // message that will expire
+
+        assert!(handler
+            .first_fragment(MessageId::from(0), &DeliveryInstructions::Local, &[0])
+            .is_none());
+        assert_eq!(handler.messages.len(), 1);
+        assert_eq!(handler.message_first_seen_queue.len(), 1);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let message_id = MessageId::from(1337);
+        let expiration = MockRuntime::time_since_epoch();
+        let message = MessageBuilder::standard()
+            .with_expiration(expiration)
+            .with_message_type(MessageType::Data)
+            .with_message_id(1338u32)
+            .with_payload(&vec![0u8; 1337])
+            .build();
+        let mut fragments = split(4, message);
+
+        assert_eq!(fragments.len(), 4);
+        assert!(handler
+            .first_fragment(
+                message_id,
+                &DeliveryInstructions::Local,
+                &fragments.pop_front().unwrap(),
+            )
+            .is_none());
+
+        assert!(handler
+            .middle_fragment(message_id, 1, &fragments.pop_front().unwrap())
+            .is_none());
+
+        assert!(handler.last_fragment(message_id, 3, &fragments.pop_back().unwrap()).is_none());
+        assert_eq!(handler.messages.len(), 2);
+        assert_eq!(handler.message_first_seen_queue.len(), 2);
+
+        assert!(handler
+            .first_fragment(MessageId::from(1), &DeliveryInstructions::Local, &[0])
+            .is_none());
+        assert_eq!(handler.messages.len(), 3);
+        assert_eq!(handler.message_first_seen_queue.len(), 3);
+
+        let (_message, _delivery_instructions) =
+            handler.middle_fragment(message_id, 2, &fragments.pop_front().unwrap()).unwrap();
+        assert_eq!(handler.messages.len(), 2);
+        assert_eq!(handler.message_first_seen_queue.len(), 3);
+
+        // poll the handler to run garbage collection, only the third message should remain
+        assert!(tokio::time::timeout(
+            MSG_EXPIRATION_THRESHOLD - Duration::from_secs(1),
+            &mut handler
+        )
+        .await
+        .is_err());
+        assert_eq!(handler.messages.len(), 1);
+        assert_eq!(handler.message_first_seen_queue.len(), 1);
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(Duration::from_secs(2), &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
     }
 }

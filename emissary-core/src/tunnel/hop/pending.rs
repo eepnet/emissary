@@ -732,20 +732,22 @@ mod test {
         let (_tx, rx) = channel(64);
 
         let (pending_tunnel, next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
@@ -1401,20 +1403,22 @@ mod test {
         let (_tx, rx) = channel(64);
 
         let (pending_tunnel, next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
