@@ -1254,7 +1254,7 @@ mod tests {
         assert!(config.routers.is_empty());
         assert_eq!(config.static_key.len(), 32);
         assert_eq!(config.signing_key.len(), 32);
-        assert_eq!(config.ntcp2_config.as_ref().unwrap().port, 8888);
+        assert_eq!(config.ntcp2_config.as_ref().unwrap().port, 25115);
         assert_eq!(config.ntcp2_config.as_ref().unwrap().host, None,);
 
         let (key, iv) = {
@@ -1314,7 +1314,7 @@ mod tests {
             let config = Config::parse(Some(dir.path().to_owned()), &make_arguments()).unwrap();
             let ntcp2_config = config.ntcp2_config.unwrap();
 
-            assert_eq!(ntcp2_config.port, 8888u16);
+            assert_eq!(ntcp2_config.port, 25115u16);
 
             (ntcp2_config.key, ntcp2_config.iv)
         };
