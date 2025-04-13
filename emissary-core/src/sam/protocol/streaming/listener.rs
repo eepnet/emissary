@@ -334,7 +334,7 @@ impl<R: Runtime> StreamListener<R> {
                 ListenerState::Ephemeral { .. }
                 | ListenerState::Uninitialized
                 | ListenerState::Initializing {
-                    kind: PendingListenerKind::Ephemeral { .. },
+                    kind: PendingListenerKind::Ephemeral,
                 },
                 kind @ ListenerKind::Ephemeral { .. },
             ) => Some(kind),

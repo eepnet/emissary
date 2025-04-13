@@ -67,7 +67,7 @@ impl AddressBookManager {
             hosts_url: config.default,
             subscriptions: config
                 .subscriptions
-                .map_or_else(|| Vec::new(), |subscriptions| subscriptions),
+                .map_or_else(Vec::new, |subscriptions| subscriptions),
         }
     }
 
@@ -81,7 +81,7 @@ impl AddressBookManager {
     /// Attempt to download `hosts.txt` from `url`.
     async fn download(client: &Client, url: &str) -> Option<String> {
         let response = match client
-            .get(format!("{}", url))
+            .get(url.to_string())
             .headers(HeaderMap::from_iter([(
                 CONNECTION,
                 HeaderValue::from_static("close"),
@@ -131,7 +131,7 @@ impl AddressBookManager {
                     ?error,
                     "failed to get response from address book server"
                 );
-                return None;
+                None
             }
         }
     }
@@ -228,7 +228,7 @@ impl AddressBookManager {
         let mut addresses = HashMap::<String, String>::new();
 
         loop {
-            match Self::download(&client, &hosts_url).await {
+            match Self::download(&client, hosts_url).await {
                 Some(hosts) => {
                     tracing::info!(
                         target: LOG_TARGET,
@@ -245,7 +245,7 @@ impl AddressBookManager {
 
         for subscription in &self.subscriptions {
             for _ in 0..SUBSCRIPTION_NUM_RETRIES {
-                match Self::download(&client, &subscription).await {
+                match Self::download(&client, subscription).await {
                     Some(hosts) => {
                         tracing::info!(
                             target: LOG_TARGET,
