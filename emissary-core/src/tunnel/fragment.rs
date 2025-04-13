@@ -289,7 +289,7 @@ impl<R: Runtime> Future for FragmentHandler<R> {
                 self.messages.get(message_id).expect("to exist").created.elapsed();
 
             self.next_expiration_timer = Some(Box::pin(R::delay(
-                MSG_EXPIRATION_THRESHOLD - next_fragment_elapsed,
+                MSG_EXPIRATION_THRESHOLD.saturating_sub(next_fragment_elapsed),
             )));
         } else {
             self.next_expiration_timer = None;
