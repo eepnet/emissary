@@ -273,15 +273,12 @@ impl<R: Runtime> Future for FragmentHandler<R> {
 
         // TODO: In rust 1.86 this can become `pop_if`
         while let Some(message_id) = self.message_first_seen_queue.front().copied() {
-            match self.messages.entry(message_id) {
-                Entry::Occupied(fragment_entry) => {
-                    if fragment_entry.get().created.elapsed() >= MSG_EXPIRATION_THRESHOLD {
-                        fragment_entry.remove();
-                    } else {
-                        break;
-                    }
+            if let Entry::Occupied(fragment_entry) = self.messages.entry(message_id) {
+                if fragment_entry.get().created.elapsed() >= MSG_EXPIRATION_THRESHOLD {
+                    fragment_entry.remove();
+                } else {
+                    break;
                 }
-                Entry::Vacant(_) => {}
             }
 
             self.message_first_seen_queue.pop_front();
@@ -577,7 +574,7 @@ mod tests {
         let message = MessageBuilder::standard()
             .with_expiration(expiration)
             .with_message_type(MessageType::Data)
-            .with_message_id(1338u32)
+            .with_message_id(1337u32)
             .with_payload(&vec![0u8; 1337])
             .build();
         let mut fragments = split(4, message);
