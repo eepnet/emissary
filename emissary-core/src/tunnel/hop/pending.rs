@@ -144,15 +144,13 @@ impl<T: Tunnel> PendingTunnel<T> {
 
         // calculate record count for the tunnel build message
         //
-        // if the build request doesn't consume all available record slots, a random number of fake
-        // records are added to each tunnel build message
+        // if the number of requested records is less than 4, the record count is set to 4,
+        // as recommended by the specification
         //
-        // if the number of requested records is less than [`UNFRAGMENTED_MAX_RECORDS`], i.e., the
-        // message would fit inside one `TunnelData` message, the number of records is clamped down
-        // to 4. If more than 4 hops were requested, the upper bound for clamp is set to 8 which is
+        // if more than 4 hops were requested, the upper bound for clamp is set to 8 which is
         // the maximum amount of records a `ShortTunnelBuild` message can hold
         let num_records = if hops.len() < UNFRAGMENTED_MAX_RECORDS {
-            (hops.len() + (R::rng().next_u32() % 3) as usize).clamp(0, UNFRAGMENTED_MAX_RECORDS)
+            UNFRAGMENTED_MAX_RECORDS
         } else {
             (hops.len() + (R::rng().next_u32() % 3) as usize).clamp(0, MAX_BUILD_RECORDS)
         };
