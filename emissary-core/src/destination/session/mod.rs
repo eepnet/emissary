@@ -96,10 +96,19 @@ const ES_RECEIVE_TAGSET_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Session manager maintenance interval.
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
+/// Interval to respond to ACK and NextKey requests if no other traffic is transmitted
+// TODO: NS and NSR messages should have a "HIGH_PRIORITY_RESPONSE_INTERVAL" with a shorter
+// interval to respond within. ref: https://geti2p.net/spec/ecies#protocol-layer-responses
+const LOW_PRIORITY_RESPONSE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Active session with remote destination.
 struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
     inbound_ack_requests: HashSet<(u16, u16)>,
+
+    /// Timer for sending an empty message to send ACK and/or NextKey responses if no other message traffic is
+    /// sent
+    low_priority_response_timer: Option<BoxFuture<'static, ()>>,
 
     /// Time when the last ES was received.
     last_received: R::Instant,
@@ -126,6 +135,7 @@ impl<R: Runtime> ActiveSession<R> {
             lease_set: None,
             outbound_ack_requests: HashSet::new(),
             session,
+            low_priority_response_timer: None,
         }
     }
 
@@ -351,6 +361,8 @@ impl<R: Runtime> SessionManager<R> {
     ) -> Result<Vec<u8>, SessionError> {
         match self.active.get_mut(destination_id) {
             Some(session) => {
+                session.low_priority_response_timer = None;
+
                 // TODO: ugly
                 let hash = destination_id.to_vec();
                 let message = {
@@ -777,6 +789,11 @@ impl<R: Runtime> SessionManager<R> {
                             "ack request received",
                         );
                         session.inbound_ack_requests.insert((tag_set_id, tag_index));
+                        if session.low_priority_response_timer.is_none() {
+                            session.low_priority_response_timer =
+                                Some(Box::pin(R::delay(LOW_PRIORITY_RESPONSE_INTERVAL)));
+                        }
+
                         None
                     }
                     None => {
@@ -909,11 +926,12 @@ impl<R: Runtime> Stream for SessionManager<R> {
                 Poll::Ready(Some(destination_id)) => {
                     match self.publish_local_lease_set(&destination_id) {
                         None => continue,
-                        Some(message) =>
+                        Some(message) => {
                             return Poll::Ready(Some(SessionManagerEvent::SendMessage {
                                 destination_id,
                                 message,
-                            })),
+                            }))
+                        }
                     }
                 }
             }
@@ -925,6 +943,23 @@ impl<R: Runtime> Stream for SessionManager<R> {
             // create new timer and poll it so it'll get registered into the executor
             self.maintenance_timer = Box::pin(R::delay(MAINTENANCE_INTERVAL));
             let _ = self.maintenance_timer.poll_unpin(cx);
+        }
+
+        for (destination_id, session) in self.active.iter_mut() {
+            if let Some(low_priority_timer) = &mut session.low_priority_response_timer {
+                let should_send_empty_message = low_priority_timer.poll_unpin(cx).is_ready();
+
+                if should_send_empty_message {
+                    // Response timers are cleared when messages are sent, but also clear them here so we
+                    // don't possibly send multiple empty messages due to the async nature of the state machine
+                    session.low_priority_response_timer = None;
+
+                    return Poll::Ready(Some(SessionManagerEvent::SendMessage {
+                        destination_id: destination_id.clone(),
+                        message: Vec::with_capacity(0),
+                    }));
+                }
+            }
         }
 
         self.waker = Some(cx.waker().clone());
