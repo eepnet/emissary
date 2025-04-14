@@ -54,7 +54,7 @@ use alloc::{string::ToString, vec::Vec};
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
-    pin::Pin,
+    pin::{pin, Pin},
     task::{Context, Poll},
     time::Duration,
 };
@@ -343,7 +343,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
 
                 match role {
                     HopRole::InboundGateway => self.tunnels.push(async move {
-                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -370,7 +370,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::Participant => self.tunnels.push(async move {
-                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -397,7 +397,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::OutboundEndpoint => self.tunnels.push(async move {
-                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -603,8 +603,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 match role {
                     HopRole::InboundGateway => {
                         self.tunnels.push(async move {
-                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -635,8 +634,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                     }
                     HopRole::Participant => {
                         self.tunnels.push(async move {
-                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -670,8 +668,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         let garlic_tag = tunnel_keys.garlic_tag();
 
                         self.tunnels.push(async move {
-                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -799,18 +796,20 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
 
             match result {
                 Ok((router, message, maybe_feedback_tx)) => match maybe_feedback_tx {
-                    None =>
+                    None => {
                         if let Err(error) = self.routing_table.send_message(router, message) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                        },
-                    Some(tx) =>
+                        }
+                    }
+                    Some(tx) => {
                         if let Err(error) = self.routing_table.send_message_with_feedback(
                             router.clone(),
                             message,
                             tx,
                         ) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                        },
+                        }
+                    }
                 },
                 Err(error) => tracing::debug!(
                     target: LOG_TARGET,

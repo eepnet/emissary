@@ -111,7 +111,7 @@ pub struct PacketRetransmitter<R: Runtime> {
     timeouts: VecDeque<Duration>,
 
     /// Timer for triggering retransmit/timeout.
-    timer: R::Delay,
+    timer: R::Delayer,
 }
 
 impl<R: Runtime> PacketRetransmitter<R> {
@@ -123,7 +123,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
         Self {
             pkt: Vec::new(),
             timeouts: VecDeque::new(),
-            timer: R::delay(Duration::MAX),
+            timer: R::delayer(Duration::MAX),
         }
     }
 
@@ -138,7 +138,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
         Self {
             pkt,
             timeouts: VecDeque::from_iter([Duration::from_secs(6), Duration::from_secs(6)]),
-            timer: R::delay(Duration::from_secs(3)),
+            timer: R::delayer(Duration::from_secs(3)),
         }
     }
 
@@ -158,7 +158,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_millis(5000),
                 Duration::from_millis(6250),
             ]),
-            timer: R::delay(Duration::from_millis(1250)),
+            timer: R::delayer(Duration::from_millis(1250)),
         }
     }
 
@@ -178,7 +178,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_secs(4),
                 Duration::from_secs(5),
             ]),
-            timer: R::delay(Duration::from_secs(1)),
+            timer: R::delayer(Duration::from_secs(1)),
         }
     }
 
@@ -201,7 +201,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_millis(5000),
                 Duration::from_millis(6250),
             ]),
-            timer: R::delay(Duration::from_millis(1250)),
+            timer: R::delayer(Duration::from_millis(1250)),
         }
     }
 }
@@ -214,7 +214,7 @@ impl<R: Runtime> Future for PacketRetransmitter<R> {
 
         match self.timeouts.pop_front() {
             Some(timeout) => {
-                self.timer = R::delay(timeout);
+                self.timer = R::delayer(timeout);
                 let _ = self.timer.poll_unpin(cx);
 
                 Poll::Ready(PacketRetransmitterEvent::Retransmit {

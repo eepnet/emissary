@@ -43,7 +43,7 @@ pub trait AsyncReadExt: AsyncRead + Unpin {
 struct ReadExact<'a, T: AsyncRead + Unpin, R: Runtime> {
     inner: &'a mut T,
     buffer: &'a mut [u8],
-    timer: R::Delay,
+    timer: R::Delayer,
 }
 
 impl<'a, T: AsyncRead + Unpin, R: Runtime> ReadExact<'a, T, R> {
@@ -51,7 +51,7 @@ impl<'a, T: AsyncRead + Unpin, R: Runtime> ReadExact<'a, T, R> {
         Self {
             inner,
             buffer,
-            timer: R::delay(Duration::from_secs(10)),
+            timer: R::delayer(Duration::from_secs(10)),
         }
     }
 }

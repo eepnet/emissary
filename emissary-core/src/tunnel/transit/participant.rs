@@ -53,7 +53,7 @@ pub struct Participant<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: R::Delay,
+    expiration_timer: R::Delayer,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -130,7 +130,7 @@ impl<R: Runtime> TransitTunnel<R> for Participant<R> {
     ) -> Self {
         Participant {
             event_handle,
-            expiration_timer: R::delay(TRANSIT_TUNNEL_EXPIRATION),
+            expiration_timer: R::delayer(TRANSIT_TUNNEL_EXPIRATION),
             bandwidth: 0usize,
             message_rx,
             metrics_handle,
@@ -161,7 +161,7 @@ impl<R: Runtime> Future for Participant<R> {
                     self.bandwidth += message.serialized_len_short();
 
                     match message.message_type {
-                        MessageType::TunnelData =>
+                        MessageType::TunnelData => {
                             match EncryptedTunnelData::parse(&message.payload) {
                                 Some(message) => match self.handle_tunnel_data(&message) {
                                     Ok((router, message)) => {
@@ -189,7 +189,8 @@ impl<R: Runtime> Future for Participant<R> {
                                     target: LOG_TARGET,
                                     "failed to parse message",
                                 ),
-                            },
+                            }
+                        }
                         message_type => tracing::warn!(
                             target: LOG_TARGET,
                             tunnel_id = %self.tunnel_id,

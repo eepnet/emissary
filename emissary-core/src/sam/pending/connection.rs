@@ -216,7 +216,7 @@ pub struct PendingSamConnection<R: Runtime> {
     state: PendingConnectionState<R>,
 
     /// Keep-alive timer.
-    keep_alive_timer: R::Delay,
+    keep_alive_timer: R::Delayer,
 }
 
 impl<R: Runtime> PendingSamConnection<R> {
@@ -226,7 +226,7 @@ impl<R: Runtime> PendingSamConnection<R> {
             state: PendingConnectionState::AwaitingHandshake {
                 socket: SamSocket::new(stream),
             },
-            keep_alive_timer: R::delay(KEEP_ALIVE_TIMEOUT),
+            keep_alive_timer: R::delayer(KEEP_ALIVE_TIMEOUT),
         }
     }
 }
@@ -279,7 +279,7 @@ impl<R: Runtime> Future for PendingSamConnection<R> {
 
                         // reset keep-alive timeout so the client has another 10 seconds to send the
                         // next command before the connection is closed
-                        self.keep_alive_timer = R::delay(KEEP_ALIVE_TIMEOUT);
+                        self.keep_alive_timer = R::delayer(KEEP_ALIVE_TIMEOUT);
                     }
                     Poll::Ready(Some(command)) => {
                         tracing::debug!(

@@ -183,10 +183,11 @@ impl<R: Runtime> PendingSamSession<R> {
     pub async fn run(mut self) -> crate::Result<SamSessionContext<R>> {
         loop {
             match self.netdb_handle.wait_until_ready() {
-                Ok(rx) =>
+                Ok(rx) => {
                     if rx.await.is_ok() {
                         break;
-                    },
+                    }
+                }
                 Err(_) => R::delay(RETRY_DURATION).await,
             }
         }

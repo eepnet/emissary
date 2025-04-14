@@ -58,7 +58,7 @@ pub struct OutboundEndpoint<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: R::Delay,
+    expiration_timer: R::Delayer,
 
     /// Fragment handler.
     fragment: FragmentHandler,
@@ -300,7 +300,7 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
     ) -> Self {
         OutboundEndpoint {
             event_handle,
-            expiration_timer: R::delay(TRANSIT_TUNNEL_EXPIRATION),
+            expiration_timer: R::delayer(TRANSIT_TUNNEL_EXPIRATION),
             fragment: FragmentHandler::new(),
             bandwidth: 0usize,
             message_rx,

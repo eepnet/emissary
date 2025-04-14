@@ -333,7 +333,7 @@ impl RuntimeT for Runtime {
     type JoinSet<T: Send + 'static> = TokioJoinSet<T>;
     type MetricsHandle = TokioMetricsHandle;
     type Instant = TokioInstant;
-    type Delay = Pin<Box<Sleep>>;
+    type Delayer = Pin<Box<Sleep>>;
 
     fn spawn<F>(future: F)
     where
@@ -407,8 +407,12 @@ impl RuntimeT for Runtime {
         TokioMetricsHandle {}
     }
 
-    fn delay(duration: Duration) -> Self::Delay {
+    fn delayer(duration: Duration) -> Self::Delayer {
         Box::pin(tokio::time::sleep(duration))
+    }
+
+    async fn delay(duration: Duration) {
+        tokio::time::sleep(duration).await
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {

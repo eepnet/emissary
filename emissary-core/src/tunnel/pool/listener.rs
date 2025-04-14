@@ -37,7 +37,7 @@ use futures::{
 use futures_channel::oneshot;
 
 use core::{
-    pin::Pin,
+    pin::{pin, Pin},
     task::{Context, Poll},
     time::Duration,
 };
@@ -105,7 +105,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
         let profile = self.profile.clone();
 
         self.pending.push(async move {
-            match select(dial_rx, R::delay(Duration::from_secs(2 * 60))).await {
+            match select(dial_rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                 Either::Left((Ok(_), _)) => {}
                 Either::Left((Err(_), _)) => {
                     tracing::debug!(
@@ -129,13 +129,15 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 }
             }
 
-            match select(message_rx, R::delay(TUNNEL_BUILD_EXPIRATION)).await {
+            match select(message_rx, pin!(R::delay(TUNNEL_BUILD_EXPIRATION))).await {
                 Either::Right((_, _)) => {
                     match receive_kind {
-                        ReceiveKind::RoutingTable { message_id } =>
-                            routing_table.remove_listener(&message_id),
-                        ReceiveKind::Tunnel { message_id, handle } =>
-                            handle.remove_listener(&message_id),
+                        ReceiveKind::RoutingTable { message_id } => {
+                            routing_table.remove_listener(&message_id)
+                        }
+                        ReceiveKind::Tunnel { message_id, handle } => {
+                            handle.remove_listener(&message_id)
+                        }
                         ReceiveKind::ZeroHop => {}
                     }
 
@@ -147,10 +149,12 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 }
                 Either::Left((Err(_), _)) => {
                     match receive_kind {
-                        ReceiveKind::RoutingTable { message_id } =>
-                            routing_table.remove_listener(&message_id),
-                        ReceiveKind::Tunnel { message_id, handle } =>
-                            handle.remove_listener(&message_id),
+                        ReceiveKind::RoutingTable { message_id } => {
+                            routing_table.remove_listener(&message_id)
+                        }
+                        ReceiveKind::Tunnel { message_id, handle } => {
+                            handle.remove_listener(&message_id)
+                        }
                         ReceiveKind::ZeroHop => {}
                     }
 

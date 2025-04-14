@@ -327,7 +327,7 @@ enum SocketState {
 /// Inbound context.
 pub struct InboundContext<R: Runtime> {
     /// ACK timer.
-    ack_timer: Option<R::Delay>,
+    ack_timer: Option<R::Delayer>,
 
     /// Missing packets.
     missing: BTreeSet<u32>,
@@ -379,7 +379,7 @@ impl<R: Runtime> InboundContext<R> {
             self.seq_nro = seq_nro;
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(R::delay(self.rtt));
+                self.ack_timer = Some(R::delayer(self.rtt));
             }
 
             return Ok(());
@@ -421,7 +421,7 @@ impl<R: Runtime> InboundContext<R> {
             self.seq_nro = seq_nro;
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(R::delay(self.rtt));
+                self.ack_timer = Some(R::delayer(self.rtt));
             }
         } else if self.missing.first() == Some(&seq_nro) {
             self.ready.push_back(payload);
@@ -435,14 +435,14 @@ impl<R: Runtime> InboundContext<R> {
             }
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(R::delay(self.rtt));
+                self.ack_timer = Some(R::delayer(self.rtt));
             }
         } else {
             self.missing.remove(&seq_nro);
             self.pending.insert(seq_nro, payload);
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(R::delay(self.rtt));
+                self.ack_timer = Some(R::delayer(self.rtt));
             }
         }
 
@@ -457,7 +457,7 @@ impl<R: Runtime> InboundContext<R> {
         self.close_requested = true;
 
         if self.ack_timer.is_none() {
-            self.ack_timer = Some(R::delay(self.rtt));
+            self.ack_timer = Some(R::delayer(self.rtt));
         }
     }
 
@@ -533,7 +533,7 @@ pub struct Stream<R: Runtime> {
     rto: Rto,
 
     /// RTO timer.
-    rto_timer: Option<R::Delay>,
+    rto_timer: Option<R::Delayer>,
 
     /// RTT.
     rtt: Rtt,
@@ -950,7 +950,7 @@ impl<R: Runtime> Stream<R> {
         });
 
         if self.rto_timer.is_none() {
-            self.rto_timer = Some(R::delay(*self.rto));
+            self.rto_timer = Some(R::delayer(*self.rto));
         }
     }
 
@@ -970,7 +970,7 @@ impl<R: Runtime> Stream<R> {
 
         // no expired packetes
         if expired.is_empty() {
-            self.rto_timer = Some(R::delay(*self.rto));
+            self.rto_timer = Some(R::delayer(*self.rto));
             return;
         }
 
@@ -1001,7 +1001,7 @@ impl<R: Runtime> Stream<R> {
                     send_id = ?self.send_stream_id,
                     "no routing path, cannot resend packets",
                 );
-                self.rto_timer = Some(R::delay(*self.rto));
+                self.rto_timer = Some(R::delayer(*self.rto));
                 return;
             }
         };
@@ -1039,7 +1039,7 @@ impl<R: Runtime> Stream<R> {
             }
         }
 
-        self.rto_timer = Some(R::delay(self.rto.exponential_backoff()));
+        self.rto_timer = Some(R::delayer(self.rto.exponential_backoff()));
 
         if self.window_size > 1 {
             self.window_size -= 1;
@@ -1135,7 +1135,7 @@ impl<R: Runtime> Stream<R> {
             }
 
             if self.rto_timer.is_none() {
-                self.rto_timer = Some(R::delay(*self.rto));
+                self.rto_timer = Some(R::delayer(*self.rto));
             }
         }
     }
@@ -1343,7 +1343,7 @@ impl<R: Runtime> Future for Stream<R> {
                         });
 
                         if num_sent > 0 && this.rto_timer.is_none() {
-                            this.rto_timer = Some(R::delay(*this.rto));
+                            this.rto_timer = Some(R::delayer(*this.rto));
                         }
                     }
                     true if !core::matches!(this.read_state, SocketState::Closed) => {

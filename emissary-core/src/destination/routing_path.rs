@@ -22,10 +22,7 @@ use crate::{
     runtime::Runtime,
 };
 
-use futures::{
-    future::FutureExt,
-    Stream,
-};
+use futures::{future::FutureExt, Stream};
 use futures_channel::oneshot;
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
@@ -687,7 +684,7 @@ pub struct RoutingPathHandle<R: Runtime> {
     event_rx: mpsc::Receiver<RoutingPathEvent>,
 
     /// Inbound tunnel expiration timer.
-    inbound_expiration_timer: Option<R::Delay>,
+    inbound_expiration_timer: Option<R::Delayer>,
 
     /// Lease set query status.
     lease_set_query_status: LeaseSetQueryStatus,
@@ -916,7 +913,7 @@ impl<R: Runtime> RoutingPathHandle<R> {
         let (inbound, expires) = self.select_inbound_tunnel()?;
 
         // `select_inbond_tunnel()` has ensured the tunnel doesn't expire in the next 30 seconds
-        self.inbound_expiration_timer = Some(R::delay(
+        self.inbound_expiration_timer = Some(R::delayer(
             expires - R::time_since_epoch() - INBOUND_TUNNEL_MIN_AGE,
         ));
 

@@ -223,7 +223,7 @@ impl Runtime for NoopRuntime {
     type JoinSet<T: Send + 'static> = NoopJoinSet<T>;
     type MetricsHandle = NoopMetricsHandle;
     type Instant = NoopInstant;
-    type Delay = std::future::Pending<()>;
+    type Delayer = std::future::Pending<()>;
 
     fn spawn<F>(_future: F)
     where
@@ -255,8 +255,12 @@ impl Runtime for NoopRuntime {
         NoopMetricsHandle {}
     }
 
-    fn delay(_duration: Duration) -> Self::Delay {
+    fn delayer(_duration: Duration) -> Self::Delayer {
         std::future::pending()
+    }
+
+    async fn delay(_duration: Duration) {
+        std::future::pending().await
     }
 
     fn gzip_compress(_bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {

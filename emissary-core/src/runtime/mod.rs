@@ -159,7 +159,7 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
     type JoinSet<T: Send + 'static>: JoinSet<T>;
     type MetricsHandle: MetricsHandle;
     type Instant: Instant;
-    type Delay: Future<Output = ()> + Send + Unpin;
+    type Delayer: Future<Output = ()> + Send + Unpin;
 
     /// Spawn `future` in the background.
     fn spawn<F>(future: F)
@@ -189,8 +189,11 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
     /// runtime will bind to a default port or ignore it alltogether if it doesn't need it.
     fn register_metrics(metrics: Vec<MetricType>, port: Option<u16>) -> Self::MetricsHandle;
 
-    /// Return future which blocks for `duration` before returning.
-    fn delay(duration: Duration) -> Self::Delay;
+    /// Return pinned future which blocks for `duration` before returning.
+    fn delayer(duration: Duration) -> Self::Delayer;
+
+    /// Return a future which blocks for `duration` before returning.
+    fn delay(duration: Duration) -> impl Future<Output = ()> + Send;
 
     /// GZIP-compress `bytes` and return the compressed byte vector.
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>>;

@@ -89,7 +89,7 @@ pub(crate) struct EventHandle<R: Runtime> {
     update_interval: Duration,
 
     /// Event timer.
-    timer: Option<R::Delay>,
+    timer: Option<R::Delayer>,
 
     /// Marker for `Runtime`.
     _runtime: PhantomData<R>,
@@ -106,7 +106,7 @@ impl<R: Runtime> Clone for EventHandle<R> {
             num_tunnels_built: Arc::clone(&self.num_tunnels_built),
             transit_bandwidth: Arc::clone(&self.transit_bandwidth),
             update_interval: self.update_interval,
-            timer: Some(R::delay(self.update_interval)),
+            timer: Some(R::delayer(self.update_interval)),
             _runtime: Default::default(),
         }
     }
@@ -178,7 +178,7 @@ impl<R: Runtime> Future for EventHandle<R> {
                 futures::ready!(timer.poll_unpin(cx));
 
                 // create new timer and register it into the executor
-                let mut timer = R::delay(self.update_interval);
+                let mut timer = R::delayer(self.update_interval);
                 let _ = timer.poll_unpin(cx);
                 self.timer = Some(timer);
 
@@ -295,7 +295,7 @@ pub(crate) struct EventManager<R: Runtime> {
     status_tx: Sender<Event>,
 
     /// Update timer.
-    timer: R::Delay,
+    timer: R::Delayer,
 
     /// Marker for `Runtime`.
     _runtime: PhantomData<R>,
@@ -341,7 +341,7 @@ impl<R: Runtime> EventManager<R> {
                 pending_client_updates: Vec::new(),
                 pending_server_updates: Vec::new(),
                 status_tx,
-                timer: R::delay(update_interval),
+                timer: R::delayer(update_interval),
                 _runtime: Default::default(),
             },
             EventSubscriber { status_rx },
@@ -411,7 +411,7 @@ impl<R: Runtime> Future for EventManager<R> {
                 client_destinations,
             });
 
-            self.timer = R::delay(self.handle.update_interval);
+            self.timer = R::delayer(self.handle.update_interval);
             let _ = self.timer.poll_unpin(cx);
         }
 

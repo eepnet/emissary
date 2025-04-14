@@ -41,7 +41,7 @@ pub struct DuplicateFilter<R: Runtime> {
     current: HashSet<u32>,
 
     /// Decay timer.
-    decay_timer: R::Delay,
+    decay_timer: R::Delayer,
 
     /// Previous filter.
     previous: HashSet<u32>,
@@ -56,7 +56,7 @@ impl<R: Runtime> DuplicateFilter<R> {
         Self {
             current: HashSet::new(),
             previous: HashSet::new(),
-            decay_timer: R::delay(DUPLICATE_FILTER_DECAY_INTERVAL),
+            decay_timer: R::delayer(DUPLICATE_FILTER_DECAY_INTERVAL),
             _runtime: Default::default(),
         }
     }
@@ -93,7 +93,7 @@ impl<R: Runtime> Future for DuplicateFilter<R> {
             );
 
             self.decay();
-            self.decay_timer = R::delay(DUPLICATE_FILTER_DECAY_INTERVAL);
+            self.decay_timer = R::delayer(DUPLICATE_FILTER_DECAY_INTERVAL);
             let _ = self.decay_timer.poll_unpin(cx);
         }
 
@@ -127,7 +127,7 @@ mod tests {
     #[tokio::test]
     async fn decay_timer_works() {
         let mut filter = DuplicateFilter::<MockRuntime>::new();
-        filter.decay_timer = MockRuntime::delay(Duration::from_secs(5));
+        filter.decay_timer = MockRuntime::delayer(Duration::from_secs(5));
 
         // insert first time and verify that second insert rejects the message
         assert!(filter.insert(1337));
@@ -141,7 +141,7 @@ mod tests {
         assert!(!filter.insert(1337));
 
         // poll it until the filter decays the second time and verify that the message is accepted
-        filter.decay_timer = MockRuntime::delay(Duration::from_secs(5));
+        filter.decay_timer = MockRuntime::delayer(Duration::from_secs(5));
         assert!(tokio::time::timeout(Duration::from_secs(8), &mut filter).await.is_err());
         assert!(filter.current.is_empty());
         assert!(filter.current.is_empty());

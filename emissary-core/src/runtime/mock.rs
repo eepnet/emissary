@@ -312,7 +312,7 @@ impl Runtime for MockRuntime {
     type JoinSet<T: Send + 'static> = MockJoinSet<T>;
     type MetricsHandle = MockMetricsHandle;
     type Instant = MockInstant;
-    type Delay = Pin<Box<Sleep>>;
+    type Delayer = Pin<Box<Sleep>>;
 
     /// Spawn `future` in the background.
     fn spawn<F>(future: F)
@@ -353,8 +353,12 @@ impl Runtime for MockRuntime {
     }
 
     /// Return future which blocks for `duration` before returning.
-    fn delay(duration: Duration) -> Self::Delay {
+    fn delayer(duration: Duration) -> Self::Delayer {
         Box::pin(tokio::time::sleep(duration))
+    }
+
+    async fn delay(duration: Duration) {
+        tokio::time::sleep(duration).await;
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
