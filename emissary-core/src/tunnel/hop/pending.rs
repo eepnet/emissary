@@ -368,7 +368,7 @@ impl<T: Tunnel> PendingTunnel<T> {
     /// the tunnel build request was accepted and `Ok(Err(error))` means the tunnel was rejected
     /// or the tunnel build response record was malformed in some way. This allows the tunnel
     /// pool to reward/penalize the selected routers fairly.
-    pub fn try_build_tunnel<R: Runtime>(
+    pub fn try_build_tunnel(
         self,
         message: Message,
     ) -> Result<T, Vec<(RouterId, Option<Result<(), TunnelError>>)>> {
@@ -397,9 +397,8 @@ impl<T: Tunnel> PendingTunnel<T> {
             (TunnelDirection::Inbound, MessageType::ShortTunnelBuild) => message.payload.to_vec(),
 
             // for outbound builds the reply can be received in `OutboundTunnelBuildReply`
-            (TunnelDirection::Outbound, MessageType::OutboundTunnelBuildReply) => {
-                message.payload.to_vec()
-            }
+            (TunnelDirection::Outbound, MessageType::OutboundTunnelBuildReply) =>
+                message.payload.to_vec(),
 
             // outbound reply can also be wrapped in a `GarlicMessage`
             (TunnelDirection::Outbound, MessageType::Garlic) => {
@@ -445,9 +444,8 @@ impl<T: Tunnel> PendingTunnel<T> {
                         }
                     )
                 }) {
-                    Some(GarlicMessageBlock::GarlicClove { message_body, .. }) => {
-                        message_body.to_vec()
-                    }
+                    Some(GarlicMessageBlock::GarlicClove { message_body, .. }) =>
+                        message_body.to_vec(),
                     _ => {
                         tracing::warn!(
                             target: LOG_TARGET,
@@ -860,15 +858,14 @@ mod test {
         };
 
         match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
-            Err(error) => {
+            Err(error) =>
                 for (i, (_, result)) in error.into_iter().enumerate() {
                     if i % 2 == 0 {
                         assert_eq!(result, Some(Err(TunnelError::TunnelRejected(30))));
                     } else {
                         assert_eq!(result, Some(Ok(())));
                     }
-                }
-            }
+                },
             _ => panic!("invalid result"),
         }
     }

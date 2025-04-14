@@ -167,7 +167,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 Either::Left((Ok(message), _)) => {
                     let tunnel_id = *tunnel.tunnel_id();
 
-                    match tunnel.try_build_tunnel::<R>(message) {
+                    match tunnel.try_build_tunnel(message) {
                         Err(routers) => (
                             tunnel_id,
                             routers

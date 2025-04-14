@@ -203,9 +203,8 @@ impl<R: Runtime> InboundTunnel<R> {
                 } = message.message_kind
                 {
                     match delivery_instructions {
-                        DeliveryInstructions::Local => {
-                            return Message::parse_standard(message.message)
-                        }
+                        DeliveryInstructions::Local =>
+                            return Message::parse_standard(message.message),
                         delivery_instructions => {
                             tracing::warn!(
                                 target: LOG_TARGET,
