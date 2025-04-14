@@ -1046,20 +1046,22 @@ mod tests {
             .unzip();
 
         let (_pending_tunnel, _next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
@@ -1165,7 +1167,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+        pending_tunnel.try_build_tunnel(message).unwrap();
     }
 
     #[tokio::test]
@@ -1448,7 +1450,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1598,7 +1600,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1702,7 +1704,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));

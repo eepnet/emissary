@@ -226,7 +226,7 @@ impl<'a> Su3<'a> {
         let (_, su3) = Self::parse_inner(input).ok()?;
 
         if verify {
-            match std::str::from_utf8(&su3.signer_id) {
+            match std::str::from_utf8(su3.signer_id) {
                 Ok(signer_id) => match PUBLIC_KEYS.get(signer_id) {
                     None => tracing::warn!(
                         target: LOG_TARGET,
@@ -237,7 +237,7 @@ impl<'a> Su3<'a> {
                         if let Ok(signature) = Signature::try_from(su3.signature) {
                             let verifying_key = VerifyingKey::<Sha512>::new(key.clone());
 
-                            if let Err(error) = verifying_key.verify(&su3.message, &signature) {
+                            if let Err(error) = verifying_key.verify(su3.message, &signature) {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     ?signer_id,

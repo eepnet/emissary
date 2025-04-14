@@ -170,12 +170,10 @@ impl RouterUi {
                             self.num_tunnels_built = tunnel.num_tunnels_built;
                             self.num_tunnel_build_failures = tunnel.num_tunnel_build_failures;
                         }
-                        Event::ShuttingDown => match self.status {
-                            Status::Active => {
+                        Event::ShuttingDown =>
+                            if let Status::Active = self.status {
                                 self.status = Status::ShuttingDown(Instant::now());
-                            }
-                            _ => {}
-                        },
+                            },
                         Event::ShutDown => {}
                     }
                 }
@@ -242,7 +240,7 @@ impl RouterUi {
                     Text::new(format!("Number of connected routers: {}", self.num_routers));
                 let tunnel_build_success_rate_text = {
                     if self.num_tunnels_built == 0 && self.num_tunnel_build_failures == 0 {
-                        Text::new(format!("Tunnel build success rate: 0%",))
+                        Text::new("Tunnel build success rate: 0%".to_string())
                     } else {
                         Text::new(format!(
                             "Tunnel build success rate: {}%",
@@ -285,7 +283,7 @@ impl RouterUi {
                                 }),
                         },
                         button("Forceful shutdown")
-                            .style(|theme, status| iced::widget::button::danger(theme, status))
+                            .style(iced::widget::button::danger)
                             .on_press(Message::ForcefulShutdown),
                     ]
                     .spacing(10)
@@ -315,7 +313,7 @@ impl RouterUi {
                 test.push(Text::new("Client destinations").size(36).into());
 
                 for name in &self.client_destinations {
-                    test.push(Text::new(format!("{name}")).into());
+                    test.push(Text::new(name.to_string()).into());
                 }
 
                 Column::from_vec(test).spacing(20).padding(30).align_x(Alignment::Start)

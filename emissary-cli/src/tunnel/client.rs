@@ -47,7 +47,7 @@ impl ClientTunnelManager {
         Self {
             futures: JoinSet::new(),
             sam_tcp_port,
-            tunnels: tunnels.into_iter().map(|tunnel| Arc::from(tunnel)).collect(),
+            tunnels: tunnels.into_iter().map(Arc::from).collect(),
         }
     }
 

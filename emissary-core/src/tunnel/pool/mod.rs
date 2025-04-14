@@ -212,7 +212,7 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     outbound: HashMap<TunnelId, OutboundTunnel<R>>,
 
     /// Pending inbound tunnels.
-    pending_inbound: TunnelBuildListener<R, InboundTunnel>,
+    pending_inbound: TunnelBuildListener<R, InboundTunnel<R>>,
 
     /// Pending outbound tunnels.
     pending_outbound: TunnelBuildListener<R, OutboundTunnel<R>>,
@@ -594,7 +594,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
             let (tunnel_id, tunnel_rx) =
                 self.routing_table.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
 
-            match PendingTunnel::<InboundTunnel>::create_tunnel::<R>(TunnelBuildParameters {
+            match PendingTunnel::<InboundTunnel<R>>::create_tunnel::<R>(TunnelBuildParameters {
                 hops,
                 name: self.config.name.clone(),
                 noise: self.router_ctx.noise().clone(),

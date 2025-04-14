@@ -16,8 +16,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#![cfg(feature = "async-std")]
-
 use async_std::net;
 use emissary_core::runtime::{
     AsyncRead, AsyncWrite, Counter, Gauge, Histogram, Instant as InstantT, JoinSet, MetricType,
@@ -55,6 +53,12 @@ pub struct Runtime {}
 impl Runtime {
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+impl Default for Runtime {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -269,7 +273,7 @@ impl AsyncStdUdpSocket {
 
 impl UdpSocket for AsyncStdUdpSocket {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>> {
-        async move { net::UdpSocket::bind(address).await.ok().map(|socket| Self::new(socket)) }
+        async move { net::UdpSocket::bind(address).await.ok().map(Self::new) }
     }
 
     fn poll_send_to(
@@ -290,7 +294,7 @@ impl UdpSocket for AsyncStdUdpSocket {
                     return Poll::Ready(Some(len));
                 }
 
-                return Poll::Ready(None);
+                Poll::Ready(None)
             }
         }
     }
@@ -302,7 +306,7 @@ impl UdpSocket for AsyncStdUdpSocket {
     ) -> Poll<Option<(usize, SocketAddr)>> {
         match self.dgram_rx.poll_next_unpin(cx) {
             Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Ready(None) => Poll::Ready(None),
             Poll::Ready(Some((datagram, from))) => {
                 if buf.len() < datagram.len() {
                     tracing::warn!(
@@ -353,7 +357,7 @@ impl<T: Send + 'static> JoinSet<T> for FuturesJoinSet<T> {
     {
         let handle = async_std::task::spawn(future);
 
-        self.0.push(Box::pin(async move { handle.await }));
+        self.0.push(Box::pin(handle));
     }
 }
 
@@ -384,8 +388,11 @@ impl<T: Send + 'static> JoinSet<T> for AsyncStdJoinSet<T> {
         F: Future<Output = T> + Send + 'static,
         F::Output: Send,
     {
-        let _ = self.0.push(future);
-        self.1.as_mut().map(|waker| waker.wake_by_ref());
+        self.0.push(future);
+
+        if let Some(waker) = self.1.take() {
+            waker.wake_by_ref()
+        }
     }
 }
 

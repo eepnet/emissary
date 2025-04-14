@@ -61,7 +61,7 @@ pub struct OutboundEndpoint<R: Runtime> {
     expiration_timer: R::Timer,
 
     /// Fragment handler.
-    fragment: FragmentHandler,
+    fragment: FragmentHandler<R>,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -383,6 +383,11 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
             return Poll::Ready(self.tunnel_id);
         }
 
+        // poll fragment handler
+        //
+        // the futures don't return anything but must be polled so they make progress
+        let _ = self.fragment.poll_unpin(cx);
+
         Poll::Pending
     }
 }
@@ -490,10 +495,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -607,10 +609,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -718,10 +717,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         // message expires in one second

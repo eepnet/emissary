@@ -16,6 +16,9 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#![allow(clippy::crate_in_macro_def)]
+#![allow(clippy::too_many_arguments)]
+
 use crate::{
     address_book::AddressBookManager,
     cli::Arguments,
@@ -104,8 +107,7 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
     init_logger!(config.log.clone(), handle);
 
     // is the # of known routers less than reseed threshold or is reseed forced
-    let should_reseed = config.reseed.as_ref().map_or(
-        false,
+    let should_reseed = config.reseed.as_ref().is_some_and(
         |ReseedConfig {
              reseed_threshold, ..
          }| reseed_threshold > &config.routers.len(),

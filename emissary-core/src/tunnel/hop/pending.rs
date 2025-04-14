@@ -368,7 +368,7 @@ impl<T: Tunnel> PendingTunnel<T> {
     /// the tunnel build request was accepted and `Ok(Err(error))` means the tunnel was rejected
     /// or the tunnel build response record was malformed in some way. This allows the tunnel
     /// pool to reward/penalize the selected routers fairly.
-    pub fn try_build_tunnel<R: Runtime>(
+    pub fn try_build_tunnel(
         self,
         message: Message,
     ) -> Result<T, Vec<(RouterId, Option<Result<(), TunnelError>>)>> {
@@ -570,7 +570,7 @@ impl<T: Tunnel> PendingTunnel<T> {
                 TunnelBuilder::new(self.name, self.tunnel_id, self.receiver),
                 |builder, hop| builder.with_hop(hop),
             )
-            .build::<R>())
+            .build())
     }
 
     /// Get reference to pending tunnel's hops.
@@ -661,7 +661,7 @@ mod test {
         assert_eq!(TunnelId::from(recv_tunnel_id), gateway);
 
         let message = Message::parse_standard(&payload).unwrap();
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[tokio::test]
@@ -730,20 +730,22 @@ mod test {
         let (_tx, rx) = channel(64);
 
         let (pending_tunnel, next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
@@ -764,7 +766,7 @@ mod test {
         );
 
         assert_eq!(message.message_type, MessageType::ShortTunnelBuild);
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[test]
@@ -855,7 +857,7 @@ mod test {
             payload,
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) =>
                 for (i, (_, result)) in error.into_iter().enumerate() {
                     if i % 2 == 0 {
@@ -905,7 +907,7 @@ mod test {
         assert_eq!(message.payload[1..].len() % 218, 0);
 
         // try to parse the tunnel build request as a reply, ciphertexsts won't decrypt correctly
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -957,7 +959,7 @@ mod test {
         message.message_type = MessageType::OutboundTunnelBuildReply;
         message.payload = vec![0u8; 123];
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1026,7 +1028,7 @@ mod test {
         assert_eq!(TunnelId::from(recv_tunnel_id), gateway);
 
         let message = Message::parse_standard(&payload).unwrap();
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[test]
@@ -1067,7 +1069,7 @@ mod test {
         // invalid message type
         message.message_type = MessageType::DatabaseStore;
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1173,7 +1175,7 @@ mod test {
             message.payload[5 + i] = i as u8;
         }
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1249,7 +1251,7 @@ mod test {
             payload: out.to_vec(),
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1320,7 +1322,7 @@ mod test {
             payload: out.to_vec(),
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1398,20 +1400,22 @@ mod test {
         let (_tx, rx) = channel(64);
 
         let (pending_tunnel, next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
@@ -1438,7 +1442,7 @@ mod test {
             message.payload[i + SHORT_RECORD_LEN * pending_tunnel.hops[0].record_index()] = 0u8;
         }
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
                 assert_eq!(error[1].1, Some(Ok(())));
