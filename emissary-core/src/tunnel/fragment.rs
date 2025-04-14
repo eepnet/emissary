@@ -74,9 +74,8 @@ impl fmt::Debug for OwnedDeliveryInstructions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Local => f.debug_struct("OwnedDeliveryInstructions::Local").finish(),
-            Self::Router { .. } => {
-                f.debug_struct("OwnedDeliveryInstructions::Router").finish_non_exhaustive()
-            }
+            Self::Router { .. } =>
+                f.debug_struct("OwnedDeliveryInstructions::Router").finish_non_exhaustive(),
             Self::Tunnel { tunnel_id, .. } => f
                 .debug_struct("OwnedDeliveryInstructions::Tunnel")
                 .field("tunnel", &tunnel_id)

@@ -567,12 +567,10 @@ impl<R: Runtime> StreamManager<R> {
         // if the socket wasn't configured to be silent, send the remote's destination
         // to client before the socket is convered into a regural tcp stream
         let initial_message = match &socket {
-            SocketKind::Accept { silent, .. } | SocketKind::Forwarded { silent, .. } if !silent => {
-                Some(format!("{}\n", base64_encode(context.remote.to_vec())).into_bytes())
-            }
-            SocketKind::Connect { silent, .. } if !silent => {
-                Some(b"STREAM STATUS RESULT=OK\n".to_vec())
-            }
+            SocketKind::Accept { silent, .. } | SocketKind::Forwarded { silent, .. } if !silent =>
+                Some(format!("{}\n", base64_encode(context.remote.to_vec())).into_bytes()),
+            SocketKind::Connect { silent, .. } if !silent =>
+                Some(b"STREAM STATUS RESULT=OK\n".to_vec()),
             _ => None,
         };
 
@@ -590,18 +588,16 @@ impl<R: Runtime> StreamManager<R> {
         //
         // accept/forward indicates an inbound stream
         match &socket {
-            SocketKind::Connect { .. } => {
+            SocketKind::Connect { .. } =>
                 self.pending_events.push_back(StreamManagerEvent::StreamOpened {
                     destination_id: destination_id.clone(),
                     direction: Direction::Outbound,
-                })
-            }
-            SocketKind::Accept { .. } | SocketKind::Forwarded { .. } => {
+                }),
+            SocketKind::Accept { .. } | SocketKind::Forwarded { .. } =>
                 self.pending_events.push_back(StreamManagerEvent::StreamOpened {
                     destination_id: destination_id.clone(),
                     direction: Direction::Inbound,
-                })
-            }
+                }),
         }
 
         // start new future for the stream in the background
@@ -1080,14 +1076,13 @@ impl<R: Runtime> futures::Stream for StreamManager<R> {
         match self.outbound_rx.poll_recv(cx) {
             Poll::Pending => {}
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some((delivery_style, packet, src_port, dst_port))) => {
+            Poll::Ready(Some((delivery_style, packet, src_port, dst_port))) =>
                 return Poll::Ready(Some(StreamManagerEvent::SendPacket {
                     delivery_style,
                     dst_port,
                     packet,
                     src_port,
-                }))
-            }
+                })),
         }
 
         loop {

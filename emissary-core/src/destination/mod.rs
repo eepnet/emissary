@@ -799,9 +799,8 @@ impl<R: Runtime> Stream for Destination<R> {
                             ?error,
                             "failed to handle inbound message",
                         ),
-                        Ok(messages) if !messages.is_empty() => {
-                            return Poll::Ready(Some(DestinationEvent::Messages { messages }))
-                        }
+                        Ok(messages) if !messages.is_empty() =>
+                            return Poll::Ready(Some(DestinationEvent::Messages { messages })),
                         Ok(_) => {}
                     }
                 }
@@ -813,11 +812,10 @@ impl<R: Runtime> Stream for Destination<R> {
             match self.session_manager.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(SessionManagerEvent::SessionTerminated { destination_id })) => {
+                Poll::Ready(Some(SessionManagerEvent::SessionTerminated { destination_id })) =>
                     return Poll::Ready(Some(DestinationEvent::SessionTerminated {
                         destination_id,
-                    }))
-                }
+                    })),
                 Poll::Ready(Some(SessionManagerEvent::SendMessage {
                     destination_id,
                     message,

@@ -813,9 +813,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
 
                         match select(message_rx, pin!(R::delay(TUNNEL_TEST_EXPIRATION))).await {
                             Either::Right((_, _)) => (outbound, inbound, Err(Error::Timeout)),
-                            Either::Left((Err(_), _)) => {
-                                (outbound, inbound, Err(Error::Channel(ChannelError::Closed)))
-                            }
+                            Either::Left((Err(_), _)) =>
+                                (outbound, inbound, Err(Error::Channel(ChannelError::Closed))),
                             Either::Left((Ok(_), _)) => (outbound, inbound, Ok(started.elapsed())),
                         }
                     }),

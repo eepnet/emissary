@@ -307,7 +307,7 @@ impl UdpSocket for AsyncStdUdpSocket {
         match self.dgram_rx.poll_next_unpin(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some((datagram, from))) => {
+            Poll::Ready(Some((datagram, from))) =>
                 if buf.len() < datagram.len() {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -322,8 +322,7 @@ impl UdpSocket for AsyncStdUdpSocket {
                 } else {
                     buf[..datagram.len()].copy_from_slice(&datagram);
                     Poll::Ready(Some((datagram.len(), from)))
-                }
-            }
+                },
         }
     }
 

@@ -150,25 +150,19 @@ impl<R: Runtime> fmt::Debug for PublishState<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PublishState::Inactive => f.debug_struct("PublishState::Inactive").finish(),
-            PublishState::AwaitingLeaseSet => {
-                f.debug_struct("PublishState::AwaitingLeaseSet").finish()
-            }
-            PublishState::AwaitingTunnels { .. } => {
-                f.debug_struct("PublishState::AwaitingTunnels").finish()
-            }
+            PublishState::AwaitingLeaseSet =>
+                f.debug_struct("PublishState::AwaitingLeaseSet").finish(),
+            PublishState::AwaitingTunnels { .. } =>
+                f.debug_struct("PublishState::AwaitingTunnels").finish(),
             PublishState::Retry { .. } => f.debug_struct("PublishState::Retry").finish(),
-            PublishState::GetClosestFloodfills { .. } => {
-                f.debug_struct("PublishState::GetClosestFloodfills").finish()
-            }
-            PublishState::PublishLeaseSet => {
-                f.debug_struct("PublishState::PublishLeaseSet").finish()
-            }
-            PublishState::AwaitingFlooding { .. } => {
-                f.debug_struct("PublishState::AwaitingFlooding").finish()
-            }
-            PublishState::VerifyStorage { .. } => {
-                f.debug_struct("PublishState::VerifyStorage").finish()
-            }
+            PublishState::GetClosestFloodfills { .. } =>
+                f.debug_struct("PublishState::GetClosestFloodfills").finish(),
+            PublishState::PublishLeaseSet =>
+                f.debug_struct("PublishState::PublishLeaseSet").finish(),
+            PublishState::AwaitingFlooding { .. } =>
+                f.debug_struct("PublishState::AwaitingFlooding").finish(),
+            PublishState::VerifyStorage { .. } =>
+                f.debug_struct("PublishState::VerifyStorage").finish(),
             PublishState::Poisoned => f.debug_struct("PublishState::Poisoned").finish(),
         }
     }

@@ -765,13 +765,10 @@ impl<R: Runtime> RoutingPathHandle<R> {
             .filter_map(|(_, kind)| match kind {
                 TunnelKind::ExpiringOutbound { tunnel_id, expires }
                     if *expires > now + OUTBOUND_TUNNEL_EXPIRATION =>
-                {
-                    Some((Some(*tunnel_id), None))
-                }
+                    Some((Some(*tunnel_id), None)),
                 TunnelKind::FailingOutbound { tunnel_id, expires } => match expires {
-                    Some(expires) if *expires > now + OUTBOUND_TUNNEL_EXPIRATION => {
-                        Some((None, Some(*tunnel_id)))
-                    }
+                    Some(expires) if *expires > now + OUTBOUND_TUNNEL_EXPIRATION =>
+                        Some((None, Some(*tunnel_id))),
                     None => Some((None, Some(*tunnel_id))),
                     _ => None,
                 },
@@ -827,14 +824,10 @@ impl<R: Runtime> RoutingPathHandle<R> {
             .filter_map(|(_, kind)| match kind {
                 TunnelKind::Inbound { tunnel_id, expires }
                     if *expires > now + INBOUND_TUNNEL_MIN_AGE =>
-                {
-                    Some((Some((*tunnel_id, *expires)), None))
-                }
+                    Some((Some((*tunnel_id, *expires)), None)),
                 TunnelKind::FailingInbound { tunnel_id, expires }
                     if *expires > now + INBOUND_TUNNEL_MIN_AGE =>
-                {
-                    Some((None, Some((*tunnel_id, *expires))))
-                }
+                    Some((None, Some((*tunnel_id, *expires)))),
                 _ => None,
             })
             .unzip();

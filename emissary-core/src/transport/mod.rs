@@ -393,12 +393,10 @@ impl<R: Runtime> Stream for TransportService<R> {
                 self.routers.remove(&router);
                 Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router }))
             }
-            Some(InnerSubsystemEvent::ConnectionFailure { router }) => {
-                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router }))
-            }
-            Some(InnerSubsystemEvent::I2Np { messages }) => {
-                Poll::Ready(Some(SubsystemEvent::I2Np { messages }))
-            }
+            Some(InnerSubsystemEvent::ConnectionFailure { router }) =>
+                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })),
+            Some(InnerSubsystemEvent::I2Np { messages }) =>
+                Poll::Ready(Some(SubsystemEvent::I2Np { messages })),
             Some(InnerSubsystemEvent::Dummy) => unreachable!(),
         }
     }
@@ -942,9 +940,8 @@ impl<R: Runtime> Future for TransportManager<R> {
             match self.cmd_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some(ProtocolCommand::Connect { router_id })) => {
-                    self.on_dial_router(router_id)
-                }
+                Poll::Ready(Some(ProtocolCommand::Connect { router_id })) =>
+                    self.on_dial_router(router_id),
                 Poll::Ready(Some(event)) => tracing::warn!(
                     target: LOG_TARGET,
                     ?event,

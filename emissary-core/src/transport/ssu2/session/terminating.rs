@@ -220,7 +220,7 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
             match self.rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready((self.router_id.clone(), self.dst_id)),
-                Poll::Ready(Some(Packet { pkt, .. })) => {
+                Poll::Ready(Some(Packet { pkt, .. })) =>
                     if let Err(error) = self.on_packet(pkt) {
                         tracing::debug!(
                             target: LOG_TARGET,
@@ -229,8 +229,7 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
                             ?error,
                             "failed to handle packet",
                         );
-                    }
-                }
+                    },
             }
         }
 

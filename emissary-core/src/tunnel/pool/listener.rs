@@ -132,12 +132,10 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
             match select(message_rx, pin!(R::delay(TUNNEL_BUILD_EXPIRATION))).await {
                 Either::Right((_, _)) => {
                     match receive_kind {
-                        ReceiveKind::RoutingTable { message_id } => {
-                            routing_table.remove_listener(&message_id)
-                        }
-                        ReceiveKind::Tunnel { message_id, handle } => {
-                            handle.remove_listener(&message_id)
-                        }
+                        ReceiveKind::RoutingTable { message_id } =>
+                            routing_table.remove_listener(&message_id),
+                        ReceiveKind::Tunnel { message_id, handle } =>
+                            handle.remove_listener(&message_id),
                         ReceiveKind::ZeroHop => {}
                     }
 
@@ -149,12 +147,10 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 }
                 Either::Left((Err(_), _)) => {
                     match receive_kind {
-                        ReceiveKind::RoutingTable { message_id } => {
-                            routing_table.remove_listener(&message_id)
-                        }
-                        ReceiveKind::Tunnel { message_id, handle } => {
-                            handle.remove_listener(&message_id)
-                        }
+                        ReceiveKind::RoutingTable { message_id } =>
+                            routing_table.remove_listener(&message_id),
+                        ReceiveKind::Tunnel { message_id, handle } =>
+                            handle.remove_listener(&message_id),
                         ReceiveKind::ZeroHop => {}
                     }
 

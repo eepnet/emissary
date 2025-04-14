@@ -254,11 +254,10 @@ impl<R: Runtime> TunnelManager<R> {
     ) {
         match self.routers.get_mut(router_id) {
             Some(RouterState::Connected) => match self.service.send(router_id, message) {
-                Ok(()) => {
+                Ok(()) =>
                     if let Some(tx) = feedback_tx {
                         let _ = tx.send(());
-                    }
-                }
+                    },
                 Err((error, _)) => tracing::error!(
                     target: LOG_TARGET,
                     %router_id,
@@ -329,11 +328,10 @@ impl<R: Runtime> TunnelManager<R> {
 
                 for (message, feedback_tx) in pending_messages {
                     match self.service.send(&router_id, message) {
-                        Ok(()) => {
+                        Ok(()) =>
                             if let Some(tx) = feedback_tx {
                                 let _ = tx.send(());
-                            }
-                        }
+                            },
                         Err(error) => tracing::debug!(
                             target: LOG_TARGET,
                             %router_id,
@@ -492,9 +490,8 @@ impl<R: Runtime> TunnelManager<R> {
             | MessageType::VariableTunnelBuild
             | MessageType::ShortTunnelBuild
             | MessageType::OutboundTunnelBuildReply
-            | MessageType::TunnelBuild => {
-                self.routing_table.route_message(message).map_err(From::from)
-            }
+            | MessageType::TunnelBuild =>
+                self.routing_table.route_message(message).map_err(From::from),
             MessageType::Garlic => self.on_garlic(message),
             MessageType::TunnelBuildReply
             | MessageType::Data
@@ -533,9 +530,8 @@ impl<R: Runtime> Future for TunnelManager<R> {
         while let Poll::Ready(event) = self.message_rx.poll_recv(cx) {
             match event {
                 None => return Poll::Ready(()),
-                Some(RoutingKind::External { router_id, message }) => {
-                    self.send_message(&router_id, message, None)
-                }
+                Some(RoutingKind::External { router_id, message }) =>
+                    self.send_message(&router_id, message, None),
                 Some(RoutingKind::Internal { message }) => {
                     if let Err(error) = self.on_message(message) {
                         tracing::debug!(
@@ -556,13 +552,11 @@ impl<R: Runtime> Future for TunnelManager<R> {
         loop {
             match self.service.poll_next_unpin(cx) {
                 Poll::Pending => break,
-                Poll::Ready(Some(SubsystemEvent::ConnectionEstablished { router })) => {
-                    self.on_connection_established(router)
-                }
-                Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router })) => {
-                    self.on_connection_closed(&router)
-                }
-                Poll::Ready(Some(SubsystemEvent::I2Np { messages })) => {
+                Poll::Ready(Some(SubsystemEvent::ConnectionEstablished { router })) =>
+                    self.on_connection_established(router),
+                Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router })) =>
+                    self.on_connection_closed(&router),
+                Poll::Ready(Some(SubsystemEvent::I2Np { messages })) =>
                     messages.into_iter().for_each(|(_, message)| {
                         if let Err(error) = self.on_message(message) {
                             tracing::debug!(
@@ -571,11 +565,9 @@ impl<R: Runtime> Future for TunnelManager<R> {
                                 "failed to handle external tunnel message",
                             );
                         }
-                    })
-                }
-                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })) => {
-                    self.on_connection_failure(&router)
-                }
+                    }),
+                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })) =>
+                    self.on_connection_failure(&router),
                 Poll::Ready(Some(SubsystemEvent::Dummy)) => unreachable!(),
                 Poll::Ready(None) => return Poll::Ready(()),
             }
