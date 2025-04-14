@@ -183,7 +183,7 @@ pub struct SessionManager<R: Runtime> {
     lease_set_publish_timers: R::JoinSet<DestinationId>,
 
     /// Maintenance timer.
-    maintenance_timer: R::Delayer,
+    maintenance_timer: R::Timer,
 
     /// Pending sessions.
     pending: HashMap<DestinationId, PendingSession<R>>,
@@ -212,7 +212,7 @@ impl<R: Runtime> SessionManager<R> {
             key_context: KeyContext::from_private_key(private_key),
             lease_set,
             lease_set_publish_timers: R::join_set(),
-            maintenance_timer: R::delayer(MAINTENANCE_INTERVAL),
+            maintenance_timer: R::timer(MAINTENANCE_INTERVAL),
             pending_events: VecDeque::new(),
             pending: HashMap::new(),
             remote_destinations: HashMap::new(),
@@ -924,7 +924,7 @@ impl<R: Runtime> Stream for SessionManager<R> {
             self.maintain();
 
             // create new timer and poll it so it'll get registered into the executor
-            self.maintenance_timer = R::delayer(MAINTENANCE_INTERVAL);
+            self.maintenance_timer = R::timer(MAINTENANCE_INTERVAL);
             let _ = self.maintenance_timer.poll_unpin(cx);
         }
 

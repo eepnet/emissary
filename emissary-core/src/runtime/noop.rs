@@ -223,7 +223,7 @@ impl Runtime for NoopRuntime {
     type JoinSet<T: Send + 'static> = NoopJoinSet<T>;
     type MetricsHandle = NoopMetricsHandle;
     type Instant = NoopInstant;
-    type Delayer = std::future::Pending<()>;
+    type Timer = std::future::Pending<()>;
 
     fn spawn<F>(_future: F)
     where
@@ -255,7 +255,7 @@ impl Runtime for NoopRuntime {
         NoopMetricsHandle {}
     }
 
-    fn delayer(_duration: Duration) -> Self::Delayer {
+    fn timer(_duration: Duration) -> Self::Timer {
         std::future::pending()
     }
 

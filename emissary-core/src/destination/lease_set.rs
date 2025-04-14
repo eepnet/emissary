@@ -106,7 +106,7 @@ enum PublishState<R: Runtime> {
     /// set is published do `NetDb`.
     AwaitingTunnels {
         /// Timer for forcibly republishing the lease set.
-        timer: R::Delayer,
+        timer: R::Timer,
     },
 
     /// Retry previously failed operation.
@@ -115,7 +115,7 @@ enum PublishState<R: Runtime> {
         kind: RetryKind<R>,
 
         /// Timer for retrying the operation.
-        timer: R::Delayer,
+        timer: R::Timer,
     },
 
     /// Get floodfills closest to [`Destination`].
@@ -130,7 +130,7 @@ enum PublishState<R: Runtime> {
     /// Awaiting flooding to complete so storage verification can start.
     AwaitingFlooding {
         /// Timer that expires after lease set flooding is assumed to be finished.
-        timer: R::Delayer,
+        timer: R::Timer,
     },
 
     /// Verify that the lease set was flooded to other floodfills close to the key.
@@ -139,7 +139,7 @@ enum PublishState<R: Runtime> {
         started: R::Instant,
 
         /// Expiration timer for current [`DatabaseLookupMessage`], if it has been sent.
-        timer: Option<R::Delayer>,
+        timer: Option<R::Timer>,
     },
 
     /// [`LeaseSetPublisherState`] has been poisoned.
@@ -261,7 +261,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             match netdb_handle.get_closest_floodfills(key.clone()) {
                 Err(_) => PublishState::Retry {
                     kind: RetryKind::GetClosestFloodfills,
-                    timer: R::delayer(RETRY_TIMEOUT),
+                    timer: R::timer(RETRY_TIMEOUT),
                 },
                 Ok(rx) => PublishState::GetClosestFloodfills { rx },
             }
@@ -294,7 +294,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             Err(_) => {
                 self.state = PublishState::Retry {
                     kind: RetryKind::GetClosestFloodfills,
-                    timer: R::delayer(RETRY_TIMEOUT),
+                    timer: R::timer(RETRY_TIMEOUT),
                 };
             }
             Ok(rx) => {
@@ -441,7 +441,7 @@ impl<R: Runtime> LeaseSetManager<R> {
                 );
 
                 self.state = PublishState::AwaitingTunnels {
-                    timer: R::delayer(TUNNEL_BUILD_WAIT_TIMEOUT),
+                    timer: R::timer(TUNNEL_BUILD_WAIT_TIMEOUT),
                 };
 
                 if let Some(waker) = self.waker.take() {
@@ -768,7 +768,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                             self.state = PublishState::Retry {
                                 kind: RetryKind::GetClosestFloodfills,
-                                timer: R::delayer(RETRY_TIMEOUT),
+                                timer: R::timer(RETRY_TIMEOUT),
                             };
                             continue;
                         }
@@ -786,7 +786,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                         self.state = PublishState::Retry {
                             kind: RetryKind::PublishLeaseSet,
-                            timer: R::delayer(RETRY_TIMEOUT),
+                            timer: R::timer(RETRY_TIMEOUT),
                         };
                     }
                     Some((floodfill, message)) => match self
@@ -805,7 +805,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                             self.state = PublishState::Retry {
                                 kind: RetryKind::PublishLeaseSet,
-                                timer: R::delayer(RETRY_TIMEOUT),
+                                timer: R::timer(RETRY_TIMEOUT),
                             };
                         }
                         Ok(()) => {
@@ -813,7 +813,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
                             self.queried_floodfills.insert(floodfill);
 
                             self.state = PublishState::AwaitingFlooding {
-                                timer: R::delayer(STORAGE_VERIFICATION_START_TIMEOUT),
+                                timer: R::timer(STORAGE_VERIFICATION_START_TIMEOUT),
                             };
                         }
                     },
@@ -854,7 +854,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                                 self.state = PublishState::Retry {
                                     kind: RetryKind::VerifyStorage { started },
-                                    timer: R::delayer(RETRY_TIMEOUT),
+                                    timer: R::timer(RETRY_TIMEOUT),
                                 };
                             }
                             Some((floodfill, message)) => match self
@@ -873,14 +873,14 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                                     self.state = PublishState::Retry {
                                         kind: RetryKind::VerifyStorage { started },
-                                        timer: R::delayer(RETRY_TIMEOUT),
+                                        timer: R::timer(RETRY_TIMEOUT),
                                     };
                                 }
                                 Ok(()) => {
                                     self.queried_floodfills.insert(floodfill);
                                     self.state = PublishState::VerifyStorage {
                                         started,
-                                        timer: Some(R::delayer(STORAGE_VERIFICATION_TIMEOUT)),
+                                        timer: Some(R::timer(STORAGE_VERIFICATION_TIMEOUT)),
                                     };
                                     continue;
                                 }

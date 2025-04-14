@@ -144,7 +144,7 @@ enum ShutdownHandler<R: Runtime> {
         /// Shutdown timer.
         ///
         /// See [`GRACEFUL_SHUTDOWN_TIMEOUT`] for more details.
-        timer: R::Delayer,
+        timer: R::Timer,
     },
 
     /// [`StreamManager`] has been shut down.
@@ -165,7 +165,7 @@ impl<R: Runtime> ShutdownHandler<R> {
     /// Shut down [`StreamManager`].
     fn start_shutdown(&mut self) {
         *self = ShutdownHandler::ShutdownRequested {
-            timer: R::delayer(GRACEFUL_SHUTDOWN_TIMEOUT),
+            timer: R::timer(GRACEFUL_SHUTDOWN_TIMEOUT),
         };
     }
 
@@ -273,7 +273,7 @@ pub struct StreamManager<R: Runtime> {
     pending_outbound: HashMap<u32, PendingOutboundStream<R>>,
 
     /// Timer for pruning stale pending streams.
-    prune_timer: R::Delayer,
+    prune_timer: R::Timer,
 
     /// Shutdown handler.
     shutdown_handler: ShutdownHandler<R>,
@@ -303,7 +303,7 @@ impl<R: Runtime> StreamManager<R> {
             pending_events: VecDeque::new(),
             pending_inbound: HashMap::new(),
             pending_outbound: HashMap::new(),
-            prune_timer: R::delayer(PENDING_STREAM_PRUNE_THRESHOLD),
+            prune_timer: R::timer(PENDING_STREAM_PRUNE_THRESHOLD),
             shutdown_handler: ShutdownHandler::new(),
             signing_key,
             streams: R::join_set(),
@@ -1257,7 +1257,7 @@ impl<R: Runtime> futures::Stream for StreamManager<R> {
 
             // create new timer and register it into the executor
             {
-                self.prune_timer = R::delayer(PENDING_STREAM_PRUNE_THRESHOLD);
+                self.prune_timer = R::timer(PENDING_STREAM_PRUNE_THRESHOLD);
                 let _ = self.prune_timer.poll_unpin(cx);
             }
         }
@@ -1364,7 +1364,7 @@ mod tests {
         assert_eq!(manager.pending_inbound.len(), 1);
 
         // reset timer
-        manager.prune_timer = MockRuntime::delayer(PENDING_STREAM_PRUNE_THRESHOLD);
+        manager.prune_timer = MockRuntime::timer(PENDING_STREAM_PRUNE_THRESHOLD);
 
         // wait for a little while so all streams won't get pruned at the same time
         tokio::time::sleep(Duration::from_secs(20)).await;
@@ -1411,7 +1411,7 @@ mod tests {
         assert!(manager.pending_inbound.contains_key(&2));
 
         // reset timer
-        manager.prune_timer = MockRuntime::delayer(Duration::from_secs(20));
+        manager.prune_timer = MockRuntime::timer(Duration::from_secs(20));
 
         // poll until the last two streams are also pruned
         loop {

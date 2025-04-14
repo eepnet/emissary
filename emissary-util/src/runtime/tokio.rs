@@ -333,7 +333,7 @@ impl RuntimeT for Runtime {
     type JoinSet<T: Send + 'static> = TokioJoinSet<T>;
     type MetricsHandle = TokioMetricsHandle;
     type Instant = TokioInstant;
-    type Delayer = Pin<Box<Sleep>>;
+    type Timer = Pin<Box<Sleep>>;
 
     fn spawn<F>(future: F)
     where
@@ -407,7 +407,7 @@ impl RuntimeT for Runtime {
         TokioMetricsHandle {}
     }
 
-    fn delayer(duration: Duration) -> Self::Delayer {
+    fn timer(duration: Duration) -> Self::Timer {
         Box::pin(tokio::time::sleep(duration))
     }
 

@@ -100,7 +100,7 @@ pub struct TunnelManager<R: Runtime> {
     bloom_filter: BloomFilter,
 
     /// Bloom filter decay timer.
-    bloom_filter_timer: R::Delayer,
+    bloom_filter_timer: R::Timer,
 
     /// RX channel for receiving tunneling-related commands from other subsystems.
     command_rx: Receiver<TunnelManagerCommand, CommandRecycle>,
@@ -205,7 +205,7 @@ impl<R: Runtime> TunnelManager<R> {
         (
             Self {
                 bloom_filter: BloomFilter::default(),
-                bloom_filter_timer: R::delayer(BLOOM_FILTER_DECAY_INTERVAL),
+                bloom_filter_timer: R::timer(BLOOM_FILTER_DECAY_INTERVAL),
                 command_rx,
                 exploratory_selector,
                 garlic: GarlicHandler::new(
@@ -597,7 +597,7 @@ impl<R: Runtime> Future for TunnelManager<R> {
         // create new timer and register it into the executor
         {
             self.bloom_filter.decay();
-            self.bloom_filter_timer = R::delayer(BLOOM_FILTER_DECAY_INTERVAL);
+            self.bloom_filter_timer = R::timer(BLOOM_FILTER_DECAY_INTERVAL);
             let _ = self.bloom_filter_timer.poll_unpin(cx);
         }
 

@@ -534,7 +534,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             router_ctx: self.router_ctx,
             // publish the router info 10 seconds after booting, otherwise republish it periodically
             // in intervals of [`ROUTER_INFO_REPUBLISH_INTERVAL`]
-            router_info_republish_timer: R::delayer(Duration::from_secs(10)),
+            router_info_republish_timer: R::timer(Duration::from_secs(10)),
             routers: HashSet::new(),
             shutting_down: false,
             ssu2_config: self.ssu2_config,
@@ -585,7 +585,7 @@ pub struct TransportManager<R: Runtime> {
     router_ctx: RouterContext<R>,
 
     /// Router info republish timer.
-    router_info_republish_timer: R::Delayer,
+    router_info_republish_timer: R::Timer,
 
     /// Connected routers.
     routers: HashSet<RouterId>,
@@ -980,7 +980,7 @@ impl<R: Runtime> Future for TransportManager<R> {
                 .publish_router_info(self.router_ctx.router_id().clone(), serialized);
 
             // reset timer and register it into the executor
-            self.router_info_republish_timer = R::delayer(ROUTER_INFO_REPUBLISH_INTERVAL);
+            self.router_info_republish_timer = R::timer(ROUTER_INFO_REPUBLISH_INTERVAL);
             let _ = self.router_info_republish_timer.poll_unpin(cx);
         }
 
@@ -1858,7 +1858,7 @@ mod tests {
 
         // shutdown the manager, set RI republish timeout smaller and wait for RI to be published
         manager.shutdown();
-        manager.router_info_republish_timer = MockRuntime::delayer(Duration::from_secs(1));
+        manager.router_info_republish_timer = MockRuntime::timer(Duration::from_secs(1));
 
         assert!(tokio::time::timeout(Duration::from_secs(3), &mut manager).await.is_err());
 
@@ -1906,7 +1906,7 @@ mod tests {
         builder.with_transit_tunnels_disabled(true);
 
         let mut manager = builder.build();
-        manager.router_info_republish_timer = MockRuntime::delayer(Duration::from_secs(1));
+        manager.router_info_republish_timer = MockRuntime::timer(Duration::from_secs(1));
 
         assert!(tokio::time::timeout(Duration::from_secs(3), &mut manager).await.is_err());
 

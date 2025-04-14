@@ -159,7 +159,7 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
     type JoinSet<T: Send + 'static>: JoinSet<T>;
     type MetricsHandle: MetricsHandle;
     type Instant: Instant;
-    type Delayer: Future<Output = ()> + Send + Unpin;
+    type Timer: Future<Output = ()> + Send + Unpin;
 
     /// Spawn `future` in the background.
     fn spawn<F>(future: F)
@@ -190,7 +190,7 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
     fn register_metrics(metrics: Vec<MetricType>, port: Option<u16>) -> Self::MetricsHandle;
 
     /// Return pinned future which blocks for `duration` before returning.
-    fn delayer(duration: Duration) -> Self::Delayer;
+    fn timer(duration: Duration) -> Self::Timer;
 
     /// Return a future which blocks for `duration` before returning.
     fn delay(duration: Duration) -> impl Future<Output = ()> + Send;

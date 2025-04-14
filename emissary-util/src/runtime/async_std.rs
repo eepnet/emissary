@@ -467,7 +467,7 @@ impl RuntimeT for Runtime {
     type JoinSet<T: Send + 'static> = AsyncStdJoinSet<T>;
     type MetricsHandle = AsyncStdMetricsHandle;
     type Instant = AsyncStdInstant;
-    type Delayer = Pin<Box<dyn Future<Output = ()> + Send>>;
+    type Timer = Pin<Box<dyn Future<Output = ()> + Send>>;
 
     fn spawn<F>(future: F)
     where
@@ -530,7 +530,7 @@ impl RuntimeT for Runtime {
         AsyncStdMetricsHandle {}
     }
 
-    fn delayer(duration: Duration) -> Self::Delayer {
+    fn timer(duration: Duration) -> Self::Timer {
         Box::pin(async_std::task::sleep(duration))
     }
 

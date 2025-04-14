@@ -200,7 +200,7 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     last_tunnel_test: R::Instant,
 
     /// Tunnel maintenance timer.
-    maintenance_timer: R::Delayer,
+    maintenance_timer: R::Timer,
 
     /// How many tunnel build failures, either timeouts or rejections, there has been.
     num_tunnel_build_failures: usize,
@@ -272,7 +272,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                 inbound: R::join_set(),
                 inbound_tunnels: HashMap::new(),
                 last_tunnel_test: R::now(),
-                maintenance_timer: R::delayer(Duration::from_secs(0)),
+                maintenance_timer: R::timer(Duration::from_secs(0)),
                 outbound: HashMap::new(),
                 pending_inbound: TunnelBuildListener::new(
                     routing_table.clone(),
@@ -1454,7 +1454,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
             Poll::Ready(()) => {
                 // create new timer and register it into the executor
                 {
-                    self.maintenance_timer = R::delayer(TUNNEL_MAINTENANCE_INTERVAL);
+                    self.maintenance_timer = R::timer(TUNNEL_MAINTENANCE_INTERVAL);
                     let _ = self.maintenance_timer.poll_unpin(cx);
                 }
 

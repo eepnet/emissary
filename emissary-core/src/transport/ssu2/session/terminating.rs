@@ -111,7 +111,7 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     rx: Receiver<Packet>,
 
     /// Expiration timer.
-    timer: R::Delayer,
+    timer: R::Timer,
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     //
@@ -157,7 +157,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             recv_key_ctx: ctx.recv_key_ctx,
             router_id: ctx.router_id,
             rx: ctx.rx,
-            timer: R::delayer(TERMINATION_TIMEOUT),
+            timer: R::timer(TERMINATION_TIMEOUT),
             tx: ctx.tx,
             _runtime: Default::default(),
         }

@@ -684,7 +684,7 @@ pub struct RoutingPathHandle<R: Runtime> {
     event_rx: mpsc::Receiver<RoutingPathEvent>,
 
     /// Inbound tunnel expiration timer.
-    inbound_expiration_timer: Option<R::Delayer>,
+    inbound_expiration_timer: Option<R::Timer>,
 
     /// Lease set query status.
     lease_set_query_status: LeaseSetQueryStatus,
@@ -913,7 +913,7 @@ impl<R: Runtime> RoutingPathHandle<R> {
         let (inbound, expires) = self.select_inbound_tunnel()?;
 
         // `select_inbond_tunnel()` has ensured the tunnel doesn't expire in the next 30 seconds
-        self.inbound_expiration_timer = Some(R::delayer(
+        self.inbound_expiration_timer = Some(R::timer(
             expires - R::time_since_epoch() - INBOUND_TUNNEL_MIN_AGE,
         ));
 

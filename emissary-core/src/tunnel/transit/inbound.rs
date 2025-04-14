@@ -61,7 +61,7 @@ pub struct InboundGateway<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: R::Delayer,
+    expiration_timer: R::Timer,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -182,7 +182,7 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
 
         InboundGateway {
             event_handle,
-            expiration_timer: R::delayer(TRANSIT_TUNNEL_EXPIRATION),
+            expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             bandwidth: 0usize,
             message_rx,
             metrics_handle,

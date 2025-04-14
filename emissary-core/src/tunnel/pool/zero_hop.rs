@@ -43,7 +43,7 @@ const LOG_TARGET: &str = "emissary::tunnel::pool::zero-hop";
 /// gets destructed.
 pub struct ZeroHopInboundTunnel<R: Runtime> {
     /// Expiration timer.
-    expiration_timer: R::Delayer,
+    expiration_timer: R::Timer,
 
     /// RX channel for receiving a message.
     message_rx: mpsc::Receiver<Message>,
@@ -67,7 +67,7 @@ impl<R: Runtime> ZeroHopInboundTunnel<R> {
         (
             tunnel_id,
             Self {
-                expiration_timer: R::delayer(TUNNEL_BUILD_EXPIRATION),
+                expiration_timer: R::timer(TUNNEL_BUILD_EXPIRATION),
                 message_rx,
                 reply_tx: Some(tx),
                 routing_table,
