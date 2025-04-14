@@ -1169,7 +1169,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+        pending_tunnel.try_build_tunnel(message).unwrap();
     }
 
     #[tokio::test]
@@ -1452,7 +1452,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1602,7 +1602,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1706,7 +1706,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));

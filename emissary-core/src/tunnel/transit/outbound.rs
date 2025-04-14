@@ -495,10 +495,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -612,10 +609,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -723,10 +717,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         // message expires in one second

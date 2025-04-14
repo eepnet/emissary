@@ -661,7 +661,7 @@ mod test {
         assert_eq!(TunnelId::from(recv_tunnel_id), gateway);
 
         let message = Message::parse_standard(&payload).unwrap();
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[tokio::test]
@@ -766,7 +766,7 @@ mod test {
         );
 
         assert_eq!(message.message_type, MessageType::ShortTunnelBuild);
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[test]
@@ -857,7 +857,7 @@ mod test {
             payload,
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) =>
                 for (i, (_, result)) in error.into_iter().enumerate() {
                     if i % 2 == 0 {
@@ -907,7 +907,7 @@ mod test {
         assert_eq!(message.payload[1..].len() % 218, 0);
 
         // try to parse the tunnel build request as a reply, ciphertexsts won't decrypt correctly
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -959,7 +959,7 @@ mod test {
         message.message_type = MessageType::OutboundTunnelBuildReply;
         message.payload = vec![0u8; 123];
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1028,7 +1028,7 @@ mod test {
         assert_eq!(TunnelId::from(recv_tunnel_id), gateway);
 
         let message = Message::parse_standard(&payload).unwrap();
-        assert!(pending_tunnel.try_build_tunnel::<MockRuntime>(message).is_ok());
+        assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
     #[test]
@@ -1069,7 +1069,7 @@ mod test {
         // invalid message type
         message.message_type = MessageType::DatabaseStore;
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1175,7 +1175,7 @@ mod test {
             message.payload[5 + i] = i as u8;
         }
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1251,7 +1251,7 @@ mod test {
             payload: out.to_vec(),
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1322,7 +1322,7 @@ mod test {
             payload: out.to_vec(),
         };
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
 
@@ -1442,7 +1442,7 @@ mod test {
             message.payload[i + SHORT_RECORD_LEN * pending_tunnel.hops[0].record_index()] = 0u8;
         }
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
                 assert_eq!(error[1].1, Some(Ok(())));

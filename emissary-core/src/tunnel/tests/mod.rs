@@ -270,7 +270,7 @@ pub fn build_outbound_tunnel(
 
     let message = Message::parse_standard(&payload).unwrap();
     assert_eq!(message.message_type, MessageType::Garlic);
-    let tunnel = pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+    let tunnel = pending_tunnel.try_build_tunnel(message).unwrap();
 
     (local_hash, tunnel, transit_managers)
 }
@@ -347,7 +347,7 @@ pub fn build_inbound_tunnel(
         },
     );
 
-    let tunnel = pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+    let tunnel = pending_tunnel.try_build_tunnel(message).unwrap();
 
     (local_hash, tunnel, transit_managers)
 }
