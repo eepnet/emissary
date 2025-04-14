@@ -31,10 +31,10 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use thingbuf::mpsc::{Receiver, Sender};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
     marker::PhantomData,
@@ -111,7 +111,7 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     rx: Receiver<Packet>,
 
     /// Expiration timer.
-    timer: BoxFuture<'static, ()>,
+    timer: R::Delay,
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     //
@@ -157,7 +157,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             recv_key_ctx: ctx.recv_key_ctx,
             router_id: ctx.router_id,
             rx: ctx.rx,
-            timer: Box::pin(R::delay(TERMINATION_TIMEOUT)),
+            timer: R::delay(TERMINATION_TIMEOUT),
             tx: ctx.tx,
             _runtime: Default::default(),
         }
@@ -220,7 +220,7 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
             match self.rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready((self.router_id.clone(), self.dst_id)),
-                Poll::Ready(Some(Packet { pkt, .. })) =>
+                Poll::Ready(Some(Packet { pkt, .. })) => {
                     if let Err(error) = self.on_packet(pkt) {
                         tracing::debug!(
                             target: LOG_TARGET,
@@ -229,7 +229,8 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
                             ?error,
                             "failed to handle packet",
                         );
-                    },
+                    }
+                }
             }
         }
 

@@ -303,7 +303,7 @@ impl UdpSocket for AsyncStdUdpSocket {
         match self.dgram_rx.poll_next_unpin(cx) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some((datagram, from))) =>
+            Poll::Ready(Some((datagram, from))) => {
                 if buf.len() < datagram.len() {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -318,7 +318,8 @@ impl UdpSocket for AsyncStdUdpSocket {
                 } else {
                     buf[..datagram.len()].copy_from_slice(&datagram);
                     Poll::Ready(Some((datagram.len(), from)))
-                },
+                }
+            }
         }
     }
 
@@ -466,6 +467,7 @@ impl RuntimeT for Runtime {
     type JoinSet<T: Send + 'static> = AsyncStdJoinSet<T>;
     type MetricsHandle = AsyncStdMetricsHandle;
     type Instant = AsyncStdInstant;
+    type Delay = Pin<Box<dyn Future<Output = ()> + Send>>;
 
     fn spawn<F>(future: F)
     where
@@ -528,8 +530,8 @@ impl RuntimeT for Runtime {
         AsyncStdMetricsHandle {}
     }
 
-    fn delay(duration: Duration) -> impl Future<Output = ()> + Send {
-        async_std::task::sleep(duration)
+    fn delay(duration: Duration) -> Self::Delay {
+        Box::pin(async_std::task::sleep(duration))
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {

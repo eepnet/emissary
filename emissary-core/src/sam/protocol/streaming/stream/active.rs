@@ -28,12 +28,11 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 use thingbuf::mpsc::{Receiver, Sender};
 
 use alloc::{
-    boxed::Box,
     collections::{BTreeMap, BTreeSet, VecDeque},
     vec,
     vec::Vec,
@@ -328,7 +327,7 @@ enum SocketState {
 /// Inbound context.
 pub struct InboundContext<R: Runtime> {
     /// ACK timer.
-    ack_timer: Option<BoxFuture<'static, ()>>,
+    ack_timer: Option<R::Delay>,
 
     /// Missing packets.
     missing: BTreeSet<u32>,
@@ -380,7 +379,7 @@ impl<R: Runtime> InboundContext<R> {
             self.seq_nro = seq_nro;
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(Box::pin(R::delay(self.rtt)));
+                self.ack_timer = Some(R::delay(self.rtt));
             }
 
             return Ok(());
@@ -422,7 +421,7 @@ impl<R: Runtime> InboundContext<R> {
             self.seq_nro = seq_nro;
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(Box::pin(R::delay(self.rtt)));
+                self.ack_timer = Some(R::delay(self.rtt));
             }
         } else if self.missing.first() == Some(&seq_nro) {
             self.ready.push_back(payload);
@@ -436,14 +435,14 @@ impl<R: Runtime> InboundContext<R> {
             }
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(Box::pin(R::delay(self.rtt)));
+                self.ack_timer = Some(R::delay(self.rtt));
             }
         } else {
             self.missing.remove(&seq_nro);
             self.pending.insert(seq_nro, payload);
 
             if self.ack_timer.is_none() {
-                self.ack_timer = Some(Box::pin(R::delay(self.rtt)));
+                self.ack_timer = Some(R::delay(self.rtt));
             }
         }
 
@@ -458,7 +457,7 @@ impl<R: Runtime> InboundContext<R> {
         self.close_requested = true;
 
         if self.ack_timer.is_none() {
-            self.ack_timer = Some(Box::pin(R::delay(self.rtt)));
+            self.ack_timer = Some(R::delay(self.rtt));
         }
     }
 
@@ -534,7 +533,7 @@ pub struct Stream<R: Runtime> {
     rto: Rto,
 
     /// RTO timer.
-    rto_timer: Option<BoxFuture<'static, ()>>,
+    rto_timer: Option<R::Delay>,
 
     /// RTT.
     rtt: Rtt,
@@ -951,7 +950,7 @@ impl<R: Runtime> Stream<R> {
         });
 
         if self.rto_timer.is_none() {
-            self.rto_timer = Some(Box::pin(R::delay(*self.rto)));
+            self.rto_timer = Some(R::delay(*self.rto));
         }
     }
 
@@ -971,7 +970,7 @@ impl<R: Runtime> Stream<R> {
 
         // no expired packetes
         if expired.is_empty() {
-            self.rto_timer = Some(Box::pin(R::delay(*self.rto)));
+            self.rto_timer = Some(R::delay(*self.rto));
             return;
         }
 
@@ -1002,7 +1001,7 @@ impl<R: Runtime> Stream<R> {
                     send_id = ?self.send_stream_id,
                     "no routing path, cannot resend packets",
                 );
-                self.rto_timer = Some(Box::pin(R::delay(*self.rto)));
+                self.rto_timer = Some(R::delay(*self.rto));
                 return;
             }
         };
@@ -1040,7 +1039,7 @@ impl<R: Runtime> Stream<R> {
             }
         }
 
-        self.rto_timer = Some(Box::pin(R::delay(self.rto.exponential_backoff())));
+        self.rto_timer = Some(R::delay(self.rto.exponential_backoff()));
 
         if self.window_size > 1 {
             self.window_size -= 1;
@@ -1136,7 +1135,7 @@ impl<R: Runtime> Stream<R> {
             }
 
             if self.rto_timer.is_none() {
-                self.rto_timer = Some(Box::pin(R::delay(*self.rto)));
+                self.rto_timer = Some(R::delay(*self.rto));
             }
         }
     }
@@ -1169,11 +1168,12 @@ impl<R: Runtime> Future for Stream<R> {
                             this.write_state = WriteState::GetMessage;
                             break;
                         }
-                        Some(message) =>
+                        Some(message) => {
                             this.write_state = WriteState::WriteMessage {
                                 offset: 0usize,
                                 message,
-                            },
+                            }
+                        }
                     },
                     Poll::Ready(None) => return Poll::Ready(this.recv_stream_id),
                     Poll::Ready(Some(StreamEvent::ShutDown)) => {
@@ -1181,10 +1181,11 @@ impl<R: Runtime> Future for Stream<R> {
                         this.read_state = SocketState::Closed;
                         this.shutdown();
                     }
-                    Poll::Ready(Some(StreamEvent::Packet { packet })) =>
+                    Poll::Ready(Some(StreamEvent::Packet { packet })) => {
                         match this.on_packet(packet) {
-                            Err(StreamingError::Closed | StreamingError::SequenceNumberTooHigh) =>
-                                return Poll::Ready(this.recv_stream_id),
+                            Err(StreamingError::Closed | StreamingError::SequenceNumberTooHigh) => {
+                                return Poll::Ready(this.recv_stream_id)
+                            }
                             Err(error) => {
                                 tracing::debug!(
                                     target: LOG_TARGET,
@@ -1198,16 +1199,18 @@ impl<R: Runtime> Future for Stream<R> {
                                 this.write_state = WriteState::GetMessage;
                             }
                             Ok(()) => match this.inbound_context.pop_message() {
-                                Some(message) =>
+                                Some(message) => {
                                     this.write_state = WriteState::WriteMessage {
                                         offset: 0usize,
                                         message,
-                                    },
+                                    }
+                                }
                                 None => this.write_state = WriteState::GetMessage,
                             },
-                        },
+                        }
+                    }
                 },
-                WriteState::WriteMessage { offset, message } =>
+                WriteState::WriteMessage { offset, message } => {
                     match Pin::new(&mut this.stream).as_mut().poll_write(cx, &message[offset..]) {
                         Poll::Pending => {
                             this.write_state = WriteState::WriteMessage { offset, message };
@@ -1230,7 +1233,8 @@ impl<R: Runtime> Future for Stream<R> {
                                 };
                             }
                         },
-                    },
+                    }
+                }
                 WriteState::Closed => match this.cmd_rx.poll_recv(cx) {
                     Poll::Pending => {
                         this.write_state = WriteState::Closed;
@@ -1242,10 +1246,11 @@ impl<R: Runtime> Future for Stream<R> {
                         this.read_state = SocketState::Closed;
                         break;
                     }
-                    Poll::Ready(Some(StreamEvent::Packet { packet })) =>
+                    Poll::Ready(Some(StreamEvent::Packet { packet })) => {
                         match this.on_packet(packet) {
-                            Err(StreamingError::Closed | StreamingError::SequenceNumberTooHigh) =>
-                                return Poll::Ready(this.recv_stream_id),
+                            Err(StreamingError::Closed | StreamingError::SequenceNumberTooHigh) => {
+                                return Poll::Ready(this.recv_stream_id)
+                            }
                             Err(error) => {
                                 tracing::debug!(
                                     target: LOG_TARGET,
@@ -1261,7 +1266,8 @@ impl<R: Runtime> Future for Stream<R> {
                             Ok(()) => {
                                 this.write_state = WriteState::Closed;
                             }
-                        },
+                        }
+                    }
                 },
                 WriteState::Poisoned => {
                     tracing::warn!(
@@ -1337,10 +1343,10 @@ impl<R: Runtime> Future for Stream<R> {
                         });
 
                         if num_sent > 0 && this.rto_timer.is_none() {
-                            this.rto_timer = Some(Box::pin(R::delay(*this.rto)));
+                            this.rto_timer = Some(R::delay(*this.rto));
                         }
                     }
-                    true if !core::matches!(this.read_state, SocketState::Closed) =>
+                    true if !core::matches!(this.read_state, SocketState::Closed) => {
                         match Pin::new(&mut this.stream)
                             .as_mut()
                             .poll_read(cx, &mut this.read_buffer)
@@ -1358,7 +1364,8 @@ impl<R: Runtime> Future for Stream<R> {
                             Poll::Ready(Ok(nread)) => {
                                 this.read_state = SocketState::SendMessage { offset: nread };
                             }
-                        },
+                        }
+                    }
                     true => break,
                 },
                 SocketState::SendMessage { offset } => {

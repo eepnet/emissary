@@ -35,12 +35,12 @@ use crate::{
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot;
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     fmt,
     future::Future,
@@ -106,7 +106,7 @@ enum PublishState<R: Runtime> {
     /// set is published do `NetDb`.
     AwaitingTunnels {
         /// Timer for forcibly republishing the lease set.
-        timer: BoxFuture<'static, ()>,
+        timer: R::Delay,
     },
 
     /// Retry previously failed operation.
@@ -115,7 +115,7 @@ enum PublishState<R: Runtime> {
         kind: RetryKind<R>,
 
         /// Timer for retrying the operation.
-        timer: BoxFuture<'static, ()>,
+        timer: R::Delay,
     },
 
     /// Get floodfills closest to [`Destination`].
@@ -130,7 +130,7 @@ enum PublishState<R: Runtime> {
     /// Awaiting flooding to complete so storage verification can start.
     AwaitingFlooding {
         /// Timer that expires after lease set flooding is assumed to be finished.
-        timer: BoxFuture<'static, ()>,
+        timer: R::Delay,
     },
 
     /// Verify that the lease set was flooded to other floodfills close to the key.
@@ -139,7 +139,7 @@ enum PublishState<R: Runtime> {
         started: R::Instant,
 
         /// Expiration timer for current [`DatabaseLookupMessage`], if it has been sent.
-        timer: Option<BoxFuture<'static, ()>>,
+        timer: Option<R::Delay>,
     },
 
     /// [`LeaseSetPublisherState`] has been poisoned.
@@ -150,19 +150,25 @@ impl<R: Runtime> fmt::Debug for PublishState<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PublishState::Inactive => f.debug_struct("PublishState::Inactive").finish(),
-            PublishState::AwaitingLeaseSet =>
-                f.debug_struct("PublishState::AwaitingLeaseSet").finish(),
-            PublishState::AwaitingTunnels { .. } =>
-                f.debug_struct("PublishState::AwaitingTunnels").finish(),
+            PublishState::AwaitingLeaseSet => {
+                f.debug_struct("PublishState::AwaitingLeaseSet").finish()
+            }
+            PublishState::AwaitingTunnels { .. } => {
+                f.debug_struct("PublishState::AwaitingTunnels").finish()
+            }
             PublishState::Retry { .. } => f.debug_struct("PublishState::Retry").finish(),
-            PublishState::GetClosestFloodfills { .. } =>
-                f.debug_struct("PublishState::GetClosestFloodfills").finish(),
-            PublishState::PublishLeaseSet =>
-                f.debug_struct("PublishState::PublishLeaseSet").finish(),
-            PublishState::AwaitingFlooding { .. } =>
-                f.debug_struct("PublishState::AwaitingFlooding").finish(),
-            PublishState::VerifyStorage { .. } =>
-                f.debug_struct("PublishState::VerifyStorage").finish(),
+            PublishState::GetClosestFloodfills { .. } => {
+                f.debug_struct("PublishState::GetClosestFloodfills").finish()
+            }
+            PublishState::PublishLeaseSet => {
+                f.debug_struct("PublishState::PublishLeaseSet").finish()
+            }
+            PublishState::AwaitingFlooding { .. } => {
+                f.debug_struct("PublishState::AwaitingFlooding").finish()
+            }
+            PublishState::VerifyStorage { .. } => {
+                f.debug_struct("PublishState::VerifyStorage").finish()
+            }
             PublishState::Poisoned => f.debug_struct("PublishState::Poisoned").finish(),
         }
     }
@@ -255,7 +261,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             match netdb_handle.get_closest_floodfills(key.clone()) {
                 Err(_) => PublishState::Retry {
                     kind: RetryKind::GetClosestFloodfills,
-                    timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                    timer: R::delay(RETRY_TIMEOUT),
                 },
                 Ok(rx) => PublishState::GetClosestFloodfills { rx },
             }
@@ -288,7 +294,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             Err(_) => {
                 self.state = PublishState::Retry {
                     kind: RetryKind::GetClosestFloodfills,
-                    timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                    timer: R::delay(RETRY_TIMEOUT),
                 };
             }
             Ok(rx) => {
@@ -435,7 +441,7 @@ impl<R: Runtime> LeaseSetManager<R> {
                 );
 
                 self.state = PublishState::AwaitingTunnels {
-                    timer: Box::pin(R::delay(TUNNEL_BUILD_WAIT_TIMEOUT)),
+                    timer: R::delay(TUNNEL_BUILD_WAIT_TIMEOUT),
                 };
 
                 if let Some(waker) = self.waker.take() {
@@ -444,7 +450,7 @@ impl<R: Runtime> LeaseSetManager<R> {
             }
         }
 
-        return self.tunnels.values().cloned().collect();
+        self.tunnels.values().cloned().collect()
     }
 
     /// Register the tunnel ID of a local inbound tunnel that's about to expire
@@ -762,7 +768,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                             self.state = PublishState::Retry {
                                 kind: RetryKind::GetClosestFloodfills,
-                                timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                                timer: R::delay(RETRY_TIMEOUT),
                             };
                             continue;
                         }
@@ -780,7 +786,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                         self.state = PublishState::Retry {
                             kind: RetryKind::PublishLeaseSet,
-                            timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                            timer: R::delay(RETRY_TIMEOUT),
                         };
                     }
                     Some((floodfill, message)) => match self
@@ -799,7 +805,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                             self.state = PublishState::Retry {
                                 kind: RetryKind::PublishLeaseSet,
-                                timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                                timer: R::delay(RETRY_TIMEOUT),
                             };
                         }
                         Ok(()) => {
@@ -807,7 +813,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
                             self.queried_floodfills.insert(floodfill);
 
                             self.state = PublishState::AwaitingFlooding {
-                                timer: Box::pin(R::delay(STORAGE_VERIFICATION_START_TIMEOUT)),
+                                timer: R::delay(STORAGE_VERIFICATION_START_TIMEOUT),
                             };
                         }
                     },
@@ -848,7 +854,7 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                                 self.state = PublishState::Retry {
                                     kind: RetryKind::VerifyStorage { started },
-                                    timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                                    timer: R::delay(RETRY_TIMEOUT),
                                 };
                             }
                             Some((floodfill, message)) => match self
@@ -867,16 +873,14 @@ impl<R: Runtime> Future for LeaseSetManager<R> {
 
                                     self.state = PublishState::Retry {
                                         kind: RetryKind::VerifyStorage { started },
-                                        timer: Box::pin(R::delay(RETRY_TIMEOUT)),
+                                        timer: R::delay(RETRY_TIMEOUT),
                                     };
                                 }
                                 Ok(()) => {
                                     self.queried_floodfills.insert(floodfill);
                                     self.state = PublishState::VerifyStorage {
                                         started,
-                                        timer: Some(Box::pin(R::delay(
-                                            STORAGE_VERIFICATION_TIMEOUT,
-                                        ))),
+                                        timer: Some(R::delay(STORAGE_VERIFICATION_TIMEOUT)),
                                     };
                                     continue;
                                 }

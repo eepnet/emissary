@@ -50,7 +50,7 @@ use futures::{
 use futures_channel::oneshot;
 use thingbuf::mpsc::Receiver;
 
-use alloc::{boxed::Box, string::ToString, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
@@ -343,7 +343,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
 
                 match role {
                     HopRole::InboundGateway => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -370,7 +370,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::Participant => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -397,7 +397,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::OutboundEndpoint => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, R::delay(Duration::from_secs(2 * 60))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -603,7 +603,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 match role {
                     HopRole::InboundGateway => {
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
+                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
                             {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
@@ -635,7 +635,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                     }
                     HopRole::Participant => {
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
+                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
                             {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
@@ -670,7 +670,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         let garlic_tag = tunnel_keys.garlic_tag();
 
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
+                            match select(rx, R::delay(Duration::from_secs(2 * 60))).await
                             {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),

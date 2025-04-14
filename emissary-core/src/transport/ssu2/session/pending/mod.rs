@@ -21,12 +21,11 @@ use crate::{
 };
 
 use bytes::BytesMut;
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
-    future::{pending, Future},
-    marker::PhantomData,
+    future::Future,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
@@ -104,7 +103,7 @@ pub enum PacketRetransmitterEvent {
 }
 
 /// Packet retransmitter.
-pub struct PacketRetransmitter<R> {
+pub struct PacketRetransmitter<R: Runtime> {
     /// Packet that should be retransmitted if a timeout occurs.
     pkt: Vec<u8>,
 
@@ -112,10 +111,7 @@ pub struct PacketRetransmitter<R> {
     timeouts: VecDeque<Duration>,
 
     /// Timer for triggering retransmit/timeout.
-    timer: BoxFuture<'static, ()>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
+    timer: R::Delay,
 }
 
 impl<R: Runtime> PacketRetransmitter<R> {
@@ -127,8 +123,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
         Self {
             pkt: Vec::new(),
             timeouts: VecDeque::new(),
-            timer: Box::pin(pending()),
-            _runtime: Default::default(),
+            timer: R::delay(Duration::MAX),
         }
     }
 
@@ -143,8 +138,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
         Self {
             pkt,
             timeouts: VecDeque::from_iter([Duration::from_secs(6), Duration::from_secs(6)]),
-            timer: Box::pin(R::delay(Duration::from_secs(3))),
-            _runtime: Default::default(),
+            timer: R::delay(Duration::from_secs(3)),
         }
     }
 
@@ -164,8 +158,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_millis(5000),
                 Duration::from_millis(6250),
             ]),
-            timer: Box::pin(R::delay(Duration::from_millis(1250))),
-            _runtime: Default::default(),
+            timer: R::delay(Duration::from_millis(1250)),
         }
     }
 
@@ -185,8 +178,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_secs(4),
                 Duration::from_secs(5),
             ]),
-            timer: Box::pin(R::delay(Duration::from_secs(1))),
-            _runtime: Default::default(),
+            timer: R::delay(Duration::from_secs(1)),
         }
     }
 
@@ -209,8 +201,7 @@ impl<R: Runtime> PacketRetransmitter<R> {
                 Duration::from_millis(5000),
                 Duration::from_millis(6250),
             ]),
-            timer: Box::pin(R::delay(Duration::from_millis(1250))),
-            _runtime: Default::default(),
+            timer: R::delay(Duration::from_millis(1250)),
         }
     }
 }
@@ -223,7 +214,7 @@ impl<R: Runtime> Future for PacketRetransmitter<R> {
 
         match self.timeouts.pop_front() {
             Some(timeout) => {
-                self.timer = Box::pin(R::delay(timeout));
+                self.timer = R::delay(timeout);
                 let _ = self.timer.poll_unpin(cx);
 
                 Poll::Ready(PacketRetransmitterEvent::Retransmit {

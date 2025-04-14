@@ -22,10 +22,9 @@ use crate::{
     Error,
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 
-use alloc::boxed::Box;
 use core::{
     future::Future,
     net::Ipv4Addr,
@@ -41,23 +40,23 @@ pub trait AsyncReadExt: AsyncRead + Unpin {
     ) -> impl Future<Output = crate::Result<()>>;
 }
 
-struct ReadExact<'a, T: AsyncRead + Unpin> {
+struct ReadExact<'a, T: AsyncRead + Unpin, R: Runtime> {
     inner: &'a mut T,
     buffer: &'a mut [u8],
-    timer: BoxFuture<'static, ()>,
+    timer: R::Delay,
 }
 
-impl<'a, T: AsyncRead + Unpin> ReadExact<'a, T> {
-    pub fn new<R: Runtime>(inner: &'a mut T, buffer: &'a mut [u8]) -> Self {
+impl<'a, T: AsyncRead + Unpin, R: Runtime> ReadExact<'a, T, R> {
+    pub fn new(inner: &'a mut T, buffer: &'a mut [u8]) -> Self {
         Self {
             inner,
             buffer,
-            timer: Box::pin(R::delay(Duration::from_secs(10))),
+            timer: R::delay(Duration::from_secs(10)),
         }
     }
 }
 
-impl<T: AsyncRead + Unpin> Future for ReadExact<'_, T> {
+impl<T: AsyncRead + Unpin, R: Runtime> Future for ReadExact<'_, T, R> {
     type Output = crate::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -92,7 +91,7 @@ impl<T: AsyncRead + Unpin> AsyncReadExt for T {
         &mut self,
         buffer: &mut [u8],
     ) -> impl Future<Output = crate::Result<()>> {
-        async move { ReadExact::new::<R>(self, buffer).await }
+        async move { ReadExact::<T, R>::new(self, buffer).await }
     }
 }
 

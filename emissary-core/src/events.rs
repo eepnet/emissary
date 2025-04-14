@@ -18,10 +18,10 @@
 
 use crate::runtime::Runtime;
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::{
     future::Future,
     marker::PhantomData,
@@ -89,7 +89,7 @@ pub(crate) struct EventHandle<R: Runtime> {
     update_interval: Duration,
 
     /// Event timer.
-    timer: Option<BoxFuture<'static, ()>>,
+    timer: Option<R::Delay>,
 
     /// Marker for `Runtime`.
     _runtime: PhantomData<R>,
@@ -106,7 +106,7 @@ impl<R: Runtime> Clone for EventHandle<R> {
             num_tunnels_built: Arc::clone(&self.num_tunnels_built),
             transit_bandwidth: Arc::clone(&self.transit_bandwidth),
             update_interval: self.update_interval,
-            timer: Some(Box::pin(R::delay(self.update_interval))),
+            timer: Some(R::delay(self.update_interval)),
             _runtime: Default::default(),
         }
     }
@@ -178,7 +178,7 @@ impl<R: Runtime> Future for EventHandle<R> {
                 futures::ready!(timer.poll_unpin(cx));
 
                 // create new timer and register it into the executor
-                let mut timer = Box::pin(R::delay(self.update_interval));
+                let mut timer = R::delay(self.update_interval);
                 let _ = timer.poll_unpin(cx);
                 self.timer = Some(timer);
 
@@ -187,7 +187,6 @@ impl<R: Runtime> Future for EventHandle<R> {
         }
     }
 }
-
 /// Client destination has been started.
 #[derive(Debug, Clone, Default)]
 pub struct ClientDestinationStarted {
@@ -296,7 +295,7 @@ pub(crate) struct EventManager<R: Runtime> {
     status_tx: Sender<Event>,
 
     /// Update timer.
-    timer: BoxFuture<'static, ()>,
+    timer: R::Delay,
 
     /// Marker for `Runtime`.
     _runtime: PhantomData<R>,
@@ -342,7 +341,7 @@ impl<R: Runtime> EventManager<R> {
                 pending_client_updates: Vec::new(),
                 pending_server_updates: Vec::new(),
                 status_tx,
-                timer: Box::pin(R::delay(update_interval)),
+                timer: R::delay(update_interval),
                 _runtime: Default::default(),
             },
             EventSubscriber { status_rx },
@@ -412,7 +411,7 @@ impl<R: Runtime> Future for EventManager<R> {
                 client_destinations,
             });
 
-            self.timer = Box::pin(R::delay(self.handle.update_interval));
+            self.timer = R::delay(self.handle.update_interval);
             let _ = self.timer.poll_unpin(cx);
         }
 

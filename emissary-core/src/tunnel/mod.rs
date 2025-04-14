@@ -36,12 +36,12 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot;
 use hashbrown::HashMap;
 use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
@@ -100,7 +100,7 @@ pub struct TunnelManager<R: Runtime> {
     bloom_filter: BloomFilter,
 
     /// Bloom filter decay timer.
-    bloom_filter_timer: BoxFuture<'static, ()>,
+    bloom_filter_timer: R::Delay,
 
     /// RX channel for receiving tunneling-related commands from other subsystems.
     command_rx: Receiver<TunnelManagerCommand, CommandRecycle>,
@@ -205,7 +205,7 @@ impl<R: Runtime> TunnelManager<R> {
         (
             Self {
                 bloom_filter: BloomFilter::default(),
-                bloom_filter_timer: Box::pin(R::delay(BLOOM_FILTER_DECAY_INTERVAL)),
+                bloom_filter_timer: R::delay(BLOOM_FILTER_DECAY_INTERVAL),
                 command_rx,
                 exploratory_selector,
                 garlic: GarlicHandler::new(
@@ -254,10 +254,11 @@ impl<R: Runtime> TunnelManager<R> {
     ) {
         match self.routers.get_mut(router_id) {
             Some(RouterState::Connected) => match self.service.send(router_id, message) {
-                Ok(()) =>
+                Ok(()) => {
                     if let Some(tx) = feedback_tx {
                         let _ = tx.send(());
-                    },
+                    }
+                }
                 Err((error, _)) => tracing::error!(
                     target: LOG_TARGET,
                     %router_id,
@@ -328,10 +329,11 @@ impl<R: Runtime> TunnelManager<R> {
 
                 for (message, feedback_tx) in pending_messages {
                     match self.service.send(&router_id, message) {
-                        Ok(()) =>
+                        Ok(()) => {
                             if let Some(tx) = feedback_tx {
                                 let _ = tx.send(());
-                            },
+                            }
+                        }
                         Err(error) => tracing::debug!(
                             target: LOG_TARGET,
                             %router_id,
@@ -490,8 +492,9 @@ impl<R: Runtime> TunnelManager<R> {
             | MessageType::VariableTunnelBuild
             | MessageType::ShortTunnelBuild
             | MessageType::OutboundTunnelBuildReply
-            | MessageType::TunnelBuild =>
-                self.routing_table.route_message(message).map_err(From::from),
+            | MessageType::TunnelBuild => {
+                self.routing_table.route_message(message).map_err(From::from)
+            }
             MessageType::Garlic => self.on_garlic(message),
             MessageType::TunnelBuildReply
             | MessageType::Data
@@ -530,16 +533,18 @@ impl<R: Runtime> Future for TunnelManager<R> {
         while let Poll::Ready(event) = self.message_rx.poll_recv(cx) {
             match event {
                 None => return Poll::Ready(()),
-                Some(RoutingKind::External { router_id, message }) =>
-                    self.send_message(&router_id, message, None),
-                Some(RoutingKind::Internal { message }) =>
+                Some(RoutingKind::External { router_id, message }) => {
+                    self.send_message(&router_id, message, None)
+                }
+                Some(RoutingKind::Internal { message }) => {
                     if let Err(error) = self.on_message(message) {
                         tracing::debug!(
                             target: LOG_TARGET,
                             ?error,
                             "failed to handle internal tunnel message",
                         );
-                    },
+                    }
+                }
                 Some(RoutingKind::ExternalWithFeedback {
                     router_id,
                     message,
@@ -551,11 +556,13 @@ impl<R: Runtime> Future for TunnelManager<R> {
         loop {
             match self.service.poll_next_unpin(cx) {
                 Poll::Pending => break,
-                Poll::Ready(Some(SubsystemEvent::ConnectionEstablished { router })) =>
-                    self.on_connection_established(router),
-                Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router })) =>
-                    self.on_connection_closed(&router),
-                Poll::Ready(Some(SubsystemEvent::I2Np { messages })) =>
+                Poll::Ready(Some(SubsystemEvent::ConnectionEstablished { router })) => {
+                    self.on_connection_established(router)
+                }
+                Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router })) => {
+                    self.on_connection_closed(&router)
+                }
+                Poll::Ready(Some(SubsystemEvent::I2Np { messages })) => {
                     messages.into_iter().for_each(|(_, message)| {
                         if let Err(error) = self.on_message(message) {
                             tracing::debug!(
@@ -564,9 +571,11 @@ impl<R: Runtime> Future for TunnelManager<R> {
                                 "failed to handle external tunnel message",
                             );
                         }
-                    }),
-                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })) =>
-                    self.on_connection_failure(&router),
+                    })
+                }
+                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })) => {
+                    self.on_connection_failure(&router)
+                }
                 Poll::Ready(Some(SubsystemEvent::Dummy)) => unreachable!(),
                 Poll::Ready(None) => return Poll::Ready(()),
             }
@@ -588,7 +597,7 @@ impl<R: Runtime> Future for TunnelManager<R> {
         // create new timer and register it into the executor
         {
             self.bloom_filter.decay();
-            self.bloom_filter_timer = Box::pin(R::delay(BLOOM_FILTER_DECAY_INTERVAL));
+            self.bloom_filter_timer = R::delay(BLOOM_FILTER_DECAY_INTERVAL);
             let _ = self.bloom_filter_timer.poll_unpin(cx);
         }
 

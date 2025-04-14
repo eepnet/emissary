@@ -42,7 +42,7 @@ use crate::{
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
-use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 
@@ -51,7 +51,7 @@ use parking_lot::RwLock;
 #[cfg(feature = "no_std")]
 use spin::rwlock::RwLock;
 
-use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::{
     mem,
     pin::Pin,
@@ -183,7 +183,7 @@ pub struct SessionManager<R: Runtime> {
     lease_set_publish_timers: R::JoinSet<DestinationId>,
 
     /// Maintenance timer.
-    maintenance_timer: BoxFuture<'static, ()>,
+    maintenance_timer: R::Delay,
 
     /// Pending sessions.
     pending: HashMap<DestinationId, PendingSession<R>>,
@@ -212,7 +212,7 @@ impl<R: Runtime> SessionManager<R> {
             key_context: KeyContext::from_private_key(private_key),
             lease_set,
             lease_set_publish_timers: R::join_set(),
-            maintenance_timer: Box::pin(R::delay(MAINTENANCE_INTERVAL)),
+            maintenance_timer: R::delay(MAINTENANCE_INTERVAL),
             pending_events: VecDeque::new(),
             pending: HashMap::new(),
             remote_destinations: HashMap::new(),
@@ -909,11 +909,12 @@ impl<R: Runtime> Stream for SessionManager<R> {
                 Poll::Ready(Some(destination_id)) => {
                     match self.publish_local_lease_set(&destination_id) {
                         None => continue,
-                        Some(message) =>
+                        Some(message) => {
                             return Poll::Ready(Some(SessionManagerEvent::SendMessage {
                                 destination_id,
                                 message,
-                            })),
+                            }))
+                        }
                     }
                 }
             }
@@ -923,7 +924,7 @@ impl<R: Runtime> Stream for SessionManager<R> {
             self.maintain();
 
             // create new timer and poll it so it'll get registered into the executor
-            self.maintenance_timer = Box::pin(R::delay(MAINTENANCE_INTERVAL));
+            self.maintenance_timer = R::delay(MAINTENANCE_INTERVAL);
             let _ = self.maintenance_timer.poll_unpin(cx);
         }
 

@@ -23,7 +23,7 @@ use crate::{
 };
 
 use futures::{
-    future::{BoxFuture, FutureExt},
+    future::FutureExt,
     Stream,
 };
 use futures_channel::oneshot;
@@ -31,7 +31,7 @@ use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc;
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::{
     fmt,
     future::Future,
@@ -515,7 +515,7 @@ impl<R: Unpin> Stream for RoutingPathManager<R> {
                         );
                     }
                 }
-                Some(RoutingPathCommand::RequestLeaseSet { destination_id, tx }) =>
+                Some(RoutingPathCommand::RequestLeaseSet { destination_id, tx }) => {
                     match self.pending_queries.get_mut(&destination_id) {
                         Some(channels) => {
                             tracing::trace!(
@@ -535,7 +535,8 @@ impl<R: Unpin> Stream for RoutingPathManager<R> {
 
                             return Poll::Ready(Some(destination_id));
                         }
-                    },
+                    }
+                }
                 Some(RoutingPathCommand::Dummy) => {}
             }
         }
@@ -686,7 +687,7 @@ pub struct RoutingPathHandle<R: Runtime> {
     event_rx: mpsc::Receiver<RoutingPathEvent>,
 
     /// Inbound tunnel expiration timer.
-    inbound_expiration_timer: Option<BoxFuture<'static, ()>>,
+    inbound_expiration_timer: Option<R::Delay>,
 
     /// Lease set query status.
     lease_set_query_status: LeaseSetQueryStatus,
@@ -767,10 +768,13 @@ impl<R: Runtime> RoutingPathHandle<R> {
             .filter_map(|(_, kind)| match kind {
                 TunnelKind::ExpiringOutbound { tunnel_id, expires }
                     if *expires > now + OUTBOUND_TUNNEL_EXPIRATION =>
-                    Some((Some(*tunnel_id), None)),
+                {
+                    Some((Some(*tunnel_id), None))
+                }
                 TunnelKind::FailingOutbound { tunnel_id, expires } => match expires {
-                    Some(expires) if *expires > now + OUTBOUND_TUNNEL_EXPIRATION =>
-                        Some((None, Some(*tunnel_id))),
+                    Some(expires) if *expires > now + OUTBOUND_TUNNEL_EXPIRATION => {
+                        Some((None, Some(*tunnel_id)))
+                    }
                     None => Some((None, Some(*tunnel_id))),
                     _ => None,
                 },
@@ -826,10 +830,14 @@ impl<R: Runtime> RoutingPathHandle<R> {
             .filter_map(|(_, kind)| match kind {
                 TunnelKind::Inbound { tunnel_id, expires }
                     if *expires > now + INBOUND_TUNNEL_MIN_AGE =>
-                    Some((Some((*tunnel_id, *expires)), None)),
+                {
+                    Some((Some((*tunnel_id, *expires)), None))
+                }
                 TunnelKind::FailingInbound { tunnel_id, expires }
                     if *expires > now + INBOUND_TUNNEL_MIN_AGE =>
-                    Some((None, Some((*tunnel_id, *expires)))),
+                {
+                    Some((None, Some((*tunnel_id, *expires))))
+                }
                 _ => None,
             })
             .unzip();
@@ -908,9 +916,9 @@ impl<R: Runtime> RoutingPathHandle<R> {
         let (inbound, expires) = self.select_inbound_tunnel()?;
 
         // `select_inbond_tunnel()` has ensured the tunnel doesn't expire in the next 30 seconds
-        self.inbound_expiration_timer = Some(Box::pin(R::delay(
+        self.inbound_expiration_timer = Some(R::delay(
             expires - R::time_since_epoch() - INBOUND_TUNNEL_MIN_AGE,
-        )));
+        ));
 
         self.routing_path = Some(RoutingPath {
             inbound,

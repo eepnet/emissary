@@ -42,11 +42,11 @@ use crate::{
 };
 
 use bytes::Bytes;
-use futures::{future::BoxFuture, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     mem,
     pin::Pin,
@@ -199,7 +199,7 @@ pub struct Destination<R: Runtime> {
     lease_set_manager: LeaseSetManager<R>,
 
     /// Timer for periodic pruning of stale lease sets.
-    lease_set_prune_timer: BoxFuture<'static, ()>,
+    lease_set_prune_timer: R::Delay,
 
     /// Handle to [`NetDb`].
     netdb_handle: NetDbHandle,
@@ -258,7 +258,7 @@ impl<R: Runtime> Destination<R> {
                 unpublished,
                 lease_set.clone(),
             ),
-            lease_set_prune_timer: Box::pin(R::delay(LEASE_SET_PRUNE_INTERVAL)),
+            lease_set_prune_timer: R::delay(LEASE_SET_PRUNE_INTERVAL),
             netdb_handle,
             pending_queries: HashSet::new(),
             query_futures: R::join_set(),
@@ -791,7 +791,7 @@ impl<R: Runtime> Stream for Destination<R> {
                 Poll::Ready(Some(TunnelPoolEvent::OutboundTunnelExpiring { tunnel_id })) => {
                     self.routing_path_manager.register_outbound_tunnel_expiring(tunnel_id);
                 }
-                Poll::Ready(Some(TunnelPoolEvent::Message { message })) =>
+                Poll::Ready(Some(TunnelPoolEvent::Message { message })) => {
                     match self.decrypt_message(message) {
                         Err(error) => tracing::warn!(
                             target: LOG_TARGET,
@@ -799,10 +799,12 @@ impl<R: Runtime> Stream for Destination<R> {
                             ?error,
                             "failed to handle inbound message",
                         ),
-                        Ok(messages) if !messages.is_empty() =>
-                            return Poll::Ready(Some(DestinationEvent::Messages { messages })),
+                        Ok(messages) if !messages.is_empty() => {
+                            return Poll::Ready(Some(DestinationEvent::Messages { messages }))
+                        }
                         Ok(_) => {}
-                    },
+                    }
+                }
                 Poll::Ready(Some(TunnelPoolEvent::Dummy)) => unreachable!(),
             }
         }
@@ -811,14 +813,15 @@ impl<R: Runtime> Stream for Destination<R> {
             match self.session_manager.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(SessionManagerEvent::SessionTerminated { destination_id })) =>
+                Poll::Ready(Some(SessionManagerEvent::SessionTerminated { destination_id })) => {
                     return Poll::Ready(Some(DestinationEvent::SessionTerminated {
                         destination_id,
-                    })),
+                    }))
+                }
                 Poll::Ready(Some(SessionManagerEvent::SendMessage {
                     destination_id,
                     message,
-                })) =>
+                })) => {
                     if let Err(error) = self
                         .send_message_inner(DeliveryStyle::Unspecified { destination_id }, message)
                     {
@@ -828,7 +831,8 @@ impl<R: Runtime> Stream for Destination<R> {
                             ?error,
                             "failed to send message",
                         );
-                    },
+                    }
+                }
             }
         }
 
@@ -954,7 +958,7 @@ impl<R: Runtime> Stream for Destination<R> {
                 context.expiring_leases.retain(|_, lease| lease.expires > now);
             });
 
-            self.lease_set_prune_timer = Box::pin(R::delay(LEASE_SET_PRUNE_INTERVAL));
+            self.lease_set_prune_timer = R::delay(LEASE_SET_PRUNE_INTERVAL);
             let _ = self.lease_set_prune_timer.poll_unpin(cx);
         }
 
@@ -1544,7 +1548,7 @@ mod tests {
 
         // set the lease set prune interval to a shorter timeout and poll `destination` until the
         // timer expires
-        destination.lease_set_prune_timer = Box::pin(MockRuntime::delay(Duration::from_secs(11)));
+        destination.lease_set_prune_timer = MockRuntime::delay(Duration::from_secs(11));
 
         assert!(tokio::time::timeout(Duration::from_secs(15), destination.next()).await.is_err());
 

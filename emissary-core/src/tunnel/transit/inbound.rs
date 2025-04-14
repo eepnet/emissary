@@ -33,11 +33,11 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 use thingbuf::mpsc::Receiver;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
@@ -61,7 +61,7 @@ pub struct InboundGateway<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: BoxFuture<'static, ()>,
+    expiration_timer: R::Delay,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -182,7 +182,7 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
 
         InboundGateway {
             event_handle,
-            expiration_timer: Box::pin(R::delay(TRANSIT_TUNNEL_EXPIRATION)),
+            expiration_timer: R::delay(TRANSIT_TUNNEL_EXPIRATION),
             bandwidth: 0usize,
             message_rx,
             metrics_handle,
