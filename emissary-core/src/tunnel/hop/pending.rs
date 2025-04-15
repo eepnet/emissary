@@ -196,7 +196,7 @@ impl<T: Tunnel> PendingTunnel<T> {
                     let mut fake_key = [0u8; 32];
                     R::rng().fill_bytes(&mut fake_key);
 
-                    fake_key[31] &= 0x80;
+                    fake_key[31] &= !0x80;
                     fake_key
                 });
                 record.extend_from_slice(&{
