@@ -902,10 +902,11 @@ mod test {
         );
 
         // verify that our fake record can be found
-        assert!(message.payload[1..]
+        let record = message.payload[1..]
             .chunks(218)
             .find(|chunk| &chunk[..16] == &local_hash[..16])
-            .is_some());
+            .expect("to exist");
+        assert!(record[47] & 0x80 == 0);
 
         assert_eq!(message.message_type, MessageType::ShortTunnelBuild);
         assert!(pending_tunnel.try_build_tunnel(message).is_ok());
