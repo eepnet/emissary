@@ -62,8 +62,22 @@ const TUNNEL_BUILD_EXPIRATION: Duration = Duration::from_secs(10);
 /// Short tunnel build request record size.
 const SHORT_RECORD_LEN: usize = 218;
 
-/// Outbound tunnel.
+/// Context for the local fake record placed into inbound TBRMs.
+struct FakeRecordContext {
+    /// Local router short hash.
+    local_hash: Vec<u8>,
+
+    /// Checksum for our fake record.
+    checksum: [u8; 32],
+}
+
+/// Pending tunnel.
 pub struct PendingTunnel<T: Tunnel> {
+    /// Context for local fake record.
+    ///
+    /// Set only for inbound builds.
+    fake_record_ctx: Option<FakeRecordContext>,
+
     /// Pending tunnel hops.
     hops: VecDeque<TunnelHop>,
 
@@ -110,8 +124,16 @@ impl<T: Tunnel> PendingTunnel<T> {
             tunnel_info,
         } = parameters;
 
-        if hops.len() > MAX_BUILD_RECORDS {
-            return Err(TunnelError::TooManyHops(hops.len()));
+        // inbound tnnels always have one fake local record
+        match T::direction() {
+            TunnelDirection::Outbound =>
+                if hops.len() > MAX_BUILD_RECORDS {
+                    return Err(TunnelError::TooManyHops(hops.len()));
+                },
+            TunnelDirection::Inbound =>
+                if hops.len() > MAX_BUILD_RECORDS - 1 {
+                    return Err(TunnelError::TooManyHops(hops.len()));
+                },
         }
 
         // extract pending tunnel's id and id of the tunnel that's used for reception of the reply
@@ -159,13 +181,46 @@ impl<T: Tunnel> PendingTunnel<T> {
         // tunnel build message can be garlic-encrypted, preventing OBEP from reading the message
         let first_hop_static_key = hops[0].1.clone();
 
+        // fake local record for inbound tunnel builds, from specification:
+        //
+        // For inbound tunnel builds, there must always be one "fake" record for the originating
+        // router, with the correct 16-byte hash prefix, otherwise the closest hop will know that
+        // the next hop is the originator. The MSB of the ephemeral key (data[47] & 0x80) must also
+        // be cleared so it looks like a real X25519 public key.
+        let (fake_inbound_record_checksum, fake_inbound_record) = match T::direction() {
+            TunnelDirection::Outbound => (None, None),
+            TunnelDirection::Inbound => {
+                let mut record = router_id[..16].to_vec();
+
+                record.extend_from_slice(&{
+                    let mut fake_key = [0u8; 32];
+                    R::rng().fill_bytes(&mut fake_key);
+
+                    fake_key[31] &= 0x80;
+                    fake_key
+                });
+                record.extend_from_slice(&{
+                    // record len - short router hash - public key
+                    let mut fake_record = [0u8; SHORT_RECORD_LEN - 16 - 32];
+                    R::rng().fill_bytes(&mut fake_record);
+
+                    fake_record
+                });
+
+                (
+                    Some(Sha256::new().update(&record).finalize_new()),
+                    Some(record),
+                )
+            }
+        };
+
         // prepare router info for build records
         //
         // each hop is generated a random tunnel id and local info is chained at the end
         let (tunnel_ids, router_hashes): (Vec<_>, Vec<_>) = hops
             .iter()
             .map(|(router_hash, _)| (TunnelId::from(R::rng().next_u32()), router_hash.clone()))
-            .chain(iter::once((gateway, router_id)))
+            .chain(iter::once((gateway, router_id.clone())))
             .unzip();
 
         // create build records and generate key contexts for each hop
@@ -205,10 +260,7 @@ impl<T: Tunnel> PendingTunnel<T> {
         // encrypt build records with each hop's aead key and extend the build record into full
         // `ShortTunnelBuildRecord` by prepending hop's truncated router hash and ephemeral public
         // key of the local router
-        //
-        // additionally, append fake records at the end so that the length of the tunnel build
-        // request message is `NUM_BUILD_RECORDS` records long
-        let encrypted_records = router_hashes
+        let mut encrypted_records = router_hashes
             .iter()
             .zip(build_records.iter_mut())
             .zip(tunnel_hops.iter_mut())
@@ -233,14 +285,31 @@ impl<T: Tunnel> PendingTunnel<T> {
                         full_record
                     })
             })
-            .chain(
-                (0..num_records - num_hops.get())
-                    .map(|_| short::TunnelBuildRecordBuilder::random(&mut R::rng())),
-            )
             .collect::<Vec<_>>();
 
+        // append fake records at the end so that the length of the tunnel build request message
+        // is `num_records` many records long
+        //
+        // the inbound tunnel build message also contains our fake record and one fewer "actual"
+        // fake record
+        match fake_inbound_record {
+            Some(record) => {
+                encrypted_records.push(record);
+                encrypted_records.extend(
+                    (1..num_records - num_hops.get())
+                        .map(|_| short::TunnelBuildRecordBuilder::random(&mut R::rng())),
+                );
+            }
+            None => {
+                encrypted_records.extend(
+                    (0..num_records - num_hops.get())
+                        .map(|_| short::TunnelBuildRecordBuilder::random(&mut R::rng())),
+                );
+            }
+        }
+
         // shuffle records and assign record index for each hop
-        let mut encrypted_records = {
+        let (mut encrypted_records, mut record_indexes): (Vec<_>, HashSet<_>) = {
             let mut records = encrypted_records.into_iter().enumerate().collect::<Vec<_>>();
             shuffle(&mut records, &mut R::rng());
 
@@ -258,18 +327,15 @@ impl<T: Tunnel> PendingTunnel<T> {
                         tunnel_hop.set_record_index(record_idx);
                     }
 
-                    record
+                    (record, record_idx)
                 })
-                .collect::<Vec<_>>()
+                .unzip()
         };
 
         // double-encrypt build records
         //
         // note that the number of the times the record is encrypted is tied to the hop's position
         // in the tunnel: 1st hop is not encrypted, 2nd is encrypted once, 3rd hop twice and so on
-        let mut record_indexes =
-            tunnel_hops.iter().map(|hop| hop.record_index()).collect::<HashSet<_>>();
-
         tunnel_hops.iter().for_each(|hop| {
             encrypted_records.iter_mut().enumerate().for_each(|(record_idx, record)| {
                 // don't encrypt hop's own record or records preceeding this record
@@ -286,12 +352,16 @@ impl<T: Tunnel> PendingTunnel<T> {
 
         Ok((
             Self {
+                fake_record_ctx: fake_inbound_record_checksum.map(|checksum| FakeRecordContext {
+                    checksum,
+                    local_hash: router_id[..16].to_vec(),
+                }),
                 hops: tunnel_hops,
                 name,
                 num_records,
                 receiver,
-                _tunnel: Default::default(),
                 tunnel_id,
+                _tunnel: Default::default(),
             },
             RouterId::from(router_hashes[0].clone().to_vec()),
             match T::direction() {
@@ -392,7 +462,60 @@ impl<T: Tunnel> PendingTunnel<T> {
 
         let mut payload = match (T::direction(), message.message_type) {
             // for inbound build the message type doesn't change from `ShortTunnelBuild`
-            (TunnelDirection::Inbound, MessageType::ShortTunnelBuild) => message.payload.to_vec(),
+            (TunnelDirection::Inbound, MessageType::ShortTunnelBuild) => {
+                // context must exist since the tunnel was created by us
+                let FakeRecordContext {
+                    local_hash,
+                    checksum,
+                } = self.fake_record_ctx.expect("to exist");
+
+                // length + at least one real record + local fake record
+                if message.payload.len() < 1 + 2 * SHORT_RECORD_LEN
+                    || message.payload[1..].len() % SHORT_RECORD_LEN != 0
+                {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        tunnel = %self.tunnel_id,
+                        direction = ?T::direction(),
+                        "tunnel build record is too short",
+                    );
+
+                    hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
+                    return Err(hop_results);
+                }
+
+                // make sure the message contains our record and that it has remained untampered
+                match message.payload[1..]
+                    .chunks(SHORT_RECORD_LEN)
+                    .find(|chunk| &chunk[..16] == &local_hash)
+                {
+                    None => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            tunnel = %self.tunnel_id,
+                            direction = ?T::direction(),
+                            "fake local record not found in tunnel build reply",
+                        );
+
+                        hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
+                        return Err(hop_results);
+                    }
+                    Some(record) =>
+                        if Sha256::new().update(&record).finalize_new() != checksum {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                tunnel = %self.tunnel_id,
+                                direction = ?T::direction(),
+                                "fake local record has been modified",
+                            );
+
+                            hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
+                            return Err(hop_results);
+                        },
+                }
+
+                message.payload.to_vec()
+            }
 
             // for outbound builds the reply can be received in `OutboundTunnelBuildReply`
             (TunnelDirection::Outbound, MessageType::OutboundTunnelBuildReply) =>
@@ -402,6 +525,19 @@ impl<T: Tunnel> PendingTunnel<T> {
             (TunnelDirection::Outbound, MessageType::Garlic) => {
                 // tunnel must exist since it was created by us
                 let outbound_endpoint = self.hops.back().expect("tunnel to exist");
+
+                // garlic overhead + length + at least one record + poly1305 auth tag
+                if message.payload.len() < 12 + 1 + SHORT_RECORD_LEN + 16 {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        tunnel = %self.tunnel_id,
+                        direction = ?T::direction(),
+                        "tunnel build record is too short",
+                    );
+
+                    hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
+                    return Err(hop_results);
+                }
 
                 // garlic decrypt the payload with OBEP's garlic key and tag
                 // and try to parse the plaintext into a `GarlicMessage`
@@ -521,7 +657,7 @@ impl<T: Tunnel> PendingTunnel<T> {
             let hop_status = record[201];
 
             payload[1..]
-                .chunks_mut(218)
+                .chunks_mut(SHORT_RECORD_LEN)
                 .enumerate()
                 .filter(|(index, _)| index != &hop.record_index())
                 .for_each(|(index, record)| {
@@ -736,7 +872,7 @@ mod test {
                     message_id,
                     tunnel_info: TunnelInfo::Inbound {
                         tunnel_id,
-                        router_id: local_hash,
+                        router_id: local_hash.clone(),
                     },
                     receiver: ReceiverKind::Inbound {
                         message_rx: rx,
@@ -754,6 +890,8 @@ mod test {
         assert_eq!(message.message_id, message_id.into());
         assert_eq!(next_router, RouterId::from(hops[0].0.to_vec()));
         assert_eq!(message.payload[1..].len() % 218, 0);
+        assert_eq!(message.payload[1..].len() / 218, 4);
+        assert_eq!(message.payload[0], 4u8);
 
         let message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
@@ -762,6 +900,12 @@ mod test {
                 Message::parse_short(&message).unwrap()
             },
         );
+
+        // verify that our fake record can be found
+        assert!(message.payload[1..]
+            .chunks(218)
+            .find(|chunk| &chunk[..16] == &local_hash[..16])
+            .is_some());
 
         assert_eq!(message.message_type, MessageType::ShortTunnelBuild);
         assert!(pending_tunnel.try_build_tunnel(message).is_ok());
@@ -1445,6 +1589,471 @@ mod test {
                 assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
                 assert_eq!(error[1].1, Some(Ok(())));
                 assert_eq!(error[2].1, Some(Ok(())));
+            }
+            _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn too_long_inbound_tunnel() {
+        let hops: Vec<(Bytes, StaticPublicKey)> = (0..8)
+            .map(|i| make_router(if i % 2 == 0 { true } else { false }))
+            .into_iter()
+            .map(|(router_hash, static_key, _, _, _)| (router_hash, static_key.public()))
+            .collect();
+
+        let (local_hash, _local_pk, _, local_noise, _) = make_router(true);
+        let message_id = MessageId::from(MockRuntime::rng().next_u32());
+        let tunnel_id = TunnelId::from(MockRuntime::rng().next_u32());
+        let _gateway = TunnelId::from(MockRuntime::rng().next_u32());
+        let TunnelPoolBuildParameters {
+            context_handle: handle,
+            ..
+        } = TunnelPoolBuildParameters::new(Default::default());
+        let (_tx, rx) = channel(64);
+
+        match PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+            TunnelBuildParameters {
+                hops: hops.clone(),
+                name: Str::from("tunnel-pool"),
+                noise: local_noise,
+                message_id,
+                tunnel_info: TunnelInfo::Inbound {
+                    tunnel_id,
+                    router_id: local_hash.clone(),
+                },
+                receiver: ReceiverKind::Inbound {
+                    message_rx: rx,
+                    handle,
+                },
+            },
+        ) {
+            Err(TunnelError::TooManyHops(8usize)) => {}
+            _ => panic!("unexpected result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_fake_record_router_hash_modified() {
+        let handle = MockRuntime::register_metrics(vec![], None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+
+        let (hops, mut transit_managers): (
+            Vec<(Bytes, StaticPublicKey, ShutdownContext<MockRuntime>)>,
+            Vec<(
+                GarlicHandler<MockRuntime>,
+                TransitTunnelManager<MockRuntime>,
+            )>,
+        ) = (0..3)
+            .map(|i| make_router(if i % 2 == 0 { true } else { false }))
+            .into_iter()
+            .map(
+                |(router_hash, static_key, signing_key, noise_context, router_info)| {
+                    let (transit_tx, transit_rx) = channel(16);
+                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
+                    let shutdown_handle = shutdown_ctx.handle();
+                    let routing_table =
+                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+
+                    (
+                        (router_hash, static_key.public(), shutdown_ctx),
+                        (
+                            GarlicHandler::new(noise_context.clone(), handle.clone()),
+                            TransitTunnelManager::new(
+                                Some(TransitConfig {
+                                    max_tunnels: Some(5000),
+                                }),
+                                RouterContext::new(
+                                    handle.clone(),
+                                    ProfileStorage::new(&[], &[]),
+                                    router_info.identity.id(),
+                                    Bytes::from(router_info.serialize(&signing_key)),
+                                    static_key,
+                                    signing_key,
+                                    2u8,
+                                    event_handle.clone(),
+                                ),
+                                routing_table,
+                                transit_rx,
+                                shutdown_handle,
+                            ),
+                        ),
+                    )
+                },
+            )
+            .unzip();
+
+        let (local_hash, _local_pk, _, local_noise, _) = make_router(true);
+        let message_id = MessageId::from(MockRuntime::rng().next_u32());
+        let tunnel_id = TunnelId::from(MockRuntime::rng().next_u32());
+        let _gateway = TunnelId::from(MockRuntime::rng().next_u32());
+        let (hops, _handles): (Vec<_>, Vec<_>) = hops
+            .into_iter()
+            .map(|(router_id, public_key, context)| ((router_id, public_key), context))
+            .unzip();
+        let TunnelPoolBuildParameters {
+            context_handle: handle,
+            ..
+        } = TunnelPoolBuildParameters::new(Default::default());
+        let (_tx, rx) = channel(64);
+
+        let (pending_tunnel, next_router, message) =
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash.clone(),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
+                },
+            )
+            .unwrap();
+
+        let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
+            Some(GarlicDeliveryInstructions::Local { message }) => message,
+            _ => panic!("invalid delivery instructions"),
+        };
+
+        assert_eq!(message.message_id, message_id.into());
+        assert_eq!(next_router, RouterId::from(hops[0].0.to_vec()));
+        assert_eq!(message.payload[1..].len() % 218, 0);
+        assert_eq!(message.payload[1..].len() / 218, 4);
+        assert_eq!(message.payload[0], 4u8);
+
+        let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
+            message,
+            |acc, ((_, _), (_, transit_manager))| {
+                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
+                Message::parse_short(&message).unwrap()
+            },
+        );
+
+        // modify local router hash so it's not found
+        let record = message.payload[1..]
+            .chunks_mut(218)
+            .find(|chunk| &chunk[..16] == &local_hash[..16])
+            .unwrap();
+        record[0] = record[0].wrapping_add(1);
+
+        match pending_tunnel.try_build_tunnel(message) {
+            Err(error) => {
+                assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
+                assert_eq!(error[1].1, None);
+                assert_eq!(error[2].1, None);
+            }
+            _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn inbound_fake_record_modified() {
+        let handle = MockRuntime::register_metrics(vec![], None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+
+        let (hops, mut transit_managers): (
+            Vec<(Bytes, StaticPublicKey, ShutdownContext<MockRuntime>)>,
+            Vec<(
+                GarlicHandler<MockRuntime>,
+                TransitTunnelManager<MockRuntime>,
+            )>,
+        ) = (0..3)
+            .map(|i| make_router(if i % 2 == 0 { true } else { false }))
+            .into_iter()
+            .map(
+                |(router_hash, static_key, signing_key, noise_context, router_info)| {
+                    let (transit_tx, transit_rx) = channel(16);
+                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
+                    let shutdown_handle = shutdown_ctx.handle();
+                    let routing_table =
+                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+
+                    (
+                        (router_hash, static_key.public(), shutdown_ctx),
+                        (
+                            GarlicHandler::new(noise_context.clone(), handle.clone()),
+                            TransitTunnelManager::new(
+                                Some(TransitConfig {
+                                    max_tunnels: Some(5000),
+                                }),
+                                RouterContext::new(
+                                    handle.clone(),
+                                    ProfileStorage::new(&[], &[]),
+                                    router_info.identity.id(),
+                                    Bytes::from(router_info.serialize(&signing_key)),
+                                    static_key,
+                                    signing_key,
+                                    2u8,
+                                    event_handle.clone(),
+                                ),
+                                routing_table,
+                                transit_rx,
+                                shutdown_handle,
+                            ),
+                        ),
+                    )
+                },
+            )
+            .unzip();
+
+        let (local_hash, _local_pk, _, local_noise, _) = make_router(true);
+        let message_id = MessageId::from(MockRuntime::rng().next_u32());
+        let tunnel_id = TunnelId::from(MockRuntime::rng().next_u32());
+        let _gateway = TunnelId::from(MockRuntime::rng().next_u32());
+        let (hops, _handles): (Vec<_>, Vec<_>) = hops
+            .into_iter()
+            .map(|(router_id, public_key, context)| ((router_id, public_key), context))
+            .unzip();
+        let TunnelPoolBuildParameters {
+            context_handle: handle,
+            ..
+        } = TunnelPoolBuildParameters::new(Default::default());
+        let (_tx, rx) = channel(64);
+
+        let (pending_tunnel, next_router, message) =
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash.clone(),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
+                },
+            )
+            .unwrap();
+
+        let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
+            Some(GarlicDeliveryInstructions::Local { message }) => message,
+            _ => panic!("invalid delivery instructions"),
+        };
+
+        assert_eq!(message.message_id, message_id.into());
+        assert_eq!(next_router, RouterId::from(hops[0].0.to_vec()));
+        assert_eq!(message.payload[1..].len() % 218, 0);
+        assert_eq!(message.payload[1..].len() / 218, 4);
+        assert_eq!(message.payload[0], 4u8);
+
+        let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
+            message,
+            |acc, ((_, _), (_, transit_manager))| {
+                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
+                Message::parse_short(&message).unwrap()
+            },
+        );
+
+        // keep router hash unmodified but modify the key so that checksum verificatin fails
+        let record = message.payload[1..]
+            .chunks_mut(218)
+            .find(|chunk| &chunk[..16] == &local_hash[..16])
+            .unwrap();
+        record[20] = record[20].wrapping_add(1);
+
+        match pending_tunnel.try_build_tunnel(message) {
+            Err(error) => {
+                assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
+                assert_eq!(error[1].1, None);
+                assert_eq!(error[2].1, None);
+            }
+            _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_payload_inbound() {
+        let handle = MockRuntime::register_metrics(vec![], None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+
+        let (hops, mut transit_managers): (
+            Vec<(Bytes, StaticPublicKey, ShutdownContext<MockRuntime>)>,
+            Vec<(
+                GarlicHandler<MockRuntime>,
+                TransitTunnelManager<MockRuntime>,
+            )>,
+        ) = (0..3)
+            .map(|i| make_router(if i % 2 == 0 { true } else { false }))
+            .into_iter()
+            .map(
+                |(router_hash, static_key, signing_key, noise_context, router_info)| {
+                    let (transit_tx, transit_rx) = channel(16);
+                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
+                    let shutdown_handle = shutdown_ctx.handle();
+                    let routing_table =
+                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+
+                    (
+                        (router_hash, static_key.public(), shutdown_ctx),
+                        (
+                            GarlicHandler::new(noise_context.clone(), handle.clone()),
+                            TransitTunnelManager::new(
+                                Some(TransitConfig {
+                                    max_tunnels: Some(5000),
+                                }),
+                                RouterContext::new(
+                                    handle.clone(),
+                                    ProfileStorage::new(&[], &[]),
+                                    router_info.identity.id(),
+                                    Bytes::from(router_info.serialize(&signing_key)),
+                                    static_key,
+                                    signing_key,
+                                    2u8,
+                                    event_handle.clone(),
+                                ),
+                                routing_table,
+                                transit_rx,
+                                shutdown_handle,
+                            ),
+                        ),
+                    )
+                },
+            )
+            .unzip();
+
+        let (local_hash, _local_pk, _, local_noise, _) = make_router(true);
+        let message_id = MessageId::from(MockRuntime::rng().next_u32());
+        let tunnel_id = TunnelId::from(MockRuntime::rng().next_u32());
+        let _gateway = TunnelId::from(MockRuntime::rng().next_u32());
+        let (hops, _handles): (Vec<_>, Vec<_>) = hops
+            .into_iter()
+            .map(|(router_id, public_key, context)| ((router_id, public_key), context))
+            .unzip();
+        let TunnelPoolBuildParameters {
+            context_handle: handle,
+            ..
+        } = TunnelPoolBuildParameters::new(Default::default());
+        let (_tx, rx) = channel(64);
+
+        let (pending_tunnel, next_router, message) =
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash.clone(),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
+                },
+            )
+            .unwrap();
+
+        let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
+            Some(GarlicDeliveryInstructions::Local { message }) => message,
+            _ => panic!("invalid delivery instructions"),
+        };
+
+        assert_eq!(message.message_id, message_id.into());
+        assert_eq!(next_router, RouterId::from(hops[0].0.to_vec()));
+        assert_eq!(message.payload[1..].len() % 218, 0);
+        assert_eq!(message.payload[1..].len() / 218, 4);
+        assert_eq!(message.payload[0], 4u8);
+
+        let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
+            message,
+            |acc, ((_, _), (_, transit_manager))| {
+                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
+                Message::parse_short(&message).unwrap()
+            },
+        );
+
+        // make payload empty
+        message.payload = Vec::new();
+
+        match pending_tunnel.try_build_tunnel(message) {
+            Err(error) => {
+                assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
+                assert_eq!(error[1].1, None);
+                assert_eq!(error[2].1, None);
+            }
+            _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_payload_outbound_garlic() {
+        let (hops, mut transit_managers): (
+            Vec<(Bytes, StaticPublicKey)>,
+            Vec<TestTransitTunnelManager>,
+        ) = (0..3)
+            .map(|i| {
+                let manager = TestTransitTunnelManager::new(if i % 2 == 0 { true } else { false });
+
+                ((manager.router_hash(), manager.public_key()), manager)
+            })
+            .unzip();
+
+        let (local_hash, _, _, local_noise, _) = make_router(true);
+        let message_id = MessageId::from(MockRuntime::rng().next_u32());
+        let tunnel_id = TunnelId::from(MockRuntime::rng().next_u32());
+        let gateway = TunnelId::from(MockRuntime::rng().next_u32());
+
+        let (pending_tunnel, next_router, message) =
+            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Outbound {
+                        gateway,
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Outbound,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(message.message_id, message_id.into());
+        assert_eq!(next_router, RouterId::from(hops[0].0.to_vec()));
+        assert_eq!(message.payload[1..].len() % 218, 0);
+
+        let message = hops.iter().zip(transit_managers.iter_mut()).fold(
+            message,
+            |acc, ((_, _), transit_manager)| {
+                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
+                Message::parse_short(&message).unwrap()
+            },
+        );
+        assert_eq!(message.message_type, MessageType::TunnelGateway);
+
+        let TunnelGateway {
+            tunnel_id: recv_tunnel_id,
+            payload,
+        } = TunnelGateway::parse(&message.payload).unwrap();
+
+        assert_eq!(TunnelId::from(recv_tunnel_id), gateway);
+
+        let mut message = Message::parse_standard(&payload).unwrap();
+
+        // make payload empty
+        message.payload = Vec::new();
+
+        match pending_tunnel.try_build_tunnel(message) {
+            Err(error) => {
+                assert_eq!(error[0].1, Some(Err(TunnelError::InvalidMessage)));
+                assert_eq!(error[1].1, None);
+                assert_eq!(error[2].1, None);
             }
             _ => panic!("invalid result"),
         }
