@@ -24,7 +24,6 @@ use thingbuf::mpsc::{channel, Receiver, Sender};
 use alloc::{string::String, sync::Arc, vec::Vec};
 use core::{
     future::Future,
-    marker::PhantomData,
     mem,
     pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
@@ -90,9 +89,6 @@ pub(crate) struct EventHandle<R: Runtime> {
 
     /// Event timer.
     timer: Option<R::Timer>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> Clone for EventHandle<R> {
@@ -107,7 +103,6 @@ impl<R: Runtime> Clone for EventHandle<R> {
             transit_bandwidth: Arc::clone(&self.transit_bandwidth),
             update_interval: self.update_interval,
             timer: Some(R::timer(self.update_interval)),
-            _runtime: Default::default(),
         }
     }
 }
@@ -187,6 +182,7 @@ impl<R: Runtime> Future for EventHandle<R> {
         }
     }
 }
+
 /// Client destination has been started.
 #[derive(Debug, Clone, Default)]
 pub struct ClientDestinationStarted {
@@ -296,9 +292,6 @@ pub(crate) struct EventManager<R: Runtime> {
 
     /// Update timer.
     timer: R::Timer,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> EventManager<R> {
@@ -319,7 +312,6 @@ impl<R: Runtime> EventManager<R> {
             transit_bandwidth: Default::default(),
             update_interval,
             timer: None,
-            _runtime: Default::default(),
         };
 
         (
@@ -336,13 +328,11 @@ impl<R: Runtime> EventManager<R> {
                     transit_bandwidth: Arc::clone(&handle.transit_bandwidth),
                     update_interval,
                     timer: None,
-                    _runtime: Default::default(),
                 },
                 pending_client_updates: Vec::new(),
                 pending_server_updates: Vec::new(),
                 status_tx,
                 timer: R::timer(update_interval),
-                _runtime: Default::default(),
             },
             EventSubscriber { status_rx },
             handle,

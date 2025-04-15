@@ -694,9 +694,6 @@ pub struct RoutingPathHandle<R: Runtime> {
 
     /// Tunnels.
     tunnels: HashMap<TunnelId, TunnelKind>,
-
-    /// Marker for `Runtime`
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> RoutingPathHandle<R> {
@@ -737,7 +734,6 @@ impl<R: Runtime> RoutingPathHandle<R> {
             },
             routing_path: None,
             tunnels,
-            _runtime: Default::default(),
         }
     }
 

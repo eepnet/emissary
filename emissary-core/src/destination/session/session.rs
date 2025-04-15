@@ -801,9 +801,6 @@ pub struct Session<R: Runtime> {
 
     /// `TagSet` entries for inbound messages.
     tag_set_entries: HashMap<u64, TagSetEntry>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> Session<R> {
@@ -829,7 +826,6 @@ impl<R: Runtime> Session<R> {
             remote,
             send_tag_set,
             tag_set_entries,
-            _runtime: Default::default(),
         }
     }
 

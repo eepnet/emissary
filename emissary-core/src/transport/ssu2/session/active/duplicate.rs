@@ -23,7 +23,6 @@ use hashbrown::HashSet;
 
 use core::{
     future::Future,
-    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -45,9 +44,6 @@ pub struct DuplicateFilter<R: Runtime> {
 
     /// Previous filter.
     previous: HashSet<u32>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> DuplicateFilter<R> {
@@ -57,7 +53,6 @@ impl<R: Runtime> DuplicateFilter<R> {
             current: HashSet::new(),
             previous: HashSet::new(),
             decay_timer: R::timer(DUPLICATE_FILTER_DECAY_INTERVAL),
-            _runtime: Default::default(),
         }
     }
 

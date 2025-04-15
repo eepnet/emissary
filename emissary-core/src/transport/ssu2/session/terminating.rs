@@ -37,7 +37,6 @@ use thingbuf::mpsc::{Receiver, Sender};
 use alloc::vec::Vec;
 use core::{
     future::Future,
-    marker::PhantomData,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
@@ -117,9 +116,6 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     //
     // TODO: implement clonable udp socket
     tx: Sender<Packet>,
-
-    /// Marker for `Runtime`
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> TerminatingSsu2Session<R> {
@@ -159,7 +155,6 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             rx: ctx.rx,
             timer: R::timer(TERMINATION_TIMEOUT),
             tx: ctx.tx,
-            _runtime: Default::default(),
         }
     }
 

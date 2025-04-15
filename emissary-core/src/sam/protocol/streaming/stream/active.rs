@@ -40,7 +40,6 @@ use alloc::{
 use core::{
     cmp,
     future::Future,
-    marker::PhantomData,
     mem,
     ops::Deref,
     pin::Pin,
@@ -346,9 +345,6 @@ pub struct InboundContext<R: Runtime> {
 
     /// Close requested, either by client or remote peer.
     close_requested: bool,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> InboundContext<R> {
@@ -362,7 +358,6 @@ impl<R: Runtime> InboundContext<R> {
             rtt: INITIAL_ACK_DELAY,
             close_requested: false,
             seq_nro,
-            _runtime: Default::default(),
         }
     }
 

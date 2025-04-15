@@ -46,7 +46,6 @@ use zeroize::Zeroize;
 use alloc::vec::Vec;
 use core::{
     future::Future,
-    marker::PhantomData,
     mem,
     net::SocketAddr,
     pin::Pin,
@@ -159,9 +158,6 @@ pub struct OutboundSsu2Session<R: Runtime> {
 
     /// Pending session state.
     state: PendingSessionState,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> OutboundSsu2Session<R> {
@@ -227,7 +223,6 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 router_info,
                 static_key,
             },
-            _runtime: Default::default(),
         }
     }
 
