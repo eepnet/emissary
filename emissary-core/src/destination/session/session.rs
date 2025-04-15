@@ -169,18 +169,15 @@ enum PendingSessionState<R: Runtime> {
 impl<R: Runtime> fmt::Debug for PendingSessionState<R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InboundActive { .. } => {
-                f.debug_struct("PendingSessionState::InboundActive").finish_non_exhaustive()
-            }
-            Self::AwaitingNsr { .. } => {
-                f.debug_struct("PendingSessionState::AwaitingNsr").finish_non_exhaustive()
-            }
+            Self::InboundActive { .. } =>
+                f.debug_struct("PendingSessionState::InboundActive").finish_non_exhaustive(),
+            Self::AwaitingNsr { .. } =>
+                f.debug_struct("PendingSessionState::AwaitingNsr").finish_non_exhaustive(),
             Self::AwaitingEsTransmit { .. } => f
                 .debug_struct("PendingSessionState::AwaitingEsTransmit")
                 .finish_non_exhaustive(),
-            Self::Poisoned => {
-                f.debug_struct("PendingSessionState::Poisoned").finish_non_exhaustive()
-            }
+            Self::Poisoned =>
+                f.debug_struct("PendingSessionState::Poisoned").finish_non_exhaustive(),
         }
     }
 }
