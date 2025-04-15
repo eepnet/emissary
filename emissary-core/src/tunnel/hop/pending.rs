@@ -487,7 +487,7 @@ impl<T: Tunnel> PendingTunnel<T> {
                 // make sure the message contains our record and that it has remained untampered
                 match message.payload[1..]
                     .chunks(SHORT_RECORD_LEN)
-                    .find(|chunk| &chunk[..16] == &local_hash)
+                    .find(|chunk| chunk[..16] == local_hash)
                 {
                     None => {
                         tracing::warn!(
@@ -501,7 +501,7 @@ impl<T: Tunnel> PendingTunnel<T> {
                         return Err(hop_results);
                     }
                     Some(record) =>
-                        if Sha256::new().update(&record).finalize_new() != checksum {
+                        if Sha256::new().update(record).finalize_new() != checksum {
                             tracing::warn!(
                                 target: LOG_TARGET,
                                 tunnel = %self.tunnel_id,
