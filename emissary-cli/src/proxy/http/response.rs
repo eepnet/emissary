@@ -16,6 +16,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use std::fmt;
+
 /// Error status.
 pub enum Status {
     /// HTTP 400 bad request.
@@ -25,11 +27,11 @@ pub enum Status {
     InternalServerError,
 }
 
-impl ToString for Status {
-    fn to_string(&self) -> String {
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Status::BadRequest => "400 Bad Request".to_string(),
-            Self::InternalServerError => "500 Internal Server Error".to_string(),
+            Status::BadRequest => write!(f, "400 Bad Request"),
+            Self::InternalServerError => write!(f, "500 Internal Server Error"),
         }
     }
 }

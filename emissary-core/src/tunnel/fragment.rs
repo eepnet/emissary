@@ -19,12 +19,35 @@
 use crate::{
     i2np::{tunnel::data::DeliveryInstructions, Message},
     primitives::MessageId,
+    runtime::{Instant, Runtime},
 };
 
-use hashbrown::HashMap;
+use futures::future::FutureExt;
+use hashbrown::{
+    hash_map::{Entry, OccupiedEntry},
+    HashMap,
+};
 
-use alloc::{collections::BTreeMap, vec::Vec};
-use core::{fmt, iter};
+use alloc::{
+    collections::{BTreeMap, VecDeque},
+    vec::Vec,
+};
+use core::{
+    fmt,
+    future::Future,
+    iter,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+/// Message expiration threshold.
+///
+/// If all the fragments of a message have not been received within 45 seconds,
+/// the [`Fragment`] is destroyed.
+///
+/// This is to prevent unbounded accumulation of incomplete I2NP messages.
+const MSG_EXPIRATION_THRESHOLD: Duration = Duration::from_secs(45);
 
 /// Owned delivery instructions.
 pub enum OwnedDeliveryInstructions {
@@ -77,8 +100,7 @@ impl<'a> From<&'a DeliveryInstructions<'a>> for OwnedDeliveryInstructions {
 }
 
 /// I2NP message fragment buffer.
-#[derive(Default)]
-pub struct Fragment {
+pub struct Fragment<R: Runtime> {
     /// Delivery instructions for the I2NP message.
     ///
     /// `None` if last first hasn't been received.
@@ -99,9 +121,25 @@ pub struct Fragment {
 
     /// Total size of the I2NP message.
     total_size: usize,
+
+    /// When was the [`Fragment`] created.
+    created: R::Instant,
 }
 
-impl Fragment {
+impl<R: Runtime> Default for Fragment<R> {
+    fn default() -> Self {
+        Self {
+            delivery_instructions: Default::default(),
+            first_fragment: Default::default(),
+            fragments: Default::default(),
+            num_fragments: Default::default(),
+            total_size: Default::default(),
+            created: R::now(),
+        }
+    }
+}
+
+impl<R: Runtime> Fragment<R> {
     /// Check if [`Fragment`] is ready for assembly.
     pub fn is_ready(&self) -> bool {
         self.num_fragments.is_some()
@@ -128,16 +166,41 @@ impl Fragment {
 }
 
 /// Fragment handler.
-pub struct FragmentHandler {
+pub struct FragmentHandler<R: Runtime> {
     /// Pending messages.
-    messages: HashMap<MessageId, Fragment>,
+    messages: HashMap<MessageId, Fragment<R>>,
+
+    /// Queue of `MessageId`, pushed on insertion into `Self::messages` (and thus ordered by
+    /// expiration time) and popped in `Self::poll` when expired or the message no longer exists
+    message_first_seen_queue: VecDeque<MessageId>,
+
+    /// Timer for when the earliest expiring message expires
+    next_expiration_timer: Option<R::Timer>,
 }
 
-impl FragmentHandler {
+impl<R: Runtime> FragmentHandler<R> {
     /// Create new [`FragmentHandler`].
     pub fn new() -> Self {
         Self {
             messages: HashMap::new(),
+            message_first_seen_queue: VecDeque::new(),
+            next_expiration_timer: None,
+        }
+    }
+
+    /// Equivalent to `Entry::or_default()`, except returns the entry itself instead of a mutable
+    /// reference and inserts the `MessageId` into the first seen queue if `MessageId` was not
+    /// already in the map
+    fn get_or_create_message_fragment(
+        &mut self,
+        message_id: MessageId,
+    ) -> OccupiedEntry<'_, MessageId, Fragment<R>> {
+        match self.messages.entry(message_id) {
+            Entry::Occupied(entry) => entry,
+            Entry::Vacant(vacant_entry) => {
+                self.message_first_seen_queue.push_back(message_id);
+                vacant_entry.insert_entry(Default::default())
+            }
         }
     }
 
@@ -150,17 +213,15 @@ impl FragmentHandler {
         delivery_instructions: &DeliveryInstructions,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.first_fragment = Some(payload.to_vec());
         message.delivery_instructions =
             Some(OwnedDeliveryInstructions::from(delivery_instructions));
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
     }
 
     /// Handle middle fragment.
@@ -172,15 +233,13 @@ impl FragmentHandler {
         sequence: usize,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.fragments.insert(sequence, payload.to_vec());
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
     }
 
     /// Handle last fragment.
@@ -192,16 +251,50 @@ impl FragmentHandler {
         sequence: usize,
         payload: &[u8],
     ) -> Option<(Message, OwnedDeliveryInstructions)> {
-        let message = self.messages.entry(message_id).or_default();
+        let mut message_entry = self.get_or_create_message_fragment(message_id);
+        let message = message_entry.get_mut();
 
         message.total_size += payload.len();
         message.fragments.insert(sequence, payload.to_vec());
         message.num_fragments = Some(sequence);
 
-        message
-            .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
-            .flatten()
+        message.is_ready().then(|| message_entry.remove().construct()).flatten()
+    }
+}
+
+impl<R: Runtime> Future for FragmentHandler<R> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(next_expiration_timer) = &mut self.next_expiration_timer {
+            futures::ready!(next_expiration_timer.poll_unpin(cx));
+        }
+
+        // TODO: In rust 1.86 this can become `pop_if`
+        while let Some(message_id) = self.message_first_seen_queue.front().copied() {
+            if let Entry::Occupied(fragment_entry) = self.messages.entry(message_id) {
+                if fragment_entry.get().created.elapsed() >= MSG_EXPIRATION_THRESHOLD {
+                    fragment_entry.remove();
+                } else {
+                    break;
+                }
+            }
+
+            self.message_first_seen_queue.pop_front();
+        }
+
+        if let Some(message_id) = self.message_first_seen_queue.front() {
+            let next_fragment_elapsed =
+                self.messages.get(message_id).expect("to exist").created.elapsed();
+
+            self.next_expiration_timer = Some(R::timer(
+                MSG_EXPIRATION_THRESHOLD.saturating_sub(next_fragment_elapsed),
+            ));
+        } else {
+            self.next_expiration_timer = None;
+        }
+
+        Poll::Pending
     }
 }
 
@@ -245,7 +338,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -287,7 +380,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
 
         let mut fragments = split(2, message);
 
@@ -324,7 +417,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
         assert_eq!(fragments.len(), 4);
 
@@ -364,7 +457,7 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::new();
+        let mut handler = FragmentHandler::<MockRuntime>::new();
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -392,5 +485,140 @@ mod tests {
         assert_eq!(message.message_id, 1338u32);
         assert_eq!(message.message_type, MessageType::Data);
         assert_eq!(message.payload, vec![0u8; 1337]);
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_incomplete() {
+        let message_id = MessageId::from(1338);
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        // last fragment is delivered first
+        assert!(handler.first_fragment(message_id, &DeliveryInstructions::Local, &[0]).is_none());
+
+        // poll the handler to verify garbage collection doesn't remove messages below the
+        // expiration
+        assert!(tokio::time::timeout(Duration::from_secs(1), &mut handler).await.is_err());
+        assert!(!handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(MSG_EXPIRATION_THRESHOLD, &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_complete() {
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        let message_id = MessageId::from(1337);
+        let expiration = MockRuntime::time_since_epoch();
+        let message = MessageBuilder::standard()
+            .with_expiration(expiration)
+            .with_message_type(MessageType::Data)
+            .with_message_id(1338u32)
+            .with_payload(&vec![0u8; 1337])
+            .build();
+        let mut fragments = split(4, message);
+
+        assert_eq!(fragments.len(), 4);
+        assert!(handler
+            .first_fragment(
+                message_id,
+                &DeliveryInstructions::Local,
+                &fragments.pop_front().unwrap(),
+            )
+            .is_none());
+
+        assert!(handler
+            .middle_fragment(message_id, 1, &fragments.pop_front().unwrap())
+            .is_none());
+
+        assert!(handler.last_fragment(message_id, 3, &fragments.pop_back().unwrap()).is_none());
+
+        // poll the handler to verify garbage collection doesn't remove messages below the
+        // expiration
+        assert!(tokio::time::timeout(Duration::from_secs(1), &mut handler).await.is_err());
+        assert!(!handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        let (_message, _delivery_instructions) =
+            handler.middle_fragment(message_id, 2, &fragments.pop_front().unwrap()).unwrap();
+
+        assert!(handler.messages.is_empty());
+        assert!(!handler.message_first_seen_queue.is_empty());
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(MSG_EXPIRATION_THRESHOLD, &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
+    }
+
+    #[tokio::test]
+    async fn garbage_collection_multiple() {
+        let mut handler = FragmentHandler::<MockRuntime>::new();
+
+        // Interleave: first message that will expire, second message that will complete, third
+        // message that will expire
+
+        assert!(handler
+            .first_fragment(MessageId::from(0), &DeliveryInstructions::Local, &[0])
+            .is_none());
+        assert_eq!(handler.messages.len(), 1);
+        assert_eq!(handler.message_first_seen_queue.len(), 1);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let message_id = MessageId::from(1337);
+        let expiration = MockRuntime::time_since_epoch();
+        let message = MessageBuilder::standard()
+            .with_expiration(expiration)
+            .with_message_type(MessageType::Data)
+            .with_message_id(1337u32)
+            .with_payload(&vec![0u8; 1337])
+            .build();
+        let mut fragments = split(4, message);
+
+        assert_eq!(fragments.len(), 4);
+        assert!(handler
+            .first_fragment(
+                message_id,
+                &DeliveryInstructions::Local,
+                &fragments.pop_front().unwrap(),
+            )
+            .is_none());
+
+        assert!(handler
+            .middle_fragment(message_id, 1, &fragments.pop_front().unwrap())
+            .is_none());
+
+        assert!(handler.last_fragment(message_id, 3, &fragments.pop_back().unwrap()).is_none());
+        assert_eq!(handler.messages.len(), 2);
+        assert_eq!(handler.message_first_seen_queue.len(), 2);
+
+        assert!(handler
+            .first_fragment(MessageId::from(1), &DeliveryInstructions::Local, &[0])
+            .is_none());
+        assert_eq!(handler.messages.len(), 3);
+        assert_eq!(handler.message_first_seen_queue.len(), 3);
+
+        let (_message, _delivery_instructions) =
+            handler.middle_fragment(message_id, 2, &fragments.pop_front().unwrap()).unwrap();
+        assert_eq!(handler.messages.len(), 2);
+        assert_eq!(handler.message_first_seen_queue.len(), 3);
+
+        // poll the handler to run garbage collection, only the third message should remain
+        assert!(tokio::time::timeout(
+            MSG_EXPIRATION_THRESHOLD - Duration::from_secs(1),
+            &mut handler
+        )
+        .await
+        .is_err());
+        assert_eq!(handler.messages.len(), 1);
+        assert_eq!(handler.message_first_seen_queue.len(), 1);
+
+        // poll the handler to run garbage collection
+        assert!(tokio::time::timeout(Duration::from_secs(2), &mut handler).await.is_err());
+        assert!(handler.messages.is_empty());
+        assert!(handler.message_first_seen_queue.is_empty());
     }
 }

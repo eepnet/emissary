@@ -79,7 +79,7 @@ const R4SAS_RESEED: &str = include_str!(concat!(
 ));
 
 /// Certificates of the reseed bundle signers.
-pub const CERTIFICATES: &'static [(&str, &str); 14] = &[
+pub const CERTIFICATES: &[(&str, &str); 14] = &[
     ("acetone@mail.i2p.crt", ACETONE),
     ("creativecowpat@mail.i2p.crt", CREATIVECOWPAT),
     ("hottuna@mail.i2p.crt", HOTTUNA),

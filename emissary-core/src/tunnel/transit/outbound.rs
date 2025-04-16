@@ -37,10 +37,10 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
     pin::Pin,
@@ -58,10 +58,10 @@ pub struct OutboundEndpoint<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: BoxFuture<'static, ()>,
+    expiration_timer: R::Timer,
 
     /// Fragment handler.
-    fragment: FragmentHandler,
+    fragment: FragmentHandler<R>,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -300,7 +300,7 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
     ) -> Self {
         OutboundEndpoint {
             event_handle,
-            expiration_timer: Box::pin(R::delay(TRANSIT_TUNNEL_EXPIRATION)),
+            expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             fragment: FragmentHandler::new(),
             bandwidth: 0usize,
             message_rx,
@@ -382,6 +382,11 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
         if self.expiration_timer.poll_unpin(cx).is_ready() {
             return Poll::Ready(self.tunnel_id);
         }
+
+        // poll fragment handler
+        //
+        // the futures don't return anything but must be polled so they make progress
+        let _ = self.fragment.poll_unpin(cx);
 
         Poll::Pending
     }
@@ -490,10 +495,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -607,10 +609,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let message = MessageBuilder::standard()
@@ -718,10 +717,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         // message expires in one second

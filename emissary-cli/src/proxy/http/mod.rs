@@ -132,7 +132,7 @@ impl HttpProxy {
         };
         let host = match req.headers.iter().find(|header| header.name.to_lowercase() == "host") {
             Some(host) => {
-                let host = std::str::from_utf8(&host.value).map_err(|_| HttpError::Malformed)?;
+                let host = std::str::from_utf8(host.value).map_err(|_| HttpError::Malformed)?;
                 let host = host.strip_prefix("www.").unwrap_or(host).to_string();
 
                 if !host.ends_with(".i2p") {
@@ -154,7 +154,7 @@ impl HttpProxy {
                 return Err(HttpError::InvalidHost);
             }
         };
-        let path = match url::Url::parse(&req.path.ok_or(HttpError::InvalidPath)?) {
+        let path = match url::Url::parse(req.path.ok_or(HttpError::InvalidPath)?) {
             Ok(url) => match url.query() {
                 Some(query) => format!("{}?{query}", url.path()),
                 None => url.path().to_string(),
@@ -174,11 +174,11 @@ impl HttpProxy {
             // serialize request into a byte vector
             let mut sanitized = Vec::new();
 
-            sanitized.extend_from_slice(&format!("{} ", method).as_bytes());
-            sanitized.extend_from_slice(&format!("{} ", path).as_bytes());
-            sanitized.extend_from_slice(&"HTTP/1.1\r\n".as_bytes());
+            sanitized.extend_from_slice(format!("{} ", method).as_bytes());
+            sanitized.extend_from_slice(format!("{} ", path).as_bytes());
+            sanitized.extend_from_slice("HTTP/1.1\r\n".as_bytes());
 
-            for header in req.headers.into_iter() {
+            for header in req.headers.iter_mut() {
                 if header.name.to_lowercase() == "user-agent" {
                     sanitized.extend_from_slice("User-Agent: MYOB/6.66 (AN/ON)\r\n".as_bytes());
                     continue;
@@ -194,7 +194,7 @@ impl HttpProxy {
                 }
 
                 if header.name.to_lowercase() == "connection" {
-                    match std::str::from_utf8(&header.value) {
+                    match std::str::from_utf8(header.value) {
                         Ok(value) if value.to_lowercase() == "upgrade" => {
                             sanitized.extend_from_slice("Connection: upgrade\r\n".as_bytes());
                         }
@@ -205,7 +205,7 @@ impl HttpProxy {
                 }
 
                 if header.name.to_lowercase() == "referer" {
-                    let Ok(value) = std::str::from_utf8(&header.value) else {
+                    let Ok(value) = std::str::from_utf8(header.value) else {
                         continue;
                     };
 
@@ -228,7 +228,7 @@ impl HttpProxy {
                     tracing::warn!(
                         target: LOG_TARGET,
                         name = ?header.name,
-                        value = ?(std::str::from_utf8(&header.value)),
+                        value = ?(std::str::from_utf8(header.value)),
                         "skipping illegal header",
                     );
                     continue;
@@ -313,7 +313,7 @@ impl HttpProxy {
                         .with_error(format!("Failed to establish connection to {host}"))
                         .build();
 
-                    if let Err(error) = stream.write_all(&response.as_bytes()).await {
+                    if let Err(error) = stream.write_all(response.as_bytes()).await {
                         tracing::debug!(
                             target: LOG_TARGET,
                             ?error,
@@ -357,7 +357,7 @@ impl HttpProxy {
                                     }.to_string();
 
                                     let response = ResponseBuilder::new(Status::BadRequest).with_error(error).build();
-                                    if let Err(error) = stream.write_all(&response.as_bytes()).await {
+                                    if let Err(error) = stream.write_all(response.as_bytes()).await {
                                         tracing::debug!(
                                             target: LOG_TARGET,
                                             ?error,

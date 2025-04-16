@@ -29,10 +29,10 @@ use crate::{
 };
 
 use bytes::{BufMut, BytesMut};
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
     pin::Pin,
@@ -53,7 +53,7 @@ pub struct Participant<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: BoxFuture<'static, ()>,
+    expiration_timer: R::Timer,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -130,7 +130,7 @@ impl<R: Runtime> TransitTunnel<R> for Participant<R> {
     ) -> Self {
         Participant {
             event_handle,
-            expiration_timer: Box::pin(R::delay(TRANSIT_TUNNEL_EXPIRATION)),
+            expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             bandwidth: 0usize,
             message_rx,
             metrics_handle,
@@ -161,7 +161,7 @@ impl<R: Runtime> Future for Participant<R> {
                     self.bandwidth += message.serialized_len_short();
 
                     match message.message_type {
-                        MessageType::TunnelData =>
+                        MessageType::TunnelData => {
                             match EncryptedTunnelData::parse(&message.payload) {
                                 Some(message) => match self.handle_tunnel_data(&message) {
                                     Ok((router, message)) => {
@@ -189,7 +189,8 @@ impl<R: Runtime> Future for Participant<R> {
                                     target: LOG_TARGET,
                                     "failed to parse message",
                                 ),
-                            },
+                            }
+                        }
                         message_type => tracing::warn!(
                             target: LOG_TARGET,
                             tunnel_id = %self.tunnel_id,

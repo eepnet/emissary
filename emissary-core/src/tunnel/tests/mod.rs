@@ -270,7 +270,7 @@ pub fn build_outbound_tunnel(
 
     let message = Message::parse_standard(&payload).unwrap();
     assert_eq!(message.message_type, MessageType::Garlic);
-    let tunnel = pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+    let tunnel = pending_tunnel.try_build_tunnel(message).unwrap();
 
     (local_hash, tunnel, transit_managers)
 }
@@ -279,7 +279,11 @@ pub fn build_outbound_tunnel(
 pub fn build_inbound_tunnel(
     fast: bool,
     num_hops: usize,
-) -> (Bytes, InboundTunnel, Vec<TestTransitTunnelManager>) {
+) -> (
+    Bytes,
+    InboundTunnel<MockRuntime>,
+    Vec<TestTransitTunnelManager>,
+) {
     let (hops, mut transit_managers): (
         Vec<(Bytes, StaticPublicKey)>,
         Vec<TestTransitTunnelManager>,
@@ -304,20 +308,22 @@ pub fn build_inbound_tunnel(
     } = TunnelPoolBuildParameters::new(Default::default());
 
     let (pending_tunnel, next_router, message) =
-        PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-            hops: hops.clone(),
-            name: Str::from("tunnel-pool"),
-            noise: local_noise,
-            message_id,
-            tunnel_info: TunnelInfo::Inbound {
-                tunnel_id,
-                router_id: local_hash.clone(),
+        PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+            TunnelBuildParameters {
+                hops: hops.clone(),
+                name: Str::from("tunnel-pool"),
+                noise: local_noise,
+                message_id,
+                tunnel_info: TunnelInfo::Inbound {
+                    tunnel_id,
+                    router_id: local_hash.clone(),
+                },
+                receiver: ReceiverKind::Inbound {
+                    message_rx: rx,
+                    handle,
+                },
             },
-            receiver: ReceiverKind::Inbound {
-                message_rx: rx,
-                handle,
-            },
-        })
+        )
         .unwrap();
 
     let message = match transit_managers[0].garlic().handle_message(message).unwrap().next() {
@@ -341,7 +347,7 @@ pub fn build_inbound_tunnel(
         },
     );
 
-    let tunnel = pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+    let tunnel = pending_tunnel.try_build_tunnel(message).unwrap();
 
     (local_hash, tunnel, transit_managers)
 }

@@ -33,11 +33,11 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use rand_core::RngCore;
 use thingbuf::mpsc::Receiver;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
@@ -61,7 +61,7 @@ pub struct InboundGateway<R: Runtime> {
     event_handle: EventHandle<R>,
 
     /// Tunnel expiration timer.
-    expiration_timer: BoxFuture<'static, ()>,
+    expiration_timer: R::Timer,
 
     /// Used bandwidth.
     bandwidth: usize,
@@ -182,7 +182,7 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
 
         InboundGateway {
             event_handle,
-            expiration_timer: Box::pin(R::delay(TRANSIT_TUNNEL_EXPIRATION)),
+            expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             bandwidth: 0usize,
             message_rx,
             metrics_handle,
@@ -327,20 +327,22 @@ mod tests {
         } = TunnelPoolBuildParameters::new(Default::default());
 
         let (pending, router_id, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
-                name: Str::from("tunnel-pool"),
-                noise: ibep_noise.clone(),
-                message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id: TunnelId::random(),
-                    router_id: Bytes::from(RouterId::random().to_vec()),
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
+                    name: Str::from("tunnel-pool"),
+                    noise: ibep_noise.clone(),
+                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id: TunnelId::random(),
+                        router_id: Bytes::from(RouterId::random().to_vec()),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         assert_eq!(router_id, ibgw_router_info.identity.id());
@@ -388,10 +390,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let (_msg_tx, msg_rx) = channel(64);
@@ -448,20 +447,22 @@ mod tests {
         } = TunnelPoolBuildParameters::new(Default::default());
 
         let (pending, router_id, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
-                name: Str::from("tunnel-pool"),
-                noise: ibep_noise.clone(),
-                message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id: TunnelId::random(),
-                    router_id: Bytes::from(RouterId::random().to_vec()),
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: vec![(ibgw_router_hash.clone(), ibgw_static_key.public())],
+                    name: Str::from("tunnel-pool"),
+                    noise: ibep_noise.clone(),
+                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id: TunnelId::random(),
+                        router_id: Bytes::from(RouterId::random().to_vec()),
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         assert_eq!(router_id, ibgw_router_info.identity.id());
@@ -509,10 +510,7 @@ mod tests {
                 .build();
             let message = Message::parse_standard(&msg).unwrap();
 
-            (
-                keys,
-                pending.try_build_tunnel::<MockRuntime>(message).unwrap(),
-            )
+            (keys, pending.try_build_tunnel(message).unwrap())
         };
 
         let (_msg_tx, msg_rx) = channel(64);

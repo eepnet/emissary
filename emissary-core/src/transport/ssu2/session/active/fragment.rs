@@ -22,10 +22,10 @@ use crate::{
     runtime::{Instant, Runtime},
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use hashbrown::HashMap;
 
-use alloc::{boxed::Box, collections::BTreeMap, vec::Vec};
+use alloc::{collections::BTreeMap, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
@@ -112,7 +112,7 @@ pub struct FragmentHandler<R: Runtime> {
     messages: HashMap<MessageId, Fragment<R>>,
 
     /// Garbage collection timer.
-    gc_timer: BoxFuture<'static, ()>,
+    gc_timer: R::Timer,
 }
 
 impl<R: Runtime> FragmentHandler<R> {
@@ -120,7 +120,7 @@ impl<R: Runtime> FragmentHandler<R> {
     pub fn new() -> Self {
         Self {
             messages: HashMap::new(),
-            gc_timer: Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL)),
+            gc_timer: R::timer(GARBAGE_COLLECTION_INTERVAL),
         }
     }
 
@@ -190,7 +190,7 @@ impl<R: Runtime> Future for FragmentHandler<R> {
                 self.messages.remove(key);
             });
 
-        self.gc_timer = Box::pin(R::delay(GARBAGE_COLLECTION_INTERVAL));
+        self.gc_timer = R::timer(GARBAGE_COLLECTION_INTERVAL);
         let _ = self.gc_timer.poll_unpin(cx);
 
         Poll::Pending
@@ -400,7 +400,7 @@ mod tests {
         tokio::time::sleep(MSG_EXPIRATION_THRESHOLD + Duration::from_secs(2)).await;
 
         // set the gc period to a shorter time and poll it for a while
-        handler.gc_timer = Box::pin(MockRuntime::delay(Duration::from_secs(5)));
+        handler.gc_timer = MockRuntime::timer(Duration::from_secs(5));
         assert!(tokio::time::timeout(Duration::from_secs(8), &mut handler).await.is_err());
         assert!(handler.messages.is_empty());
     }

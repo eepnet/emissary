@@ -332,16 +332,15 @@ impl<R: Runtime> StreamListener<R> {
             // state can be either uninitialized or initializing/initialized to be ephemeral
             (
                 ListenerState::Ephemeral { .. }
-                | ListenerState::Uninitialized { .. }
+                | ListenerState::Uninitialized
                 | ListenerState::Initializing {
-                    kind: PendingListenerKind::Ephemeral { .. },
+                    kind: PendingListenerKind::Ephemeral,
                 },
                 kind @ ListenerKind::Ephemeral { .. },
             ) => Some(kind),
 
             // only an unitialized listener can accept `STREAM FORWARD`
-            (ListenerState::Uninitialized { .. }, kind @ ListenerKind::Persistent { .. }) =>
-                Some(kind),
+            (ListenerState::Uninitialized, kind @ ListenerKind::Persistent { .. }) => Some(kind),
 
             // all other states are invalid and the accept requested is rejected
             (state, kind @ (ListenerKind::Ephemeral { .. } | ListenerKind::Persistent { .. })) => {
@@ -573,7 +572,7 @@ impl<R: Runtime> futures::Stream for StreamListener<R> {
                 ),
                 Poll::Ready(Some(Ok((socket, pending_routing_path_handle)))) => {
                     match mem::replace(&mut self.state, ListenerState::Poisoned) {
-                        ListenerState::Uninitialized { .. } => {
+                        ListenerState::Uninitialized => {
                             // connection wasn't configured to be silent because
                             // a status message was sent to the client
                             self.state = ListenerState::Ephemeral {

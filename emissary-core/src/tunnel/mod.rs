@@ -36,12 +36,12 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot;
 use hashbrown::HashMap;
 use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
@@ -100,7 +100,7 @@ pub struct TunnelManager<R: Runtime> {
     bloom_filter: BloomFilter,
 
     /// Bloom filter decay timer.
-    bloom_filter_timer: BoxFuture<'static, ()>,
+    bloom_filter_timer: R::Timer,
 
     /// RX channel for receiving tunneling-related commands from other subsystems.
     command_rx: Receiver<TunnelManagerCommand, CommandRecycle>,
@@ -205,7 +205,7 @@ impl<R: Runtime> TunnelManager<R> {
         (
             Self {
                 bloom_filter: BloomFilter::default(),
-                bloom_filter_timer: Box::pin(R::delay(BLOOM_FILTER_DECAY_INTERVAL)),
+                bloom_filter_timer: R::timer(BLOOM_FILTER_DECAY_INTERVAL),
                 command_rx,
                 exploratory_selector,
                 garlic: GarlicHandler::new(
@@ -532,14 +532,15 @@ impl<R: Runtime> Future for TunnelManager<R> {
                 None => return Poll::Ready(()),
                 Some(RoutingKind::External { router_id, message }) =>
                     self.send_message(&router_id, message, None),
-                Some(RoutingKind::Internal { message }) =>
+                Some(RoutingKind::Internal { message }) => {
                     if let Err(error) = self.on_message(message) {
                         tracing::debug!(
                             target: LOG_TARGET,
                             ?error,
                             "failed to handle internal tunnel message",
                         );
-                    },
+                    }
+                }
                 Some(RoutingKind::ExternalWithFeedback {
                     router_id,
                     message,
@@ -588,7 +589,7 @@ impl<R: Runtime> Future for TunnelManager<R> {
         // create new timer and register it into the executor
         {
             self.bloom_filter.decay();
-            self.bloom_filter_timer = Box::pin(R::delay(BLOOM_FILTER_DECAY_INTERVAL));
+            self.bloom_filter_timer = R::timer(BLOOM_FILTER_DECAY_INTERVAL);
             let _ = self.bloom_filter_timer.poll_unpin(cx);
         }
 

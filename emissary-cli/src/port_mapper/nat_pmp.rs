@@ -170,7 +170,7 @@ impl PortMapper {
             .boxed(),
         )
         .await
-        .map(|result| Some(result))
+        .map(Some)
     }
 
     /// Attempt to map SSU2 port.
@@ -203,7 +203,7 @@ impl PortMapper {
             .boxed(),
         )
         .await
-        .map(|result| Some(result))
+        .map(Some)
     }
 
     /// Attempt to fetch external address of the router.
@@ -297,21 +297,18 @@ impl PortMapper {
                     Err(_) => return,
                 },
                 _ = &mut external_address_timer => {
-                    match Self::try_get_external_address(&mut client).await {
-                        Ok(Some(address)) => {
-                            if address != external_address {
-                                tracing::info!(
-                                    target: LOG_TARGET,
-                                    new_address = ?address,
-                                    previous_address = ?external_address,
-                                    "new external address discovered",
-                                );
+                    if let Ok(Some(address)) = Self::try_get_external_address(&mut client).await {
+                        if address != external_address {
+                            tracing::info!(
+                                target: LOG_TARGET,
+                                new_address = ?address,
+                                previous_address = ?external_address,
+                                "new external address discovered",
+                            );
 
-                                let _ = self.address_tx.send(address).await;
-                                external_address = address;
-                            }
+                            let _ = self.address_tx.send(address).await;
+                            external_address = address;
                         }
-                        _ => {}
                     };
 
                     external_address_timer = Box::pin(tokio::time::sleep(ADDRESS_REFRESH_TIMER));

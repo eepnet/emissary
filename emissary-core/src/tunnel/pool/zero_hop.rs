@@ -23,11 +23,10 @@ use crate::{
     tunnel::{pool::TUNNEL_BUILD_EXPIRATION, routing_table::RoutingTable},
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use futures_channel::oneshot;
 use thingbuf::mpsc;
 
-use alloc::boxed::Box;
 use core::{
     future::Future,
     pin::Pin,
@@ -42,9 +41,9 @@ const LOG_TARGET: &str = "emissary::tunnel::pool::zero-hop";
 /// These tunnels are used to receive one `TunnelGateway` message which contains a tunnel build
 /// response which it routes back to the installed listener (if it exists), after which the tunnel
 /// gets destructed.
-pub struct ZeroHopInboundTunnel {
+pub struct ZeroHopInboundTunnel<R: Runtime> {
     /// Expiration timer.
-    expiration_timer: BoxFuture<'static, ()>,
+    expiration_timer: R::Timer,
 
     /// RX channel for receiving a message.
     message_rx: mpsc::Receiver<Message>,
@@ -59,18 +58,16 @@ pub struct ZeroHopInboundTunnel {
     tunnel_id: TunnelId,
 }
 
-impl ZeroHopInboundTunnel {
+impl<R: Runtime> ZeroHopInboundTunnel<R> {
     /// Create new [`ZeroHopInboundTunnel`].
-    pub fn new<R: Runtime>(
-        routing_table: RoutingTable,
-    ) -> (TunnelId, Self, oneshot::Receiver<Message>) {
+    pub fn new(routing_table: RoutingTable) -> (TunnelId, Self, oneshot::Receiver<Message>) {
         let (tunnel_id, message_rx) = routing_table.insert_tunnel::<1>(&mut R::rng());
         let (tx, rx) = oneshot::channel();
 
         (
             tunnel_id,
             Self {
-                expiration_timer: Box::pin(R::delay(TUNNEL_BUILD_EXPIRATION)),
+                expiration_timer: R::timer(TUNNEL_BUILD_EXPIRATION),
                 message_rx,
                 reply_tx: Some(tx),
                 routing_table,
@@ -113,7 +110,7 @@ impl ZeroHopInboundTunnel {
     }
 }
 
-impl Future for ZeroHopInboundTunnel {
+impl<R: Runtime> Future for ZeroHopInboundTunnel<R> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {

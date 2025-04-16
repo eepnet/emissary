@@ -32,7 +32,7 @@ use futures::Stream;
 use futures_io::{AsyncRead as _, AsyncWrite as _};
 use parking_lot::RwLock;
 use rand_core::{CryptoRng, RngCore};
-use tokio::{io::ReadBuf, net, task};
+use tokio::{io::ReadBuf, net, task, time::Sleep};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use std::{
@@ -312,6 +312,7 @@ impl Runtime for MockRuntime {
     type JoinSet<T: Send + 'static> = MockJoinSet<T>;
     type MetricsHandle = MockMetricsHandle;
     type Instant = MockInstant;
+    type Timer = Pin<Box<Sleep>>;
 
     /// Spawn `future` in the background.
     fn spawn<F>(future: F)
@@ -352,8 +353,12 @@ impl Runtime for MockRuntime {
     }
 
     /// Return future which blocks for `duration` before returning.
-    fn delay(duration: Duration) -> impl Future<Output = ()> + Send {
-        tokio::time::sleep(duration)
+    fn timer(duration: Duration) -> Self::Timer {
+        Box::pin(tokio::time::sleep(duration))
+    }
+
+    async fn delay(duration: Duration) {
+        tokio::time::sleep(duration).await;
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {

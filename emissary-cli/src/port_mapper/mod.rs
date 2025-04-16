@@ -95,7 +95,7 @@ impl PortMapper {
 
         match config {
             PortForwardingConfig { nat_pmp: true, .. } => {
-                let _ = tokio::spawn(
+                tokio::spawn(
                     nat_pmp::PortMapper::new(
                         config,
                         ntcp2_port,
@@ -107,17 +107,17 @@ impl PortMapper {
                 );
             }
             PortForwardingConfig { nat_pmp: false, .. } => {
-                let _ = tokio::spawn(
+                tokio::spawn(
                     upnp::PortMapper::new(config, ntcp2_port, ssu2_port, address_tx, shutdown_rx)
                         .run(),
                 );
             }
         }
 
-        return Self {
+        Self {
             address_rx: Some(address_rx),
             shutdown_tx: Some(shutdown_tx),
-        };
+        }
     }
 
     /// Shut down [`PortMapper`].

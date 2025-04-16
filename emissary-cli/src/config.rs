@@ -653,7 +653,7 @@ impl Config {
         fs::create_dir_all(&path)?;
 
         for c in chars.chars() {
-            fs::create_dir_all(path.join(&format!("r{c}")))?;
+            fs::create_dir_all(path.join(format!("r{c}")))?;
         }
 
         Ok(())
@@ -667,7 +667,7 @@ impl Config {
         fs::create_dir_all(&path)?;
 
         for c in chars.chars() {
-            fs::create_dir_all(path.join(&format!("p{c}")))?;
+            fs::create_dir_all(path.join(format!("p{c}")))?;
         }
 
         Ok(())
@@ -975,12 +975,10 @@ impl Config {
                                     last_activity: Duration::from_secs(
                                         profile.last_activity.unwrap_or(0),
                                     ),
-                                    last_declined: profile
-                                        .last_declined
-                                        .map(|last_declined| Duration::from_secs(last_declined)),
-                                    last_dial_failure: profile.last_dial_failure.map(
-                                        |last_dial_failure| Duration::from_secs(last_dial_failure),
-                                    ),
+                                    last_declined: profile.last_declined.map(Duration::from_secs),
+                                    last_dial_failure: profile
+                                        .last_dial_failure
+                                        .map(Duration::from_secs),
                                     num_accepted: profile.num_accepted.unwrap_or(0),
                                     num_connection: profile.num_connection.unwrap_or(0),
                                     num_dial_failures: profile.num_dial_failures.unwrap_or(0),
@@ -1254,7 +1252,7 @@ mod tests {
         assert!(config.routers.is_empty());
         assert_eq!(config.static_key.len(), 32);
         assert_eq!(config.signing_key.len(), 32);
-        assert_eq!(config.ntcp2_config.as_ref().unwrap().port, 8888);
+        assert_eq!(config.ntcp2_config.as_ref().unwrap().port, 25115);
         assert_eq!(config.ntcp2_config.as_ref().unwrap().host, None,);
 
         let (key, iv) = {
@@ -1314,7 +1312,7 @@ mod tests {
             let config = Config::parse(Some(dir.path().to_owned()), &make_arguments()).unwrap();
             let ntcp2_config = config.ntcp2_config.unwrap();
 
-            assert_eq!(ntcp2_config.port, 8888u16);
+            assert_eq!(ntcp2_config.port, 25115u16);
 
             (ntcp2_config.key, ntcp2_config.iv)
         };

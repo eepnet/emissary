@@ -28,7 +28,7 @@ use futures::{AsyncRead as _, AsyncWrite as _, Stream};
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use rand_core::{CryptoRng, RngCore};
-use tokio::{io::ReadBuf, net, task};
+use tokio::{io::ReadBuf, net, task, time::Sleep};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use std::{
@@ -333,6 +333,7 @@ impl RuntimeT for Runtime {
     type JoinSet<T: Send + 'static> = TokioJoinSet<T>;
     type MetricsHandle = TokioMetricsHandle;
     type Instant = TokioInstant;
+    type Timer = Pin<Box<Sleep>>;
 
     fn spawn<F>(future: F)
     where
@@ -406,8 +407,12 @@ impl RuntimeT for Runtime {
         TokioMetricsHandle {}
     }
 
-    fn delay(duration: Duration) -> impl Future<Output = ()> + Send {
-        tokio::time::sleep(duration)
+    fn timer(duration: Duration) -> Self::Timer {
+        Box::pin(tokio::time::sleep(duration))
+    }
+
+    async fn delay(duration: Duration) {
+        tokio::time::sleep(duration).await
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {

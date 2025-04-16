@@ -46,7 +46,7 @@ use crate::{
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::{
-    future::{select, BoxFuture, Either},
+    future::{select, Either},
     FutureExt, StreamExt,
 };
 use futures_channel::oneshot;
@@ -54,10 +54,10 @@ use hashbrown::{HashMap, HashSet};
 use listener::ReceiveKind;
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
-    pin::Pin,
+    pin::{pin, Pin},
     task::{Context, Poll},
     time::Duration,
 };
@@ -200,7 +200,7 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     last_tunnel_test: R::Instant,
 
     /// Tunnel maintenance timer.
-    maintenance_timer: BoxFuture<'static, ()>,
+    maintenance_timer: R::Timer,
 
     /// How many tunnel build failures, either timeouts or rejections, there has been.
     num_tunnel_build_failures: usize,
@@ -212,7 +212,7 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     outbound: HashMap<TunnelId, OutboundTunnel<R>>,
 
     /// Pending inbound tunnels.
-    pending_inbound: TunnelBuildListener<R, InboundTunnel>,
+    pending_inbound: TunnelBuildListener<R, InboundTunnel<R>>,
 
     /// Pending outbound tunnels.
     pending_outbound: TunnelBuildListener<R, OutboundTunnel<R>>,
@@ -272,7 +272,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                 inbound: R::join_set(),
                 inbound_tunnels: HashMap::new(),
                 last_tunnel_test: R::now(),
-                maintenance_timer: Box::pin(R::delay(Duration::from_secs(0))),
+                maintenance_timer: R::timer(Duration::from_secs(0)),
                 outbound: HashMap::new(),
                 pending_inbound: TunnelBuildListener::new(
                     routing_table.clone(),
@@ -376,7 +376,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                     // `ZeroHopInboundTunnel::new()` also returns a `oneshot::Receiver<Message>`
                     // which is used to receive the build response, if it's received in time
                     let (gateway, zero_hop_tunnel, message_rx) =
-                        ZeroHopInboundTunnel::new::<R>(self.routing_table.clone());
+                        ZeroHopInboundTunnel::<R>::new(self.routing_table.clone());
 
                     // allocate random message id for the build request
                     //
@@ -594,7 +594,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
             let (tunnel_id, tunnel_rx) =
                 self.routing_table.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
 
-            match PendingTunnel::<InboundTunnel>::create_tunnel::<R>(TunnelBuildParameters {
+            match PendingTunnel::<InboundTunnel<R>>::create_tunnel::<R>(TunnelBuildParameters {
                 hops,
                 name: self.config.name.clone(),
                 noise: self.router_ctx.noise().clone(),
@@ -811,7 +811,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                     Ok(_) => self.pending_tests.push(async move {
                         let started = R::now();
 
-                        match select(message_rx, Box::pin(R::delay(TUNNEL_TEST_EXPIRATION))).await {
+                        match select(message_rx, pin!(R::delay(TUNNEL_TEST_EXPIRATION))).await {
                             Either::Right((_, _)) => (outbound, inbound, Err(Error::Timeout)),
                             Either::Left((Err(_), _)) =>
                                 (outbound, inbound, Err(Error::Channel(ChannelError::Closed))),
@@ -1047,7 +1047,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                 (feedback_tx, 0usize),
                                 |(mut feedback_tx, count), message| {
                                     match feedback_tx.take() {
-                                        Some(feedback_tx) =>
+                                        Some(feedback_tx) => {
                                             if let Err(error) =
                                                 self.routing_table.send_message_with_feedback(
                                                     router_id.clone(),
@@ -1062,8 +1062,9 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                                     ?error,
                                                     "failed to send tunnel message to router",
                                                 );
-                                            },
-                                        None =>
+                                            }
+                                        }
+                                        None => {
                                             if let Err(error) = self
                                                 .routing_table
                                                 .send_message(router_id.clone(), message)
@@ -1075,7 +1076,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                                     ?error,
                                                     "failed to send tunnel message to router",
                                                 );
-                                            },
+                                            }
+                                        }
                                     }
 
                                     (None, count + 1)
@@ -1451,7 +1453,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
             Poll::Ready(()) => {
                 // create new timer and register it into the executor
                 {
-                    self.maintenance_timer = Box::pin(R::delay(TUNNEL_MAINTENANCE_INTERVAL));
+                    self.maintenance_timer = R::timer(TUNNEL_MAINTENANCE_INTERVAL);
                     let _ = self.maintenance_timer.poll_unpin(cx);
                 }
 

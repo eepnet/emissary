@@ -148,7 +148,7 @@ impl PortMapper {
             .boxed(),
         )
         .await
-        .map(|result| Some(result))
+        .map(Some)
     }
 
     /// Attempt to map SSU2 port.
@@ -186,7 +186,7 @@ impl PortMapper {
             .boxed(),
         )
         .await
-        .map(|result| Some(result))
+        .map(Some)
     }
 
     /// Run the event loop of UPnP [`PortMapper`].

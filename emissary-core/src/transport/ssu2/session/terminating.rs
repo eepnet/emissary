@@ -31,13 +31,12 @@ use crate::{
     },
 };
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use thingbuf::mpsc::{Receiver, Sender};
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 use core::{
     future::Future,
-    marker::PhantomData,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
@@ -111,15 +110,12 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     rx: Receiver<Packet>,
 
     /// Expiration timer.
-    timer: BoxFuture<'static, ()>,
+    timer: R::Timer,
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     //
     // TODO: implement clonable udp socket
     tx: Sender<Packet>,
-
-    /// Marker for `Runtime`
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> TerminatingSsu2Session<R> {
@@ -157,9 +153,8 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             recv_key_ctx: ctx.recv_key_ctx,
             router_id: ctx.router_id,
             rx: ctx.rx,
-            timer: Box::pin(R::delay(TERMINATION_TIMEOUT)),
+            timer: R::timer(TERMINATION_TIMEOUT),
             tx: ctx.tx,
-            _runtime: Default::default(),
         }
     }
 

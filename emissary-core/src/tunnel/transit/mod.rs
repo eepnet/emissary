@@ -50,11 +50,11 @@ use futures::{
 use futures_channel::oneshot;
 use thingbuf::mpsc::Receiver;
 
-use alloc::{boxed::Box, string::ToString, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
-    pin::Pin,
+    pin::{pin, Pin},
     task::{Context, Poll},
     time::Duration,
 };
@@ -343,7 +343,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
 
                 match role {
                     HopRole::InboundGateway => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -370,7 +370,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::Participant => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -397,7 +397,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         .await)
                     }),
                     HopRole::OutboundEndpoint => self.tunnels.push(async move {
-                        match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await {
+                        match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                             Either::Left((Ok(_), _)) => {}
                             Either::Left((Err(_), _)) => return Err(tunnel_id),
                             Either::Right(_) => {
@@ -603,8 +603,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 match role {
                     HopRole::InboundGateway => {
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -635,8 +634,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                     }
                     HopRole::Participant => {
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -670,8 +668,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                         let garlic_tag = tunnel_keys.garlic_tag();
 
                         self.tunnels.push(async move {
-                            match select(rx, Box::pin(R::delay(Duration::from_secs(2 * 60)))).await
-                            {
+                            match select(rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
                                 Either::Left((Ok(_), _)) => {}
                                 Either::Left((Err(_), _)) => return Err(tunnel_id),
                                 Either::Right(_) => {
@@ -803,14 +800,15 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
                         if let Err(error) = self.routing_table.send_message(router, message) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
                         },
-                    Some(tx) =>
+                    Some(tx) => {
                         if let Err(error) = self.routing_table.send_message_with_feedback(
                             router.clone(),
                             message,
                             tx,
                         ) {
                             tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                        },
+                        }
+                    }
                 },
                 Err(error) => tracing::debug!(
                     target: LOG_TARGET,
@@ -1047,20 +1045,22 @@ mod tests {
             .unzip();
 
         let (_pending_tunnel, _next_router, message) =
-            PendingTunnel::<InboundTunnel>::create_tunnel::<MockRuntime>(TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash,
+            PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
+                TunnelBuildParameters {
+                    hops: hops.clone(),
+                    name: Str::from("tunnel-pool"),
+                    noise: local_noise,
+                    message_id,
+                    tunnel_info: TunnelInfo::Inbound {
+                        tunnel_id,
+                        router_id: local_hash,
+                    },
+                    receiver: ReceiverKind::Inbound {
+                        message_rx: rx,
+                        handle,
+                    },
                 },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
-            })
+            )
             .unwrap();
 
         let message = match transit_managers[0].0.handle_message(message).unwrap().next() {
@@ -1166,7 +1166,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        pending_tunnel.try_build_tunnel::<MockRuntime>(message).unwrap();
+        pending_tunnel.try_build_tunnel(message).unwrap();
     }
 
     #[tokio::test]
@@ -1449,7 +1449,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1599,7 +1599,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));
@@ -1703,7 +1703,7 @@ mod tests {
         let message = Message::parse_standard(&payload).unwrap();
         assert_eq!(message.message_type, MessageType::Garlic);
 
-        match pending_tunnel.try_build_tunnel::<MockRuntime>(message) {
+        match pending_tunnel.try_build_tunnel(message) {
             Err(error) => {
                 assert_eq!(error[0].1, Some(Err(TunnelError::TunnelRejected(30))));
                 assert_eq!(error[1].1, Some(Ok(())));

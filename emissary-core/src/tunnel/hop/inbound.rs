@@ -54,12 +54,12 @@ use core::{
 const LOG_TARGET: &str = "emissary::tunnel::ibep";
 
 /// Inbound tunnel.
-pub struct InboundTunnel {
+pub struct InboundTunnel<R: Runtime> {
     /// Tunnel expiration timer.
     expiration_timer: BoxFuture<'static, (TunnelId, TunnelId)>,
 
     /// Fragment handler.
-    fragment: FragmentHandler,
+    fragment: FragmentHandler<R>,
 
     /// Tunnel pool handle.
     handle: TunnelPoolContextHandle,
@@ -77,7 +77,7 @@ pub struct InboundTunnel {
     tunnel_id: TunnelId,
 }
 
-impl InboundTunnel {
+impl<R: Runtime> InboundTunnel<R> {
     /// Get gateway information of the inbound tunnel.
     ///
     /// Returns a `(RouterId, TunnelId)` tuple, allowing OBEP to route the message correctly.
@@ -266,13 +266,8 @@ impl InboundTunnel {
     }
 }
 
-impl Tunnel for InboundTunnel {
-    fn new<R: Runtime>(
-        name: Str,
-        tunnel_id: TunnelId,
-        receiver: ReceiverKind,
-        hops: Vec<TunnelHop>,
-    ) -> Self {
+impl<R: Runtime> Tunnel for InboundTunnel<R> {
+    fn new(name: Str, tunnel_id: TunnelId, receiver: ReceiverKind, hops: Vec<TunnelHop>) -> Self {
         let (message_rx, handle) = receiver.inbound();
 
         // hop must exist since it was created by us
@@ -310,7 +305,7 @@ impl Tunnel for InboundTunnel {
     }
 }
 
-impl Future for InboundTunnel {
+impl<R: Runtime> Future for InboundTunnel<R> {
     type Output = (TunnelId, TunnelId);
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -348,6 +343,11 @@ impl Future for InboundTunnel {
             }
         }
 
+        // poll fragment handler
+        //
+        // the futures don't return anything but must be polled so they make progress
+        let _ = self.fragment.poll_unpin(cx);
+
         self.expiration_timer.poll_unpin(cx)
     }
 }
@@ -366,12 +366,14 @@ mod tests {
     #[test]
     fn hop_roles() {
         assert_eq!(
-            InboundTunnel::hop_roles(NonZeroUsize::new(1).unwrap()).collect::<Vec<_>>(),
+            InboundTunnel::<MockRuntime>::hop_roles(NonZeroUsize::new(1).unwrap())
+                .collect::<Vec<_>>(),
             vec![HopRole::InboundGateway]
         );
 
         assert_eq!(
-            InboundTunnel::hop_roles(NonZeroUsize::new(3).unwrap()).collect::<Vec<_>>(),
+            InboundTunnel::<MockRuntime>::hop_roles(NonZeroUsize::new(3).unwrap())
+                .collect::<Vec<_>>(),
             vec![
                 HopRole::InboundGateway,
                 HopRole::Participant,

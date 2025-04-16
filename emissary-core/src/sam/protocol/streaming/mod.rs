@@ -38,12 +38,12 @@ use crate::{
 };
 
 use bytes::{BufMut, BytesMut};
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{boxed::Box, collections::VecDeque, format, string::String, vec, vec::Vec};
+use alloc::{collections::VecDeque, format, string::String, vec, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
@@ -135,7 +135,7 @@ pub enum StreamManagerEvent {
 }
 
 /// Shutdown handler.
-enum ShutdownHandler {
+enum ShutdownHandler<R: Runtime> {
     /// Shutdown has not been requested.
     Idle,
 
@@ -144,14 +144,14 @@ enum ShutdownHandler {
         /// Shutdown timer.
         ///
         /// See [`GRACEFUL_SHUTDOWN_TIMEOUT`] for more details.
-        timer: BoxFuture<'static, ()>,
+        timer: R::Timer,
     },
 
     /// [`StreamManager`] has been shut down.
     ShutDown,
 }
 
-impl ShutdownHandler {
+impl<R: Runtime> ShutdownHandler<R> {
     /// Create new [`ShutdownHandler`].
     fn new() -> Self {
         ShutdownHandler::Idle
@@ -163,9 +163,9 @@ impl ShutdownHandler {
     }
 
     /// Shut down [`StreamManager`].
-    fn start_shutdown<R: Runtime>(&mut self) {
+    fn start_shutdown(&mut self) {
         *self = ShutdownHandler::ShutdownRequested {
-            timer: Box::pin(R::delay(GRACEFUL_SHUTDOWN_TIMEOUT)),
+            timer: R::timer(GRACEFUL_SHUTDOWN_TIMEOUT),
         };
     }
 
@@ -186,7 +186,7 @@ enum ShutdownEvent {
     AlreadyShutDown,
 }
 
-impl Future for ShutdownHandler {
+impl<R: Runtime> Future for ShutdownHandler<R> {
     type Output = ShutdownEvent;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -273,10 +273,10 @@ pub struct StreamManager<R: Runtime> {
     pending_outbound: HashMap<u32, PendingOutboundStream<R>>,
 
     /// Timer for pruning stale pending streams.
-    prune_timer: BoxFuture<'static, ()>,
+    prune_timer: R::Timer,
 
     /// Shutdown handler.
-    shutdown_handler: ShutdownHandler,
+    shutdown_handler: ShutdownHandler<R>,
 
     /// Signing key.
     signing_key: SigningPrivateKey,
@@ -303,7 +303,7 @@ impl<R: Runtime> StreamManager<R> {
             pending_events: VecDeque::new(),
             pending_inbound: HashMap::new(),
             pending_outbound: HashMap::new(),
-            prune_timer: Box::pin(R::delay(PENDING_STREAM_PRUNE_THRESHOLD)),
+            prune_timer: R::timer(PENDING_STREAM_PRUNE_THRESHOLD),
             shutdown_handler: ShutdownHandler::new(),
             signing_key,
             streams: R::join_set(),
@@ -1032,7 +1032,7 @@ impl<R: Runtime> StreamManager<R> {
             }
         });
 
-        self.shutdown_handler.start_shutdown::<R>();
+        self.shutdown_handler.start_shutdown();
     }
 }
 
@@ -1252,7 +1252,7 @@ impl<R: Runtime> futures::Stream for StreamManager<R> {
 
             // create new timer and register it into the executor
             {
-                self.prune_timer = Box::pin(R::delay(PENDING_STREAM_PRUNE_THRESHOLD));
+                self.prune_timer = R::timer(PENDING_STREAM_PRUNE_THRESHOLD);
                 let _ = self.prune_timer.poll_unpin(cx);
             }
         }
@@ -1359,7 +1359,7 @@ mod tests {
         assert_eq!(manager.pending_inbound.len(), 1);
 
         // reset timer
-        manager.prune_timer = Box::pin(tokio::time::sleep(PENDING_STREAM_PRUNE_THRESHOLD));
+        manager.prune_timer = MockRuntime::timer(PENDING_STREAM_PRUNE_THRESHOLD);
 
         // wait for a little while so all streams won't get pruned at the same time
         tokio::time::sleep(Duration::from_secs(20)).await;
@@ -1406,7 +1406,7 @@ mod tests {
         assert!(manager.pending_inbound.contains_key(&2));
 
         // reset timer
-        manager.prune_timer = Box::pin(tokio::time::sleep(Duration::from_secs(20)));
+        manager.prune_timer = MockRuntime::timer(Duration::from_secs(20));
 
         // poll until the last two streams are also pruned
         loop {

@@ -18,13 +18,11 @@
 
 use crate::runtime::Runtime;
 
-use futures::{future::BoxFuture, FutureExt};
+use futures::FutureExt;
 use hashbrown::HashSet;
 
-use alloc::boxed::Box;
 use core::{
     future::Future,
-    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -42,13 +40,10 @@ pub struct DuplicateFilter<R: Runtime> {
     current: HashSet<u32>,
 
     /// Decay timer.
-    decay_timer: BoxFuture<'static, ()>,
+    decay_timer: R::Timer,
 
     /// Previous filter.
     previous: HashSet<u32>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> DuplicateFilter<R> {
@@ -57,8 +52,7 @@ impl<R: Runtime> DuplicateFilter<R> {
         Self {
             current: HashSet::new(),
             previous: HashSet::new(),
-            decay_timer: Box::pin(R::delay(DUPLICATE_FILTER_DECAY_INTERVAL)),
-            _runtime: Default::default(),
+            decay_timer: R::timer(DUPLICATE_FILTER_DECAY_INTERVAL),
         }
     }
 
@@ -94,7 +88,7 @@ impl<R: Runtime> Future for DuplicateFilter<R> {
             );
 
             self.decay();
-            self.decay_timer = Box::pin(R::delay(DUPLICATE_FILTER_DECAY_INTERVAL));
+            self.decay_timer = R::timer(DUPLICATE_FILTER_DECAY_INTERVAL);
             let _ = self.decay_timer.poll_unpin(cx);
         }
 
@@ -128,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn decay_timer_works() {
         let mut filter = DuplicateFilter::<MockRuntime>::new();
-        filter.decay_timer = Box::pin(MockRuntime::delay(Duration::from_secs(5)));
+        filter.decay_timer = MockRuntime::timer(Duration::from_secs(5));
 
         // insert first time and verify that second insert rejects the message
         assert!(filter.insert(1337));
@@ -142,7 +136,7 @@ mod tests {
         assert!(!filter.insert(1337));
 
         // poll it until the filter decays the second time and verify that the message is accepted
-        filter.decay_timer = Box::pin(MockRuntime::delay(Duration::from_secs(5)));
+        filter.decay_timer = MockRuntime::timer(Duration::from_secs(5));
         assert!(tokio::time::timeout(Duration::from_secs(8), &mut filter).await.is_err());
         assert!(filter.current.is_empty());
         assert!(filter.current.is_empty());

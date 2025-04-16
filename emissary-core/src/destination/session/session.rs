@@ -47,7 +47,7 @@ use parking_lot::RwLock;
 use spin::rwlock::RwLock;
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
-use core::{fmt, marker::PhantomData, mem, time::Duration};
+use core::{fmt, mem, time::Duration};
 
 /// Garlic message overheard.
 ///
@@ -801,9 +801,6 @@ pub struct Session<R: Runtime> {
 
     /// `TagSet` entries for inbound messages.
     tag_set_entries: HashMap<u64, TagSetEntry>,
-
-    /// Marker for `Runtime`.
-    _runtime: PhantomData<R>,
 }
 
 impl<R: Runtime> Session<R> {
@@ -829,7 +826,6 @@ impl<R: Runtime> Session<R> {
             remote,
             send_tag_set,
             tag_set_entries,
-            _runtime: Default::default(),
         }
     }
 

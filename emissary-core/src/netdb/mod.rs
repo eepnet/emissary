@@ -43,13 +43,13 @@ use crate::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{future::BoxFuture, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt};
 use futures_channel::oneshot;
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc;
 
-use alloc::{boxed::Box, vec, vec::Vec};
+use alloc::{vec, vec::Vec};
 use core::{
     fmt,
     future::Future,
@@ -160,7 +160,7 @@ pub struct NetDb<R: Runtime> {
     /// Router exploration timer.
     ///
     /// `None` if the router is run as floodfill.
-    exploration_timer: Option<BoxFuture<'static, ()>>,
+    exploration_timer: Option<R::Timer>,
 
     /// Has the router been configured to act as a floodfill router.
     floodfill: bool,
@@ -177,7 +177,7 @@ pub struct NetDb<R: Runtime> {
     lease_sets: HashMap<Bytes, (Bytes, Duration)>,
 
     /// `NetDb` maintenance timer.
-    maintenance_timer: BoxFuture<'static, ()>,
+    maintenance_timer: R::Timer,
 
     /// Message builder
     message_builder: NetDbMessageBuilder<R>,
@@ -259,7 +259,7 @@ impl<R: Runtime> NetDb<R> {
                 exploration_timer: if !floodfill {
                     let variance = R::rng().next_u64() as usize;
 
-                    Some(Box::pin(R::delay(Duration::from_secs(
+                    Some(R::timer(Duration::from_secs(
                         if router_ctx.profile_storage().num_routers() >= HIGH_ROUTER_COUNT {
                             ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
                                 + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
@@ -269,7 +269,7 @@ impl<R: Runtime> NetDb<R> {
                                 + (variance % EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT))
                                 as u64
                         },
-                    ))))
+                    )))
                 } else {
                     None
                 },
@@ -282,7 +282,7 @@ impl<R: Runtime> NetDb<R> {
                 ),
                 handle_rx,
                 lease_sets: HashMap::new(),
-                maintenance_timer: Box::pin(R::delay(Duration::from_secs(5))),
+                maintenance_timer: R::timer(Duration::from_secs(5)),
                 message_builder: NetDbMessageBuilder::new(router_ctx.clone()),
                 netdb_msg_rx,
                 pending_ready_awaits: Vec::new(),
@@ -1978,7 +1978,7 @@ impl<R: Runtime> Future for NetDb<R> {
             self.maintain_netdb();
 
             // reset timer and register it into the executor
-            self.maintenance_timer = Box::pin(R::delay(NETDB_MAINTENANCE_INTERVAL));
+            self.maintenance_timer = R::timer(NETDB_MAINTENANCE_INTERVAL);
             let _ = self.maintenance_timer.poll_unpin(cx);
         }
 
@@ -1990,7 +1990,7 @@ impl<R: Runtime> Future for NetDb<R> {
                 self.exploration_timer = Some({
                     let variance = R::rng().next_u64() as usize;
 
-                    Box::pin(R::delay(Duration::from_secs(
+                    R::timer(Duration::from_secs(
                         if self.router_ctx.profile_storage().num_routers() >= HIGH_ROUTER_COUNT {
                             ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
                                 + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
@@ -2000,7 +2000,7 @@ impl<R: Runtime> Future for NetDb<R> {
                                 + (variance % EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT))
                                 as u64
                         },
-                    )))
+                    ))
                 });
                 let _ = self.exploration_timer.as_mut().expect("to exist").poll_unpin(cx);
             }
