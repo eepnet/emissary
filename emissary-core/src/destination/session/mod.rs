@@ -106,6 +106,11 @@ struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
     inbound_ack_requests: HashSet<(u16, u16)>,
 
+    /// Whether an empty garlic message has been queued to be sent
+    /// as a response to acknowledgement requests. This is to
+    /// batch as many responses into one message as feasible.
+    explicit_response_message_queued: bool,
+
     /// Time when the last ES was received.
     last_received: R::Instant,
 
@@ -126,6 +131,7 @@ impl<R: Runtime> ActiveSession<R> {
     pub fn new(session: Session<R>) -> Self {
         Self {
             inbound_ack_requests: HashSet::new(),
+            explicit_response_message_queued: false,
             last_received: R::now(),
             last_sent: R::now(),
             lease_set: None,
@@ -301,10 +307,12 @@ impl<R: Runtime> SessionManager<R> {
     ) -> Option<Vec<u8>> {
         let session = self.active.get_mut(destination_id)?;
 
-        // explicit protool response messages sent only if there are pending ack requests
-        if session.inbound_ack_requests.is_empty() {
+        // explicit protocol response messages sent only if there are pending ack requests
+        // and another empty message hasn't already been queued
+        if session.inbound_ack_requests.is_empty() || session.explicit_response_message_queued {
             return None;
         }
+        session.explicit_response_message_queued = true;
 
         tracing::debug!(
             target: LOG_TARGET,
@@ -395,6 +403,10 @@ impl<R: Runtime> SessionManager<R> {
     ) -> Result<Vec<u8>, SessionError> {
         match self.active.get_mut(destination_id) {
             Some(session) => {
+                // Set this to false for every message because protocol level
+                // responses will always be built into the first message they can be.
+                session.explicit_response_message_queued = false;
+
                 // TODO: ugly
                 let hash = destination_id.to_vec();
                 let message = {
