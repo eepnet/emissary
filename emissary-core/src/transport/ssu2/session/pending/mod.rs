@@ -119,11 +119,14 @@ impl<R: Runtime> PacketRetransmitter<R> {
     ///
     /// Used by a pending inbound session when a `Retry` message has been sent but no message has
     /// been received as a response.
-    pub fn inactive() -> Self {
+    ///
+    /// `timeout` specifies how long a new `TokenRequest`/`SessionRequest` is awaited before the
+    /// inbound session is destroyed.
+    pub fn inactive(timeout: Duration) -> Self {
         Self {
             pkt: Vec::new(),
             timeouts: VecDeque::new(),
-            timer: R::timer(Duration::MAX),
+            timer: R::timer(timeout),
         }
     }
 

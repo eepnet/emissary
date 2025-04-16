@@ -50,10 +50,14 @@ use core::{
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::session::inbound";
+
+/// Timeout for receicing [`SessionRequest`] from Bob.
+const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Inbound SSU2 session context.
 pub struct InboundSsu2Context {
@@ -125,7 +129,7 @@ pub struct InboundSsu2Session<R: Runtime> {
     /// Destination connection ID.
     dst_id: u64,
 
-    /// Intro key.
+    /// Local intro key.
     intro_key: [u8; 32],
 
     /// Noise context.
@@ -148,7 +152,7 @@ pub struct InboundSsu2Session<R: Runtime> {
     /// Pending session state.
     state: PendingSessionState,
 
-    /// Static key.
+    /// Local SSU2 static key.
     static_key: StaticPrivateKey,
 }
 
@@ -225,7 +229,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
                 TryInto::<[u8; 32]>::try_into(state.to_vec()).expect("to succeed"),
             ),
-            pkt_retransmitter: PacketRetransmitter::inactive(),
+            pkt_retransmitter: PacketRetransmitter::inactive(SESSION_REQUEST_TIMEOUT),
             pkt_tx,
             rx: Some(rx),
             src_id,
@@ -601,6 +605,171 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
                 connection_id: self.dst_id,
                 router_id: None,
             }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        crypto::sha256::Sha256,
+        primitives::RouterInfoBuilder,
+        runtime::mock::MockRuntime,
+        transport::ssu2::session::pending::outbound::{OutboundSsu2Context, OutboundSsu2Session},
+    };
+    use std::net::{IpAddr, Ipv4Addr};
+    use thingbuf::mpsc::channel;
+
+    #[allow(unused)]
+    struct InboundContext {
+        inbound_session: InboundSsu2Session<MockRuntime>,
+        inbound_session_tx: Sender<Packet>,
+        inbound_socket_rx: Receiver<Packet>,
+    }
+
+    #[allow(unused)]
+    struct OutboundContext {
+        outbound_session: OutboundSsu2Session<MockRuntime>,
+        outbound_session_tx: Sender<Packet>,
+        outbound_socket_rx: Receiver<Packet>,
+    }
+
+    fn create_session() -> (InboundContext, OutboundContext) {
+        let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8888);
+        let src_id = MockRuntime::rng().next_u64();
+        let dst_id = MockRuntime::rng().next_u64();
+
+        let outbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
+        let inbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
+        let inbound_intro_key = {
+            let mut key = [0u8; 32];
+            MockRuntime::rng().fill_bytes(&mut key);
+
+            key
+        };
+
+        let state = Sha256::new()
+            .update("Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256".as_bytes())
+            .finalize();
+        let chaining_key = state.clone();
+        let outbound_state = Sha256::new().update(&state).finalize();
+        let inbound_state = Sha256::new()
+            .update(&outbound_state)
+            .update(inbound_static_key.public().to_vec())
+            .finalize();
+
+        let (inbound_socket_tx, inbound_socket_rx) = channel(128);
+        let (inbound_session_tx, inbound_session_rx) = channel(128);
+        let (outbound_socket_tx, outbound_socket_rx) = channel(128);
+        let (outbound_session_tx, outbound_session_rx) = channel(128);
+
+        let (router_info, _, signing_key) = RouterInfoBuilder::default()
+            .with_ssu2(crate::Ssu2Config {
+                port: 8889,
+                host: Some(Ipv4Addr::new(127, 0, 0, 1)),
+                publish: true,
+                static_key: TryInto::<[u8; 32]>::try_into(outbound_static_key.as_ref().to_vec())
+                    .unwrap(),
+                intro_key: {
+                    let mut key = [0u8; 32];
+                    MockRuntime::rng().fill_bytes(&mut key);
+
+                    key
+                },
+            })
+            .build();
+
+        let outbound = OutboundSsu2Session::new(OutboundSsu2Context {
+            address,
+            chaining_key: Bytes::from(chaining_key.clone()),
+            dst_id,
+            intro_key: inbound_intro_key,
+            local_static_key: outbound_static_key,
+            pkt_tx: outbound_socket_tx,
+            router_id: router_info.identity.id(),
+            router_info: Bytes::from(router_info.serialize(&signing_key)),
+            rx: outbound_session_rx,
+            src_id,
+            state: inbound_state.clone(),
+            static_key: inbound_static_key.public(),
+        });
+
+        let (pkt, pkt_num, dst_id, src_id) = {
+            let Packet { mut pkt, .. } = outbound_socket_rx.try_recv().unwrap();
+            let mut reader = HeaderReader::new(inbound_intro_key, &mut pkt).unwrap();
+            let dst_id = reader.dst_id();
+
+            match reader.parse(inbound_intro_key) {
+                Some(HeaderKind::TokenRequest {
+                    pkt_num, src_id, ..
+                }) => (pkt, pkt_num, dst_id, src_id),
+                _ => panic!("invalid message"),
+            }
+        };
+
+        let inbound = InboundSsu2Session::<MockRuntime>::new(InboundSsu2Context {
+            address,
+            chaining_key: Bytes::from(chaining_key),
+            dst_id,
+            intro_key: inbound_intro_key,
+            pkt,
+            pkt_num,
+            pkt_tx: inbound_socket_tx,
+            rx: inbound_session_rx,
+            src_id,
+            state: Bytes::from(inbound_state),
+            static_key: inbound_static_key.clone(),
+        })
+        .unwrap();
+
+        (
+            InboundContext {
+                inbound_socket_rx,
+                inbound_session_tx,
+                inbound_session: inbound,
+            },
+            OutboundContext {
+                outbound_socket_rx,
+                outbound_session_tx,
+                outbound_session: outbound,
+            },
+        )
+    }
+
+    // retry is sent but neither session request nor retry is received
+    #[tokio::test]
+    async fn session_request_timeout() {
+        crate::util::init_logger();
+
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: _test,
+                ..
+            },
+            OutboundContext { .. },
+        ) = create_session();
+
+        // verify that `inbound_session` sends retry message
+        let Packet { mut pkt, .. } = inbound_socket_rx.try_recv().unwrap();
+
+        match HeaderReader::new(inbound_session.intro_key, &mut pkt)
+            .unwrap()
+            .parse(inbound_session.intro_key)
+            .unwrap()
+        {
+            HeaderKind::Retry { .. } => {}
+            _ => panic!("invalid packet type"),
+        }
+
+        match tokio::time::timeout(Duration::from_secs(20), &mut inbound_session)
+            .await
+            .expect("no timeout")
+        {
+            PendingSsu2SessionStatus::Timeout { .. } => {}
+            _ => panic!("invalid status"),
         }
     }
 }
