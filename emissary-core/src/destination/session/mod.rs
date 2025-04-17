@@ -106,11 +106,6 @@ struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
     inbound_ack_requests: HashSet<(u16, u16)>,
 
-    /// Whether an empty garlic message has been queued to be sent
-    /// as a response to acknowledgement requests. This is to
-    /// batch as many responses into one message as feasible.
-    explicit_response_message_queued: bool,
-
     /// Time when the last ES was received.
     last_received: R::Instant,
 
@@ -131,7 +126,6 @@ impl<R: Runtime> ActiveSession<R> {
     pub fn new(session: Session<R>) -> Self {
         Self {
             inbound_ack_requests: HashSet::new(),
-            explicit_response_message_queued: false,
             last_received: R::now(),
             last_sent: R::now(),
             lease_set: None,
@@ -308,20 +302,20 @@ impl<R: Runtime> SessionManager<R> {
         let session = self.active.get_mut(destination_id)?;
 
         // explicit protocol response messages sent only if there are pending ack requests
-        // and another empty message hasn't already been queued
-        if session.inbound_ack_requests.is_empty() || session.explicit_response_message_queued {
+        if session.inbound_ack_requests.is_empty() {
             return None;
         }
-        session.explicit_response_message_queued = true;
 
-        tracing::debug!(
+        tracing::trace!(
             target: LOG_TARGET,
             local = %self.destination_id,
             remote = %destination_id,
-            "send explicit protocol response message",
+            acks = ?session.inbound_ack_requests,
+            "send explicit ack",
         );
 
-        let builder = GarlicMessageBuilder::default();
+        let acks = mem::replace(&mut session.inbound_ack_requests, HashSet::new());
+        let builder = GarlicMessageBuilder::default().with_ack(acks.into_iter().collect());
 
         session
             .session
@@ -403,10 +397,6 @@ impl<R: Runtime> SessionManager<R> {
     ) -> Result<Vec<u8>, SessionError> {
         match self.active.get_mut(destination_id) {
             Some(session) => {
-                // Set this to false for every message because protocol level
-                // responses will always be built into the first message they can be.
-                session.explicit_response_message_queued = false;
-
                 // TODO: ugly
                 let hash = destination_id.to_vec();
                 let message = {
@@ -840,6 +830,11 @@ impl<R: Runtime> SessionManager<R> {
 
                             destination_id
                         });
+
+                        if let Some(waker) = self.waker.take() {
+                            waker.wake_by_ref();
+                        }
+
                         None
                     }
                     None => {
@@ -3130,9 +3125,12 @@ mod tests {
                 _ => panic!(""),
             };
 
-        let message =
-            inbound_session.encrypt(&outbound_destination_id, ack_message.clone()).unwrap();
-        decrypt_and_verify!(&mut outbound_session, message, ack_message);
+        let _ = outbound_session
+            .decrypt(Message {
+                payload: ack_message.clone(),
+                ..Default::default()
+            })
+            .unwrap();
 
         // Assert we no longer have an inbound ack request
         assert!(inbound_session
