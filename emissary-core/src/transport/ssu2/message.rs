@@ -1843,7 +1843,7 @@ impl<'a> HeaderReader<'a> {
                 let pkt_num = u32::from_be(header as u32);
 
                 // expected to succeed as the packet has been confirmed to be long enough
-                let token = u64::from_le_bytes(
+                let token = u64::from_be_bytes(
                     TryInto::<[u8; 8]>::try_into(&self.pkt[24..32]).expect("to succeed"),
                 );
 

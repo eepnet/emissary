@@ -273,6 +273,8 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             router_id = %self.router_id,
             dst_id = ?self.dst_id,
             src_id = ?self.src_id,
+            ?pkt_num,
+            ?token,
             "handle `Retry`",
         );
 

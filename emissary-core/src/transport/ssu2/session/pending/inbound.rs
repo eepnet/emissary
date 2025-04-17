@@ -175,14 +175,6 @@ impl<R: Runtime> InboundSsu2Session<R> {
             static_key,
         } = context;
 
-        tracing::trace!(
-            target: LOG_TARGET,
-            ?dst_id,
-            ?src_id,
-            ?pkt_num,
-            "handle `TokenRequest`",
-        );
-
         let mut payload = pkt[32..pkt.len()].to_vec();
         ChaChaPoly::with_nonce(&intro_key, pkt_num as u64)
             .decrypt_with_ad(&pkt[..32], &mut payload)?;
@@ -208,6 +200,15 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .with_address(address)
             .build::<R>()
             .to_vec();
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            ?dst_id,
+            ?src_id,
+            ?pkt_num,
+            ?token,
+            "handle `TokenRequest`",
+        );
 
         // retry messages are not retransmitted
         if let Err(error) = pkt_tx.try_send(Packet { pkt, address }) {
@@ -249,9 +250,9 @@ impl<R: Runtime> InboundSsu2Session<R> {
     fn on_session_request(
         &mut self,
         mut pkt: Vec<u8>,
-        _token: u64,
+        token: u64,
     ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
-        let (ephemeral_key, pkt_num, _recv_token) = match HeaderReader::new(self.intro_key, &mut pkt)?
+        let (ephemeral_key, pkt_num, recv_token) = match HeaderReader::new(self.intro_key, &mut pkt)?
                 .parse(self.intro_key)
                 .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be other error
             {
@@ -267,14 +268,6 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     (ephemeral_key, pkt_num, token)
                 }
                 HeaderKind::TokenRequest { net_id: _ , pkt_num, src_id } => {
-                    tracing::debug!(
-                        local_dst_id = ?self.dst_id,
-                        local_src_id = ?self.src_id,
-                        remote_src_id = ?src_id,
-                        ?pkt_num,
-                        "received unexpected `TokenRequest`",
-                    );
-
                     // TODO: check net id
 
                     let token = R::rng().next_u64();
@@ -286,6 +279,16 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         .with_address(self.address)
                         .build::<R>()
                         .to_vec();
+
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        local_dst_id = ?self.dst_id,
+                        local_src_id = ?self.src_id,
+                        remote_src_id = ?src_id,
+                        ?pkt_num,
+                        ?token,
+                        "received unexpected `TokenRequest`",
+                    );
 
                     if let Err(error) = self.pkt_tx.try_send(Packet { pkt, address: self.address }) {
                         tracing::warn!(
@@ -319,10 +322,27 @@ impl<R: Runtime> InboundSsu2Session<R> {
             dst_id = ?self.dst_id,
             src_id = ?self.src_id,
             ?pkt_num,
+            ?token,
+            ?recv_token,
             "handle `SessionRequest`",
         );
 
-        // TODO: extract token and verify it's valid
+        if token != recv_token {
+            tracing::debug!(
+                target: LOG_TARGET,
+                dst_id = ?self.dst_id,
+                src_id = ?self.src_id,
+                ?pkt_num,
+                ?token,
+                ?recv_token,
+                "token mismatch",
+            );
+
+            return Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
+                connection_id: self.dst_id,
+                router_id: None,
+            }));
+        }
 
         // MixHash(header), MiXHash(aepk)
         self.noise_ctx.mix_hash(&pkt[..32]).mix_hash(&pkt[32..64]);
@@ -564,6 +584,8 @@ impl<R: Runtime> InboundSsu2Session<R> {
     ///
     /// `pkt` contains the full header but the first part of the header has been decrypted by the
     /// `Ssu2Socket`, meaning only the second part of the header must be decrypted by us.
+    //
+    // TODO: on error reset state back to what it was
     fn on_packet(&mut self, pkt: Vec<u8>) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::AwaitingSessionRequest { token } =>
@@ -856,6 +878,131 @@ mod tests {
                         _ => panic!("invalid packet"),
                     }
                 }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn use_old_token_for_session_request() {
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: ob_sess_tx,
+                outbound_socket_rx,
+            },
+        ) = create_session();
+        let intro_key = inbound_session.intro_key;
+
+        // parse and store the original retry packet
+        let original_retry = {
+            let Packet { mut pkt, address } = inbound_socket_rx.try_recv().unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _ = reader.dst_id();
+
+            Packet { pkt, address }
+        };
+
+        // spawn outbound session in the background
+        //
+        // it'll send another token request and a session request using the wrong token
+        tokio::spawn(outbound_session);
+
+        loop {
+            tokio::select! {
+                status = &mut inbound_session => match status {
+                    PendingSsu2SessionStatus::SessionTermianted { .. } => break,
+                    _ => panic!("invalid status"),
+                },
+                pkt = outbound_socket_rx.recv() => {
+                    let Packet { mut pkt, address } = pkt.unwrap();
+
+                    let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                    let _connection_id = reader.dst_id();
+
+                    ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+                }
+                pkt = inbound_socket_rx.recv() => {
+                    let Packet { mut pkt, .. } = pkt.unwrap();
+
+                    let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                    let _connection_id = reader.dst_id();
+
+                    match reader.parse(intro_key) {
+                        Some(HeaderKind::Retry { .. }) => {
+                            // send the original `Retry` with an expired token
+                            ob_sess_tx.send(original_retry.clone()).await.unwrap();
+                        },
+                        _ => panic!("invalid packet"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn use_new_token_for_session_request() {
+        crate::util::init_logger();
+
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: ob_sess_tx,
+                outbound_socket_rx,
+            },
+        ) = create_session();
+        let intro_key = inbound_session.intro_key;
+
+        // read and discard first retry message
+        let Packet { mut pkt, .. } = inbound_socket_rx.try_recv().unwrap();
+
+        match HeaderReader::new(intro_key, &mut pkt).unwrap().parse(intro_key).unwrap() {
+            HeaderKind::Retry { .. } => {}
+            _ => panic!("invalid packet type"),
+        }
+
+        tokio::spawn(outbound_session);
+        tokio::spawn(async move {
+            while let Some(Packet { mut pkt, address }) = outbound_socket_rx.recv().await {
+                let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                let _connection_id = reader.dst_id();
+
+                ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+            }
+        });
+
+        // handle retry retransmission
+        {
+            tokio::select! {
+                _ = &mut inbound_session => {}
+                pkt = inbound_socket_rx.recv() => {
+                    let Packet { mut pkt, address } = pkt.unwrap();
+                    let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                    let _connection_id = reader.dst_id();
+                    ob_sess_tx.send(Packet { pkt, address }).await.unwrap();
+                }
+            }
+        }
+
+        // verify that `inbound_session` sends `SessionCreated`
+        {
+            tokio::select! {
+                _ = &mut inbound_session => unreachable!(),
+                _ = inbound_socket_rx.recv() => {}
+            }
+
+            match inbound_session.state {
+                PendingSessionState::AwaitingSessionConfirmed { .. } => {}
+                _ => panic!("invalid state"),
             }
         }
     }
