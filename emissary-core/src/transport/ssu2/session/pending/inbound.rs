@@ -266,6 +266,42 @@ impl<R: Runtime> InboundSsu2Session<R> {
 
                     (ephemeral_key, pkt_num, token)
                 }
+                HeaderKind::TokenRequest { net_id: _ , pkt_num, src_id } => {
+                    tracing::debug!(
+                        local_dst_id = ?self.dst_id,
+                        local_src_id = ?self.src_id,
+                        remote_src_id = ?src_id,
+                        ?pkt_num,
+                        "received unexpected `TokenRequest`",
+                    );
+
+                    // TODO: check net id
+
+                    let token = R::rng().next_u64();
+                    let pkt = RetryBuilder::default()
+                        .with_k_header_1(self.intro_key)
+                        .with_src_id(self.dst_id)
+                        .with_dst_id(src_id)
+                        .with_token(token)
+                        .with_address(self.address)
+                        .build::<R>()
+                        .to_vec();
+
+                    if let Err(error) = self.pkt_tx.try_send(Packet { pkt, address: self.address }) {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            local_dst_id = ?self.dst_id,
+                            local_src_id = ?self.src_id,
+                            remote_src_id = ?src_id,
+                            address = ?self.address,
+                            ?error,
+                            "failed to send `Retry`",
+                        );
+                    }
+
+                    self.state = PendingSessionState::AwaitingSessionRequest { token };
+                    return Ok(None);
+                }
                 kind => {
                     tracing::trace!(
                         target: LOG_TARGET,
@@ -621,14 +657,12 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr};
     use thingbuf::mpsc::channel;
 
-    #[allow(unused)]
     struct InboundContext {
         inbound_session: InboundSsu2Session<MockRuntime>,
         inbound_session_tx: Sender<Packet>,
         inbound_socket_rx: Receiver<Packet>,
     }
 
-    #[allow(unused)]
     struct OutboundContext {
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
@@ -737,16 +771,13 @@ mod tests {
         )
     }
 
-    // retry is sent but neither session request nor retry is received
     #[tokio::test]
     async fn session_request_timeout() {
-        crate::util::init_logger();
-
         let (
             InboundContext {
                 mut inbound_session,
                 inbound_socket_rx,
-                inbound_session_tx: _test,
+                inbound_session_tx: _ib_sess_tx,
                 ..
             },
             OutboundContext { .. },
@@ -770,6 +801,62 @@ mod tests {
         {
             PendingSsu2SessionStatus::Timeout { .. } => {}
             _ => panic!("invalid status"),
+        }
+    }
+
+    #[tokio::test]
+    async fn token_request_received_again() {
+        let (
+            InboundContext {
+                inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: _ob_sess_tx,
+                outbound_socket_rx,
+            },
+        ) = create_session();
+        let intro_key = inbound_session.intro_key;
+
+        // verify that `inbound_session` sends retry message but don't send it to `outbound_session`
+        let Packet { mut pkt, .. } = inbound_socket_rx.try_recv().unwrap();
+
+        match HeaderReader::new(inbound_session.intro_key, &mut pkt)
+            .unwrap()
+            .parse(inbound_session.intro_key)
+            .unwrap()
+        {
+            HeaderKind::Retry { .. } => {}
+            _ => panic!("invalid packet type"),
+        }
+
+        tokio::spawn(inbound_session);
+        tokio::spawn(outbound_session);
+
+        loop {
+            tokio::select! {
+                pkt = outbound_socket_rx.recv() => {
+                    let Packet { mut pkt, address } = pkt.unwrap();
+
+                    let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                    let _connection_id = reader.dst_id();
+
+                    ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+                }
+                pkt = inbound_socket_rx.recv() => {
+                    let Packet { mut pkt, .. } = pkt.unwrap();
+
+                    let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                    let _connection_id = reader.dst_id();
+
+                    match reader.parse(intro_key) {
+                        Some(HeaderKind::Retry { .. }) => break,
+                        _ => panic!("invalid packet"),
+                    }
+                }
+            }
         }
     }
 }

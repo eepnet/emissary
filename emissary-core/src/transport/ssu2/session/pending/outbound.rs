@@ -361,6 +361,23 @@ impl<R: Runtime> OutboundSsu2Session<R> {
 
                 ephemeral_key
             }
+            HeaderKind::Retry { token, .. } => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    dst_id = ?self.dst_id,
+                    src_id = ?self.src_id,
+                    ?token,
+                    "received unexpected `Retry`, ignoring",
+                );
+
+                self.state =  PendingSessionState::AwaitingSessionCreated {
+                    ephemeral_key,
+                    local_static_key,
+                    router_info,
+                };
+                return Ok(None);
+            },
             kind => {
                 tracing::debug!(
                     target: LOG_TARGET,
