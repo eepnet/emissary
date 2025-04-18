@@ -338,10 +338,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 "token mismatch",
             );
 
-            return Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
-                connection_id: self.dst_id,
-                router_id: None,
-            }));
+            return Err(Ssu2Error::TokenMismatch);
         }
 
         // MixHash(header), MiXHash(aepk)
@@ -584,8 +581,6 @@ impl<R: Runtime> InboundSsu2Session<R> {
     ///
     /// `pkt` contains the full header but the first part of the header has been decrypted by the
     /// `Ssu2Socket`, meaning only the second part of the header must be decrypted by us.
-    //
-    // TODO: on error reset state back to what it was
     fn on_packet(&mut self, pkt: Vec<u8>) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::AwaitingSessionRequest { token } =>
@@ -638,6 +633,11 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
                         ?error,
                         "failed to handle packet",
                     );
+
+                    return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
+                        connection_id: self.dst_id,
+                        router_id: None,
+                    });
                 }
             }
         }

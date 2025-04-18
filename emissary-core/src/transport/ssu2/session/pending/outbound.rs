@@ -582,14 +582,21 @@ impl<R: Runtime> Future for OutboundSsu2Session<R> {
             match self.on_packet(pkt) {
                 Ok(None) => {}
                 Ok(Some(status)) => return Poll::Ready(status),
-                Err(error) => tracing::debug!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    dst_id = ?self.dst_id,
-                    src_id = ?self.src_id,
-                    ?error,
-                    "failed to handle packet",
-                ),
+                Err(error) => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        dst_id = ?self.dst_id,
+                        src_id = ?self.src_id,
+                        ?error,
+                        "failed to handle packet",
+                    );
+
+                    return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
+                        connection_id: self.src_id,
+                        router_id: None,
+                    });
+                }
             }
         }
 
