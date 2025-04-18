@@ -108,6 +108,10 @@ struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
     inbound_ack_requests: HashSet<(u16, u16)>,
 
+    /// Whether a timer has been queued for low priority
+    /// respnses
+    low_priority_timer_set: bool,
+
     /// Time when the last ES was received.
     last_received: R::Instant,
 
@@ -128,6 +132,7 @@ impl<R: Runtime> ActiveSession<R> {
     pub fn new(session: Session<R>) -> Self {
         Self {
             inbound_ack_requests: HashSet::new(),
+            low_priority_timer_set: false,
             last_received: R::now(),
             last_sent: R::now(),
             lease_set: None,
@@ -302,6 +307,10 @@ impl<R: Runtime> SessionManager<R> {
         destination_id: &DestinationId,
     ) -> Option<Vec<u8>> {
         let session = self.active.get_mut(destination_id)?;
+
+        // `explicit_protocol_response_message` is invoked when the low priority timer
+        // completes
+        session.low_priority_timer_set = false;
 
         // explicit protocol response messages sent only if there are pending ack requests or
         // a pending NextKey
@@ -830,18 +839,7 @@ impl<R: Runtime> SessionManager<R> {
                             "ack request received",
                         );
                         session.inbound_ack_requests.insert((tag_set_id, tag_index));
-
-                        let destination_id = destination_id.clone();
-                        self.protocol_response_timers.push(async move {
-                            R::delay(LOW_PRIORITY_RESPONSE_INTERVAL).await;
-
-                            destination_id
-                        });
-
-                        if let Some(waker) = self.waker.take() {
-                            waker.wake_by_ref();
-                        }
-
+                        self.maybe_set_low_priority_timer_for_session(destination_id.clone());
                         None
                     }
                     None => {
@@ -900,18 +898,7 @@ impl<R: Runtime> SessionManager<R> {
                 },
                 GarlicMessageBlock::NextKey { .. } => {
                     //Schedule a NextKey response if there is no traffic on this session
-
-                    let destination_id = destination_id.clone();
-                    self.protocol_response_timers.push(async move {
-                        R::delay(LOW_PRIORITY_RESPONSE_INTERVAL).await;
-
-                        destination_id
-                    });
-
-                    if let Some(waker) = self.waker.take() {
-                        waker.wake_by_ref();
-                    }
-
+                    self.maybe_set_low_priority_timer_for_session(destination_id.clone());
                     None
                 }
                 msg_type => {
@@ -972,6 +959,26 @@ impl<R: Runtime> SessionManager<R> {
             });
 
         self.active.values_mut().for_each(|session| session.session.maintain());
+    }
+
+    /// If the session associated with `destination_id` exists and a timer has not already
+    /// been queued, create a timer to send an explicit response message
+    fn maybe_set_low_priority_timer_for_session(&mut self, destination_id: DestinationId) {
+        if let Some(session) = self.active.get_mut(&destination_id) {
+            if !session.low_priority_timer_set {
+                session.low_priority_timer_set = true;
+
+                self.protocol_response_timers.push(async move {
+                    R::delay(LOW_PRIORITY_RESPONSE_INTERVAL).await;
+
+                    destination_id
+                });
+
+                if let Some(waker) = self.waker.take() {
+                    waker.wake_by_ref();
+                }
+            }
+        }
     }
 }
 
@@ -3125,12 +3132,7 @@ mod tests {
             .is_empty());
 
         // assert that nothing is ready immediately
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), inbound_session.next())
-                .await
-                .err()
-                .is_some()
-        );
+        assert!(inbound_session.next().now_or_never().is_none());
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
@@ -3394,12 +3396,7 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), inbound_session.next())
-                .await
-                .err()
-                .is_some()
-        );
+        assert!(inbound_session.next().now_or_never().is_none());
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
@@ -3678,12 +3675,7 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        assert!(
-            tokio::time::timeout(Duration::from_millis(100), inbound_session.next())
-                .await
-                .err()
-                .is_some()
-        );
+        assert!(inbound_session.next().now_or_never().is_none());
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
