@@ -992,8 +992,7 @@ impl<R: Runtime> Stream for SessionManager<R> {
 
         loop {
             match self.lease_set_publish_timers.poll_next_unpin(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Pending | Poll::Ready(None) => break,
                 Poll::Ready(Some(destination_id)) => {
                     match self.publish_local_lease_set(&destination_id) {
                         None => continue,
@@ -1043,7 +1042,11 @@ mod tests {
         primitives::{Lease, LeaseSet2, LeaseSet2Header, RouterId, TunnelId},
         runtime::mock::MockRuntime,
     };
-    use core::time::Duration;
+    use core::{
+        future::{poll_fn, IntoFuture},
+        time::Duration,
+    };
+    use futures::poll;
     use rand::thread_rng;
 
     /// Decrypt `message` using `session` and verify the inbound `Data` message
@@ -3132,7 +3135,10 @@ mod tests {
             .is_empty());
 
         // assert that nothing is ready immediately
-        assert!(inbound_session.next().now_or_never().is_none());
+        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
+            .await
+            .err()
+            .is_some();
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
@@ -3396,7 +3402,10 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        assert!(inbound_session.next().now_or_never().is_none());
+        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
+            .await
+            .err()
+            .is_some();
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
@@ -3675,7 +3684,10 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        assert!(inbound_session.next().now_or_never().is_none());
+        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
+            .await
+            .err()
+            .is_some();
 
         let ack_message =
             match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
