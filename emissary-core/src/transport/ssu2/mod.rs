@@ -227,6 +227,7 @@ mod tests {
         runtime::mock::MockRuntime,
     };
     use bytes::Bytes;
+    use std::time::Duration;
     use thingbuf::mpsc::channel;
 
     #[tokio::test]
@@ -331,14 +332,21 @@ mod tests {
         });
 
         transport1.connect(router_info2);
-        loop {
-            match transport1.next().await.unwrap() {
-                TransportEvent::ConnectionEstablished { router_id, .. } => {
-                    transport1.accept(&router_id);
-                    break;
+        let future = async move {
+            loop {
+                match transport1.next().await.unwrap() {
+                    TransportEvent::ConnectionEstablished { router_id, .. } => {
+                        transport1.accept(&router_id);
+                        break;
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(15), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(()) => {}
         }
     }
 }
