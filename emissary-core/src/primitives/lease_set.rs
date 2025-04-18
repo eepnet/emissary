@@ -261,7 +261,7 @@ impl LeaseSet2 {
     /// Returns the parsed message and rest of `input` on success.
     pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
         let (rest, header) = LeaseSet2Header::parse_frame(input)?;
-        let (rest, _) = Mapping::parse_multi_frame(rest)?;
+        let (rest, _) = Mapping::parse_frame(rest)?;
         let (rest, num_key_types) = be_u8(rest)?;
 
         let (rest, public_keys) = (0..num_key_types)

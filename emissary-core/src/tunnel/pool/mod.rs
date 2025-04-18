@@ -24,7 +24,7 @@ use crate::{
         garlic::{DeliveryInstructions, GarlicMessageBuilder},
         MessageBuilder, MessageType, I2NP_MESSAGE_EXPIRATION,
     },
-    primitives::{Lease, MessageId, RouterId, Str, TunnelId},
+    primitives::{Lease, Mapping, MessageId, RouterId, Str, TunnelId},
     router::context::RouterContext,
     runtime::{Counter, Gauge, Histogram, Instant, JoinSet, MetricsHandle, Runtime},
     tunnel::{
@@ -133,8 +133,8 @@ impl Default for TunnelPoolConfig {
     }
 }
 
-impl From<&HashMap<Str, Str>> for TunnelPoolConfig {
-    fn from(options: &HashMap<Str, Str>) -> Self {
+impl From<&Mapping> for TunnelPoolConfig {
+    fn from(options: &Mapping) -> Self {
         let num_inbound = options
             .get(&Str::from("inbound.quantity"))
             .map_or(3usize, |value| value.parse::<usize>().unwrap_or(3usize));
