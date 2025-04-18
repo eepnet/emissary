@@ -18,7 +18,7 @@
 
 use crate::primitives::Str;
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use hashbrown::{
     hash_map::{IntoIter, Iter},
     HashMap,
@@ -46,11 +46,10 @@ impl fmt::Display for Mapping {
 
 impl Mapping {
     /// Serialize [`Mapping`] into a byte vector.
-    pub fn serialize(&self) -> Vec<u8> {
+    pub fn serialize(&self) -> Bytes {
         // Allocate at least two bytes for the size prefix
         let mut out = BytesMut::with_capacity(2);
         let mut data = out.split_off(2);
-
         let mut entries: Vec<_> = self.0.iter().collect();
 
         // Our mapping implementation does not support duplicate keys, so we do not need to preserve
@@ -65,12 +64,11 @@ impl Mapping {
             data.extend(value);
             data.put_u8(b';');
         }
-        //TODO: validate that this is less than u16::MAX?
+        debug_assert!(data.len() <= u16::MAX as usize);
         out.put_u16(data.len() as u16);
         out.unsplit(data);
 
-        //TODO: Work with `Bytes` instead of `Vec<u8>` to avoid copying data?
-        out.freeze().to_vec()
+        out.freeze()
     }
 
     /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed mapping.
@@ -78,21 +76,24 @@ impl Mapping {
         let (rest, size) = be_u16(input)?;
         let mut mapping = Self::default();
 
-        if let Some((mut data, rest)) = rest.split_at_checked(size as usize) {
-            while !data.is_empty() {
-                let (remaining, key) = Str::parse_frame(data)?;
-                let (remaining, _) = be_u8(remaining)?; // Should we validate '='?
-                let (remaining, value) = Str::parse_frame(remaining)?;
-                let (remaining, _) = be_u8(remaining)?; // Should we validate ';'?
-                mapping.insert(key, value);
-                data = remaining;
-            }
+        match rest.split_at_checked(size as usize) {
+            Some((mut data, rest)) => {
+                while !data.is_empty() {
+                    let (remaining, key) = Str::parse_frame(data)?;
+                    let (remaining, _) = be_u8(remaining)?;
+                    let (remaining, value) = Str::parse_frame(remaining)?;
+                    let (remaining, _) = be_u8(remaining)?;
+                    mapping.insert(key, value);
+                    data = remaining;
+                }
 
-            Ok((rest, mapping))
-        } else {
-            // This is safe as the zero case will always pass `split_at_checked`
-            let non_zero_size = NonZeroUsize::new(size as usize).unwrap();
-            Err(nom::Err::Incomplete(nom::Needed::Size(non_zero_size)))
+                Ok((rest, mapping))
+            }
+            None => {
+                // This is safe as the zero case will always pass `split_at_checked`
+                let non_zero_size = NonZeroUsize::new(size as usize).expect("non-zero size");
+                Err(nom::Err::Incomplete(nom::Needed::Size(non_zero_size)))
+            }
         }
     }
 

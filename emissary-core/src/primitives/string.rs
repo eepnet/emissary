@@ -137,6 +137,7 @@ impl Str {
     pub fn serialize(&self) -> Vec<u8> {
         let mut out = BytesMut::with_capacity(self.len() + 1);
 
+        debug_assert!(self.len() <= u8::MAX as usize);
         out.put_u8(self.len() as u8);
         out.put_slice(self.as_bytes());
 
