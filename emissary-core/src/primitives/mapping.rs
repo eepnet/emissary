@@ -167,7 +167,7 @@ mod tests {
         let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
-        let mut ser = mapping.serialize();
+        let mut ser = mapping.serialize().to_vec();
         ser.push(1);
         ser.push(2);
         ser.push(3);
@@ -181,7 +181,7 @@ mod tests {
         let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
-        let mut ser = mapping.serialize();
+        let mut ser = mapping.serialize().to_vec();
         ser.push(1);
         ser.push(2);
         ser.push(3);
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(mapping.get(&"e".into()), Some(&Str::from("f")));
         assert_eq!(mapping.get(&"zz".into()), Some(&Str::from("z")));
 
-        assert_eq!(mapping.serialize(), expected_ser);
+        assert_eq!(mapping.serialize().to_vec(), expected_ser);
     }
 
     #[test]
