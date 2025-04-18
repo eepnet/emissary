@@ -29,7 +29,7 @@ use crate::{
         socket::I2cpSocket,
     },
     netdb::NetDbHandle,
-    primitives::{Date, DestinationId, Str},
+    primitives::{Date, DestinationId, Mapping, Str},
     runtime::{AddressBook, JoinSet, Runtime},
 };
 
@@ -80,7 +80,7 @@ pub struct I2cpSession<R: Runtime> {
 
     /// Session options.
     #[allow(unused)]
-    options: HashMap<Str, Str>,
+    options: Mapping,
 
     /// Pending outbound connections.
     pending_connections: HashMap<DestinationId, VecDeque<PendingMessage>>,
@@ -121,7 +121,7 @@ impl<R: Runtime> I2cpSession<R> {
         );
 
         // TODO: remove
-        for (key, value) in &options {
+        for (key, value) in options.iter() {
             tracing::info!("{key}={value}");
         }
 
@@ -377,7 +377,7 @@ impl<R: Runtime> I2cpSession<R> {
                             }]),
                         );
                     }
-                    LeaseSetStatus::Pending =>
+                    LeaseSetStatus::Pending => {
                         match self.pending_connections.get_mut(&destination_id) {
                             Some(messages) => messages.push_back(PendingMessage {
                                 parameters: I2cpParameters {
@@ -397,7 +397,8 @@ impl<R: Runtime> I2cpSession<R> {
                                 );
                                 // debug_assert!(false);
                             }
-                        },
+                        }
+                    }
                 }
             }
             _ => {}

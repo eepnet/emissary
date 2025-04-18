@@ -23,7 +23,6 @@ use crate::{
 };
 
 use bytes::Bytes;
-use hashbrown::HashMap;
 use nom::{
     bytes::complete::take,
     number::complete::{be_u16, be_u32, be_u8},
@@ -300,7 +299,7 @@ pub enum Message {
         date: Date,
 
         /// Session options.
-        options: HashMap<Str, Str>,
+        options: Mapping,
     },
 
     /// Lookup destination.
@@ -327,7 +326,7 @@ pub enum Message {
         version: Str,
 
         /// Options.
-        options: Vec<Mapping>,
+        options: Mapping,
     },
 
     /// Lookup host.
@@ -418,7 +417,7 @@ impl Message {
     /// https://geti2p.net/spec/i2cp#getdatemessage
     fn parse_get_date(input: impl AsRef<[u8]>) -> Option<Self> {
         let (rest, version) = Str::parse_frame(input.as_ref()).ok()?;
-        let (rest, options) = Mapping::parse_multi_frame(rest).ok()?;
+        let (rest, options) = Mapping::parse_frame(rest).ok()?;
 
         debug_assert!(rest.is_empty());
 
@@ -464,7 +463,7 @@ impl Message {
     /// https://geti2p.net/spec/i2cp#createsessionmessage
     fn parse_create_session(input: impl AsRef<[u8]>) -> Option<Self> {
         let (rest, destination) = Destination::parse_frame(input.as_ref()).ok()?;
-        let (rest, options) = Mapping::parse_multi_frame(rest).ok()?;
+        let (rest, options) = Mapping::parse_frame(rest).ok()?;
         let (rest, date) = Date::parse_frame(rest).ok()?;
         let (_rest, signature) = take::<_, _, ()>(SIGNATURE_LEN)(rest).ok()?;
 
@@ -484,7 +483,7 @@ impl Message {
         Some(Message::CreateSession {
             destination,
             date,
-            options: Mapping::into_hashmap(options),
+            options,
         })
     }
 

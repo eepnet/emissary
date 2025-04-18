@@ -445,7 +445,8 @@ mod tests {
         events::EventManager,
         i2np::{MessageBuilder, MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::{
-            Capabilities, Date, RouterAddress, RouterIdentity, RouterInfo, Str, TransportKind,
+            Capabilities, Date, Mapping, RouterAddress, RouterIdentity, RouterInfo, Str,
+            TransportKind,
         },
         profile::ProfileStorage,
         runtime::{
@@ -524,7 +525,7 @@ mod tests {
                         8888,
                     )),
                 )]),
-                options: HashMap::from_iter([
+                options: Mapping::from_iter([
                     (Str::from("netId"), Str::from(self.net_id.to_string())),
                     (Str::from("caps"), Str::from("L")),
                 ]),

@@ -34,7 +34,7 @@ use nom::{
     Err, IResult,
 };
 
-use alloc::{string::ToString, vec, vec::Vec};
+use alloc::{string::ToString, vec::Vec};
 
 /// Signature length.
 const SIGNATURE_LEN: usize = 64usize;
@@ -55,7 +55,7 @@ pub struct RouterInfo {
     pub net_id: u8,
 
     /// Router options.
-    pub options: HashMap<Str, Str>,
+    pub options: Mapping,
 
     /// When the router info was published.
     pub published: Date,
@@ -89,7 +89,8 @@ impl RouterInfo {
             Some(router_info) => RouterIdentity::parse(router_info).expect("to succeed"),
         };
 
-        let net_id = Mapping::new(
+        let mut options = Mapping::new();
+        options.insert(
             Str::from("netId"),
             config
                 .net_id
@@ -107,9 +108,8 @@ impl RouterInfo {
             },
         };
 
-        let router_version = Mapping::new(Str::from("router.version"), Str::from("0.9.62"));
-        let caps_mapping = Mapping::new(Str::from("caps"), caps.clone());
-        let options = Mapping::into_hashmap(vec![net_id, caps_mapping, router_version]);
+        options.insert(Str::from("router.version"), Str::from("0.9.62"));
+        options.insert(Str::from("caps"), caps.clone());
 
         RouterInfo {
             addresses: {
@@ -167,8 +167,7 @@ impl RouterInfo {
 
         // ignore `peer_size`
         let (rest, _) = be_u8(rest)?;
-        let (rest, options) = Mapping::parse_multi_frame(rest)?;
-        let options = Mapping::into_hashmap(options);
+        let (rest, options) = Mapping::parse_frame(rest)?;
 
         let capabilities = match options.get(&Str::from("caps")) {
             None => {
@@ -246,15 +245,7 @@ impl RouterInfo {
             self.addresses.get(&TransportKind::Ntcp2).map(|address| address.serialize());
         let maybe_ssu2 =
             self.addresses.get(&TransportKind::Ssu2).map(|address| address.serialize());
-        let options = {
-            let mut options = self.options.clone().into_iter().collect::<Vec<_>>();
-            options.sort_by(|a, b| a.0.cmp(&b.0));
-
-            options
-                .into_iter()
-                .flat_map(|(key, value)| Mapping::new(key, value).serialize())
-                .collect::<Vec<_>>()
-        };
+        let options = self.options.serialize();
 
         let size = identity
             .len()
@@ -264,7 +255,6 @@ impl RouterInfo {
             .saturating_add(maybe_ssu2.as_ref().map_or(0usize, |address| address.len()))
             .saturating_add(options.len())
             .saturating_add(1usize) // psize
-            .saturating_add(2usize) // field for options size
             .saturating_add(64usize); // signature
 
         let mut out = BytesMut::with_capacity(size);
@@ -286,7 +276,6 @@ impl RouterInfo {
         }
 
         out.put_u8(0u8); // psize
-        out.put_u16(options.len() as u16);
         out.put_slice(&options);
 
         let signature = signing_key.sign(&out[..size - 64]);
@@ -517,10 +506,9 @@ impl RouterInfoBuilder {
             ));
         }
 
-        let mut options = Mapping::into_hashmap(vec![
-            Mapping::new(Str::from("netId"), Str::from("2")),
-            Mapping::new(Str::from("router.version"), Str::from("0.9.62")),
-        ]);
+        let mut options = Mapping::new();
+        options.insert("netId".into(), "2".into());
+        options.insert("router.version".into(), "0.9.62".into());
 
         let capabilities = if self.floodfill {
             options.insert(Str::from("caps"), Str::from("XfR"));
@@ -721,7 +709,7 @@ mod tests {
                     "127.0.0.1".parse().unwrap(),
                 ),
             )]),
-            options: HashMap::from_iter([(Str::from("caps"), Str::from("L"))]),
+            options: Mapping::from_iter([(Str::from("caps"), Str::from("L"))]),
             net_id: 2,
             capabilities: Capabilities::parse(&Str::from("L")).unwrap(),
         }
@@ -748,7 +736,7 @@ mod tests {
                     "127.0.0.1".parse().unwrap(),
                 ),
             )]),
-            options: HashMap::from_iter([(Str::from("netId"), Str::from("2"))]),
+            options: Mapping::from_iter([(Str::from("netId"), Str::from("2"))]),
             net_id: 2,
             capabilities: Capabilities::parse(&Str::from("L")).unwrap(),
         }
@@ -775,7 +763,7 @@ mod tests {
                     "127.0.0.1".parse().unwrap(),
                 ),
             )]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("HL")),
             ]),
@@ -800,7 +788,7 @@ mod tests {
                 TransportKind::Ntcp2,
                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
             )]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("UL")),
             ]),
@@ -825,7 +813,7 @@ mod tests {
                 TransportKind::Ntcp2,
                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
             )]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("LR")),
             ]),
@@ -855,7 +843,7 @@ mod tests {
                     "127.0.0.1".parse().unwrap(),
                 ),
             )]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("LR")),
             ]),
@@ -886,7 +874,7 @@ mod tests {
                     "127.0.0.1".parse().unwrap(),
                 ),
             )]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("Xf")),
             ]),
@@ -922,7 +910,7 @@ mod tests {
                     ),
                 ),
             ]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("LR")),
             ]),
@@ -963,7 +951,7 @@ mod tests {
                     ),
                 ),
             ]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("LR")),
             ]),
@@ -994,7 +982,7 @@ mod tests {
                     RouterAddress::new_unpublished_ssu2([1u8; 32], [2u8; 32], 8888),
                 ),
             ]),
-            options: HashMap::from_iter([
+            options: Mapping::from_iter([
                 (Str::from("netId"), Str::from("2")),
                 (Str::from("caps"), Str::from("LR")),
             ]),

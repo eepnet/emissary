@@ -134,7 +134,7 @@ impl Eq for Str {}
 
 impl Str {
     /// Serialize [`Str`] into a byte vector.
-    pub fn serialize(self) -> Vec<u8> {
+    pub fn serialize(&self) -> Vec<u8> {
         let mut out = BytesMut::with_capacity(self.len() + 1);
 
         out.put_u8(self.len() as u8);
