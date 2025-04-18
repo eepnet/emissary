@@ -293,11 +293,11 @@ mod tests {
         out.put_u32(0u32);
 
         {
-            let mut option1 = Mapping::new();
+            let mut option1 = Mapping::default();
             option1.insert("hello".into(), "world".into());
             let option1 = option1.serialize();
 
-            let mut option2 = Mapping::new();
+            let mut option2 = Mapping::default();
             option2.insert("goodbye".into(), "world".into());
             let option2 = option2.serialize();
 

@@ -95,7 +95,7 @@ impl RouterAddress {
         let static_key = StaticPrivateKey::from(key).public();
         let key = base64_encode(&static_key);
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert("v".into(), "2".into());
         options.insert("s".into(), key.into());
 
@@ -112,7 +112,7 @@ impl RouterAddress {
     pub fn new_published_ntcp2(key: [u8; 32], iv: [u8; 16], port: u16, host: Ipv4Addr) -> Self {
         let static_key = StaticPrivateKey::from(key).public();
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert(Str::from("v"), Str::from("2"));
         options.insert(Str::from("s"), Str::from(base64_encode(&static_key)));
         options.insert(Str::from("host"), Str::from(host.to_string()));
@@ -136,7 +136,7 @@ impl RouterAddress {
         };
         let intro_key = base64_encode(intro_key);
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert(Str::from_str("v").unwrap(), Str::from_str("2").unwrap());
         options.insert(
             Str::from_str("s").unwrap(),
@@ -169,7 +169,7 @@ impl RouterAddress {
         };
         let intro_key = base64_encode(intro_key);
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert(Str::from("v"), Str::from("2"));
         options.insert(
             Str::from_str("s").unwrap(),

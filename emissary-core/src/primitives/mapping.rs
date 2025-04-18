@@ -35,7 +35,7 @@ use core::{
 };
 
 /// Key-value mapping
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct Mapping(HashMap<Str, Str>);
 
 impl fmt::Display for Mapping {
@@ -45,15 +45,6 @@ impl fmt::Display for Mapping {
 }
 
 impl Mapping {
-    /// Create new [`Mapping`].
-    pub fn new() -> Self {
-        Self(HashMap::new())
-    }
-
-    pub fn from_iter(iter: impl IntoIterator<Item = (Str, Str)>) -> Self {
-        Self(HashMap::from_iter(iter))
-    }
-
     /// Serialize [`Mapping`] into a byte vector.
     pub fn serialize(&self) -> Vec<u8> {
         // Allocate at least two bytes for the size prefix
@@ -85,7 +76,7 @@ impl Mapping {
     /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed mapping.
     pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
         let (rest, size) = be_u16(input)?;
-        let mut mapping = Self::new();
+        let mut mapping = Self::default();
 
         if let Some((mut data, rest)) = rest.split_at_checked(size as usize) {
             while !data.is_empty() {
@@ -125,6 +116,12 @@ impl Mapping {
         self.0.len()
     }
 
+    /// Equivalent to `HashMap::is_empty`
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Equivalent to `HashMap::iter`
     pub fn iter(&self) -> Iter<'_, Str, Str> {
         self.0.iter()
     }
@@ -139,18 +136,24 @@ impl IntoIterator for Mapping {
     }
 }
 
+impl FromIterator<(Str, Str)> for Mapping {
+    fn from_iter<T: IntoIterator<Item = (Str, Str)>>(iter: T) -> Self {
+        Self(HashMap::from_iter(iter))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn empty_mapping() {
-        assert_eq!(Mapping::parse(b"\0\0"), Some(Mapping::new()));
+        assert_eq!(Mapping::parse(b"\0\0"), Some(Mapping::default()));
     }
 
     #[test]
     fn valid_mapping() {
-        let mut mapping = Mapping::new();
+        let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
         let ser = mapping.serialize();
@@ -160,7 +163,7 @@ mod tests {
 
     #[test]
     fn valid_string_with_extra_bytes() {
-        let mut mapping = Mapping::new();
+        let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
         let mut ser = mapping.serialize();
@@ -174,7 +177,7 @@ mod tests {
 
     #[test]
     fn extra_bytes_returned() {
-        let mut mapping = Mapping::new();
+        let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
         let mut ser = mapping.serialize();

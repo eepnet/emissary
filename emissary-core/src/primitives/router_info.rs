@@ -89,7 +89,7 @@ impl RouterInfo {
             Some(router_info) => RouterIdentity::parse(router_info).expect("to succeed"),
         };
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert(
             Str::from("netId"),
             config
@@ -506,7 +506,7 @@ impl RouterInfoBuilder {
             ));
         }
 
-        let mut options = Mapping::new();
+        let mut options = Mapping::default();
         options.insert("netId".into(), "2".into());
         options.insert("router.version".into(), "0.9.62".into());
 
