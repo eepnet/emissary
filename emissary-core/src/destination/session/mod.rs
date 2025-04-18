@@ -1042,7 +1042,7 @@ mod tests {
         primitives::{Lease, LeaseSet2, LeaseSet2Header, RouterId, TunnelId},
         runtime::mock::MockRuntime,
     };
-    use core::{future::IntoFuture, time::Duration};
+    use core::time::Duration;
     use rand::thread_rng;
 
     /// Decrypt `message` using `session` and verify the inbound `Data` message
