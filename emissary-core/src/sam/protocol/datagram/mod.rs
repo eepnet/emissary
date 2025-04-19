@@ -105,10 +105,13 @@ impl<R: Runtime> DatagramManager<R> {
 
         match protocol {
             Protocol::Datagram => {
-                // TODO: verify signature
                 let (rest, destination) =
                     Destination::parse_frame(&payload).map_err(|_| Error::InvalidData)?;
-                let (rest, _) = take::<_, _, ()>(64usize)(rest).map_err(|_| Error::InvalidData)?;
+                let (rest, signature) =
+                    take::<_, _, ()>(destination.verifying_key().signature_len())(rest)
+                        .map_err(|_| Error::InvalidData)?;
+
+                destination.verifying_key().verify(rest, signature)?;
 
                 // TODO: ensure there is a listener in `src_port`
                 let port = self.options.get("PORT").ok_or(Error::InvalidState)?;
@@ -116,12 +119,12 @@ impl<R: Runtime> DatagramManager<R> {
                 let info = format!(
                     "{} FROM_PORT={dst_port} TO_PORT={src_port}\n",
                     base64_encode(destination.serialize())
-                )
-                .as_bytes()
-                .to_vec();
+                );
+
+                let info = info.as_bytes();
 
                 let mut out = BytesMut::with_capacity(info.len() + rest.len());
-                out.put_slice(&info);
+                out.put_slice(info);
                 out.put_slice(rest);
 
                 let _ = self

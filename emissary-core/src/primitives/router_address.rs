@@ -22,7 +22,6 @@ use crate::{
 };
 
 use bytes::{BufMut, BytesMut};
-use hashbrown::HashMap;
 use nom::{
     error::{make_error, ErrorKind},
     number::complete::be_u8,
@@ -84,7 +83,7 @@ pub struct RouterAddress {
     pub transport: TransportKind,
 
     /// Options.
-    pub options: HashMap<Str, Str>,
+    pub options: Mapping,
 
     /// Router's socket address.
     pub socket_address: Option<SocketAddr>,
@@ -96,9 +95,9 @@ impl RouterAddress {
         let static_key = StaticPrivateKey::from(key).public();
         let key = base64_encode(&static_key);
 
-        let mut options = HashMap::<Str, Str>::new();
-        options.insert(Str::from_str("v").unwrap(), Str::from_str("2").unwrap());
-        options.insert(Str::from_str("s").unwrap(), Str::from_str(&key).unwrap());
+        let mut options = Mapping::default();
+        options.insert("v".into(), "2".into());
+        options.insert("s".into(), key.into());
 
         Self {
             cost: 14,
@@ -113,7 +112,7 @@ impl RouterAddress {
     pub fn new_published_ntcp2(key: [u8; 32], iv: [u8; 16], port: u16, host: Ipv4Addr) -> Self {
         let static_key = StaticPrivateKey::from(key).public();
 
-        let mut options = HashMap::<Str, Str>::new();
+        let mut options = Mapping::default();
         options.insert(Str::from("v"), Str::from("2"));
         options.insert(Str::from("s"), Str::from(base64_encode(&static_key)));
         options.insert(Str::from("host"), Str::from(host.to_string()));
@@ -137,7 +136,7 @@ impl RouterAddress {
         };
         let intro_key = base64_encode(intro_key);
 
-        let mut options = HashMap::<Str, Str>::new();
+        let mut options = Mapping::default();
         options.insert(Str::from_str("v").unwrap(), Str::from_str("2").unwrap());
         options.insert(
             Str::from_str("s").unwrap(),
@@ -170,7 +169,7 @@ impl RouterAddress {
         };
         let intro_key = base64_encode(intro_key);
 
-        let mut options = HashMap::<Str, Str>::new();
+        let mut options = Mapping::default();
         options.insert(Str::from("v"), Str::from("2"));
         options.insert(
             Str::from_str("s").unwrap(),
@@ -197,8 +196,7 @@ impl RouterAddress {
         let (rest, cost) = be_u8(input)?;
         let (rest, expires) = Date::parse_frame(rest)?;
         let (rest, transport) = Str::parse_frame(rest)?;
-        let (rest, options) = Mapping::parse_multi_frame(rest)?;
-        let options = Mapping::into_hashmap(options);
+        let (rest, options) = Mapping::parse_frame(rest)?;
         let socket_address: Option<SocketAddr> = {
             let maybe_host = options.get(&Str::from("host"));
             let maybe_port = options.get(&Str::from("port"));
@@ -237,23 +235,13 @@ impl RouterAddress {
 
     /// Serialize [`RouterAddress`].
     pub fn serialize(&self) -> BytesMut {
-        let options = {
-            let mut options = self.options.clone().into_iter().collect::<Vec<_>>();
-            options.sort_by(|a, b| a.0.cmp(&b.0));
-
-            options
-                .into_iter()
-                .flat_map(|(key, value)| Mapping::new(key, value).serialize())
-                .collect::<Vec<_>>()
-        };
-
+        let options = self.options.serialize();
         let transport = self.transport.serialize();
-        let mut out = BytesMut::with_capacity(1 + 8 + transport.len() + options.len() + 2);
+        let mut out = BytesMut::with_capacity(1 + 8 + transport.len() + options.len());
 
         out.put_u8(self.cost);
         out.put_slice(&self.expires.serialize());
         out.put_slice(&transport);
-        out.put_u16(options.len() as u16);
         out.put_slice(&options);
 
         out

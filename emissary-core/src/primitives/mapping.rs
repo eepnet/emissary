@@ -18,82 +18,83 @@
 
 use crate::primitives::Str;
 
-use hashbrown::HashMap;
+use bytes::{BufMut, Bytes, BytesMut};
+use hashbrown::{
+    hash_map::{IntoIter, Iter},
+    HashMap,
+};
 use nom::{
     number::complete::{be_u16, be_u8},
     IResult,
 };
 
-use alloc::{vec, vec::Vec};
-use core::fmt;
+use alloc::vec::Vec;
+use core::{
+    fmt::{self, Debug},
+    num::NonZeroUsize,
+};
 
 /// Key-value mapping
-#[derive(Debug, PartialEq, Eq)]
-pub struct Mapping {
-    /// Key
-    key: Str,
-
-    /// Value.
-    value: Str,
-}
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub struct Mapping(HashMap<Str, Str>);
 
 impl fmt::Display for Mapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}={}", self.key, self.value)
+        self.0.fmt(f)
     }
 }
 
 impl Mapping {
-    /// Create new [`Mapping`].
-    pub fn new(key: Str, value: Str) -> Self {
-        Self { key, value }
-    }
-
     /// Serialize [`Mapping`] into a byte vector.
-    pub fn serialize(self) -> Vec<u8> {
-        let key = self.key.serialize();
-        let value = self.value.serialize();
+    pub fn serialize(&self) -> Bytes {
+        // Allocate at least two bytes for the size prefix
+        let mut out = BytesMut::with_capacity(2);
+        let mut data = out.split_off(2);
+        let mut entries: Vec<_> = self.0.iter().collect();
 
-        // key length + value length + length field + `=` + `;`
-        let size = key.len() + value.len() + 2;
-        let mut out = vec![0u8; size];
+        // Our mapping implementation does not support duplicate keys, so we do not need to preserve
+        // order
+        entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        for (key, value) in entries {
+            let key = key.serialize();
+            let value = value.serialize();
+            data.reserve(key.len() + value.len() + 2);
+            data.extend(key);
+            data.put_u8(b'=');
+            data.extend(value);
+            data.put_u8(b';');
+        }
+        debug_assert!(data.len() <= u16::MAX as usize);
+        out.put_u16(data.len() as u16);
+        out.unsplit(data);
 
-        out[..key.len()].copy_from_slice(&key);
-        out[key.len()] = b'=';
-        out[1 + key.len()..1 + key.len() + value.len()].copy_from_slice(&value);
-        out[1 + key.len() + value.len()] = b';';
-
-        out
+        out.freeze()
     }
 
-    /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed address.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Mapping> {
-        let (rest, key) = Str::parse_frame(input)?;
-        let (rest, _) = be_u8(rest)?; // ignore `=`
-        let (rest, value) = Str::parse_frame(rest)?;
-        let (rest, _) = be_u8(rest)?; // ignore `;`
+    /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed mapping.
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+        let (rest, size) = be_u16(input)?;
+        let mut mapping = Self::default();
 
-        Ok((rest, Mapping { key, value }))
-    }
+        match rest.split_at_checked(size as usize) {
+            Some((mut data, rest)) => {
+                while !data.is_empty() {
+                    let (remaining, key) = Str::parse_frame(data)?;
+                    let (remaining, _) = be_u8(remaining)?;
+                    let (remaining, value) = Str::parse_frame(remaining)?;
+                    let (remaining, _) = be_u8(remaining)?;
+                    mapping.insert(key, value);
+                    data = remaining;
+                }
 
-    /// Parse multiple [`Mapping`]s from `input`.
-    pub fn parse_multi_frame(input: &[u8]) -> IResult<&[u8], Vec<Mapping>> {
-        if input.is_empty() {
-            return Ok((&[], Vec::new()));
+                Ok((rest, mapping))
+            }
+            None => {
+                // This is safe as the zero case will always pass `split_at_checked`
+                let non_zero_size = NonZeroUsize::new(size as usize).expect("non-zero size");
+                Err(nom::Err::Incomplete(nom::Needed::Size(non_zero_size)))
+            }
         }
-
-        let (mut rest, mut num_option_bytes) = be_u16(input)?;
-        let mut options = Vec::<Mapping>::new();
-
-        while num_option_bytes > 0 {
-            let (_rest, mapping) = Mapping::parse_frame(rest)?;
-            rest = _rest;
-
-            num_option_bytes = num_option_bytes.saturating_sub(mapping.serialized_len() as u16);
-            options.push(mapping);
-        }
-
-        Ok((rest, options))
     }
 
     /// Try to convert `bytes` into a [`Mapping`].
@@ -101,19 +102,44 @@ impl Mapping {
         Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
     }
 
-    /// Get reference to inner key-value mapping.
-    pub fn mapping(&self) -> (&Str, &Str) {
-        (&self.key, &self.value)
+    /// Equivalent to `HashMap::insert`
+    pub fn insert(&mut self, key: Str, value: Str) -> Option<Str> {
+        self.0.insert(key, value)
     }
 
-    /// Get serialized length of [`Mapping`].
-    pub fn serialized_len(&self) -> usize {
-        self.key.serialized_len() + self.value.serialized_len() + 2
+    /// Equivalent to `HashMap::get`
+    pub fn get(&self, key: &Str) -> Option<&Str> {
+        self.0.get(key)
     }
 
-    /// Convert a vector of [`Mapping`]s into a hashmap.
-    pub fn into_hashmap(mappings: Vec<Mapping>) -> HashMap<Str, Str> {
-        mappings.into_iter().map(|mapping| (mapping.key, mapping.value)).collect()
+    /// Equivalent to `HashMap::len`
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Equivalent to `HashMap::is_empty`
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Equivalent to `HashMap::iter`
+    pub fn iter(&self) -> Iter<'_, Str, Str> {
+        self.0.iter()
+    }
+}
+
+impl IntoIterator for Mapping {
+    type Item = (Str, Str);
+    type IntoIter = IntoIter<Str, Str>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl FromIterator<(Str, Str)> for Mapping {
+    fn from_iter<T: IntoIterator<Item = (Str, Str)>>(iter: T) -> Self {
+        Self(HashMap::from_iter(iter))
     }
 }
 
@@ -123,135 +149,79 @@ mod tests {
 
     #[test]
     fn empty_mapping() {
-        assert!(Str::parse(Vec::new()).is_none());
+        assert_eq!(Mapping::parse(b"\0\0"), Some(Mapping::default()));
     }
 
     #[test]
     fn valid_mapping() {
-        let mapping = Mapping::new(Str::from("hello"), Str::from("world")).serialize();
+        let mut mapping = Mapping::default();
+        mapping.insert("hello".into(), "world".into());
 
-        assert_eq!(
-            Mapping::parse(mapping),
-            Some(Mapping {
-                key: Str::from("hello"),
-                value: Str::from("world"),
-            })
-        );
+        let ser = mapping.serialize();
+
+        assert_eq!(Mapping::parse(ser), Some(mapping));
     }
 
     #[test]
     fn valid_string_with_extra_bytes() {
-        let mut mapping = Mapping::new(Str::from("hello"), Str::from("world")).serialize();
-        mapping.push(1);
-        mapping.push(2);
-        mapping.push(3);
-        mapping.push(4);
+        let mut mapping = Mapping::default();
+        mapping.insert("hello".into(), "world".into());
 
-        assert_eq!(
-            Mapping::parse(mapping),
-            Some(Mapping {
-                key: Str::from("hello"),
-                value: Str::from("world"),
-            })
-        );
+        let mut ser = mapping.serialize().to_vec();
+        ser.push(1);
+        ser.push(2);
+        ser.push(3);
+        ser.push(4);
+
+        assert_eq!(Mapping::parse(ser), Some(mapping));
     }
 
     #[test]
     fn extra_bytes_returned() {
-        let mut mapping = Mapping::new(Str::from("hello"), Str::from("world")).serialize();
-        mapping.push(1);
-        mapping.push(2);
-        mapping.push(3);
-        mapping.push(4);
+        let mut mapping = Mapping::default();
+        mapping.insert("hello".into(), "world".into());
 
-        let (rest, mapping) = Mapping::parse_frame(&mapping).unwrap();
+        let mut ser = mapping.serialize().to_vec();
+        ser.push(1);
+        ser.push(2);
+        ser.push(3);
+        ser.push(4);
 
-        assert_eq!(
-            mapping,
-            Mapping {
-                key: Str::from("hello"),
-                value: Str::from("world"),
-            }
-        );
+        let (rest, parsed_mapping) = Mapping::parse_frame(&ser).unwrap();
+
+        assert_eq!(parsed_mapping, mapping);
         assert_eq!(rest, [1, 2, 3, 4]);
     }
 
     #[test]
     fn multiple_mappings() {
-        let mut mapping1 = Mapping::new(Str::from("hello"), Str::from("world")).serialize();
-        let mapping2 = Mapping::new(Str::from("foo"), Str::from("bar")).serialize();
-        let mapping3 = Mapping::new(Str::from("siip"), Str::from("huup")).serialize();
+        let expected_ser = b"\x00\x19\x01a=\x01b;\x01c=\x01d;\x01e=\x01f;\x02zz=\x01z;";
 
-        mapping1.extend_from_slice(&mapping2);
-        mapping1.extend_from_slice(&mapping3);
+        let mapping = Mapping::parse(expected_ser).expect("to be valid");
 
-        let (rest, mapping) = Mapping::parse_frame(&mapping1).unwrap();
-        assert_eq!(
-            mapping,
-            Mapping {
-                key: Str::from("hello"),
-                value: Str::from("world"),
-            }
+        let keys: Vec<_> = mapping.0.keys().collect();
+        // Check that the keys aren't already ordered
+        assert_ne!(
+            keys,
+            [
+                &Str::from("a"),
+                &Str::from("c"),
+                &Str::from("e"),
+                &Str::from("zz")
+            ]
         );
 
-        let (rest, mapping) = Mapping::parse_frame(rest).unwrap();
-        assert_eq!(
-            mapping,
-            Mapping {
-                key: Str::from("foo"),
-                value: Str::from("bar"),
-            }
-        );
+        assert_eq!(mapping.get(&"a".into()), Some(&Str::from("b")));
+        assert_eq!(mapping.get(&"c".into()), Some(&Str::from("d")));
+        assert_eq!(mapping.get(&"e".into()), Some(&Str::from("f")));
+        assert_eq!(mapping.get(&"zz".into()), Some(&Str::from("z")));
 
-        let (_rest, mapping) = Mapping::parse_frame(rest).unwrap();
-        assert_eq!(
-            mapping,
-            Mapping {
-                key: Str::from("siip"),
-                value: Str::from("huup"),
-            }
-        );
+        assert_eq!(mapping.serialize().to_vec(), expected_ser);
     }
 
     #[test]
-    fn parse_multi_frame() {
-        let mapping1 = Mapping::new(Str::from("hello"), Str::from("world")).serialize();
-        let mapping2 = Mapping::new(Str::from("foo"), Str::from("bar")).serialize();
-        let mapping3 = Mapping::new(Str::from("siip"), Str::from("huup")).serialize();
-
-        let mut mappings = ((mapping1.len() + mapping2.len() + mapping3.len()) as u16)
-            .to_be_bytes()
-            .to_vec();
-
-        mappings.extend_from_slice(&mapping1);
-        mappings.extend_from_slice(&mapping2);
-        mappings.extend_from_slice(&mapping3);
-
-        let (rest, mappings) = Mapping::parse_multi_frame(&mappings).unwrap();
-
-        assert!(rest.is_empty());
-        assert_eq!(mappings.len(), 3);
-
-        assert_eq!(
-            mappings[0],
-            Mapping {
-                key: Str::from("hello"),
-                value: Str::from("world"),
-            }
-        );
-        assert_eq!(
-            mappings[1],
-            Mapping {
-                key: Str::from("foo"),
-                value: Str::from("bar"),
-            }
-        );
-        assert_eq!(
-            mappings[2],
-            Mapping {
-                key: Str::from("siip"),
-                value: Str::from("huup"),
-            }
-        );
+    fn over_sized() {
+        let ser = b"\x01\x00\x01a=\x01b;\x01c=\x01d;\x01e=\x01f;";
+        assert!(Mapping::parse(ser).is_none());
     }
 }

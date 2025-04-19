@@ -96,6 +96,11 @@ const ES_RECEIVE_TAGSET_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// Session manager maintenance interval.
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
+/// Interval to respond to ACK and NextKey requests if no other traffic is transmitted
+// TODO: NS and NSR messages should have a "HIGH_PRIORITY_RESPONSE_INTERVAL" with a shorter
+// interval to respond within. ref: https://geti2p.net/spec/ecies#protocol-layer-responses
+const LOW_PRIORITY_RESPONSE_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Active session with remote destination.
 struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
@@ -182,6 +187,10 @@ pub struct SessionManager<R: Runtime> {
     /// TODO: more documentain
     lease_set_publish_timers: R::JoinSet<DestinationId>,
 
+    /// Response timers to handle protocol layer responses if there is no
+    /// other message traffic
+    protocol_response_timers: R::JoinSet<DestinationId>,
+
     /// Maintenance timer.
     maintenance_timer: R::Timer,
 
@@ -212,6 +221,7 @@ impl<R: Runtime> SessionManager<R> {
             key_context: KeyContext::from_private_key(private_key),
             lease_set,
             lease_set_publish_timers: R::join_set(),
+            protocol_response_timers: R::join_set(),
             maintenance_timer: R::timer(MAINTENANCE_INTERVAL),
             pending_events: VecDeque::new(),
             pending: HashMap::new(),
@@ -282,6 +292,42 @@ impl<R: Runtime> SessionManager<R> {
                 destination_id: destination_id.clone(),
             });
         }
+    }
+
+    /// Creates an empty garlic message if there are inbound ACK requests.
+    fn explicit_protocol_response_message(
+        &mut self,
+        destination_id: &DestinationId,
+    ) -> Option<Vec<u8>> {
+        let session = self.active.get_mut(destination_id)?;
+
+        // explicit protocol response messages sent only if there are pending ack requests
+        if session.inbound_ack_requests.is_empty() {
+            return None;
+        }
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            local = %self.destination_id,
+            remote = %destination_id,
+            acks = ?session.inbound_ack_requests,
+            "send explicit ack",
+        );
+
+        let acks = mem::replace(&mut session.inbound_ack_requests, HashSet::new());
+        let builder = GarlicMessageBuilder::default().with_ack(acks.into_iter().collect());
+
+        session
+            .session
+            .encrypt(builder)
+            .map(|(_tag_set_id, _tag_index, message)| {
+                let mut out = BytesMut::with_capacity(message.len() + 4);
+
+                out.put_u32(message.len() as u32);
+                out.put_slice(&message);
+                out.freeze().to_vec()
+            })
+            .ok()
     }
 
     /// Attempt to publish local lease set to remote destination.
@@ -777,6 +823,18 @@ impl<R: Runtime> SessionManager<R> {
                             "ack request received",
                         );
                         session.inbound_ack_requests.insert((tag_set_id, tag_index));
+
+                        let destination_id = destination_id.clone();
+                        self.protocol_response_timers.push(async move {
+                            R::delay(LOW_PRIORITY_RESPONSE_INTERVAL).await;
+
+                            destination_id
+                        });
+
+                        if let Some(waker) = self.waker.take() {
+                            waker.wake_by_ref();
+                        }
+
                         None
                     }
                     None => {
@@ -908,6 +966,22 @@ impl<R: Runtime> Stream for SessionManager<R> {
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(destination_id)) => {
                     match self.publish_local_lease_set(&destination_id) {
+                        None => continue,
+                        Some(message) =>
+                            return Poll::Ready(Some(SessionManagerEvent::SendMessage {
+                                destination_id,
+                                message,
+                            })),
+                    }
+                }
+            }
+        }
+
+        loop {
+            match self.protocol_response_timers.poll_next_unpin(cx) {
+                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Ready(Some(destination_id)) => {
+                    match self.explicit_protocol_response_message(&destination_id) {
                         None => continue,
                         Some(message) =>
                             return Poll::Ready(Some(SessionManagerEvent::SendMessage {
@@ -2911,5 +2985,304 @@ mod tests {
         assert!(message
             .find(|clove| std::matches!(clove.message_type, MessageType::DatabaseStore))
             .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_protocol_response() {
+        // create inbound `SessionManager`
+        let inbound_private_key = StaticPrivateKey::random(thread_rng());
+        let inbound_public_key = inbound_private_key.public();
+        let (inbound_leaseset, inbound_destination_id) = {
+            let (leaseset, signing_key) = LeaseSet2::random();
+            let inbound_destination_id = leaseset.header.destination.id();
+
+            (
+                Bytes::from(leaseset.serialize(&signing_key)),
+                inbound_destination_id,
+            )
+        };
+        let mut inbound_session = SessionManager::<MockRuntime>::new(
+            inbound_destination_id.clone(),
+            inbound_private_key,
+            inbound_leaseset,
+        );
+
+        // create outbound `SessionManager`
+        let outbound_private_key = StaticPrivateKey::random(thread_rng());
+        let (
+            outbound_leaseset,
+            outbound_destination_id,
+            outbound_destination,
+            outbound_signing_key,
+        ) = {
+            let (leaseset, signing_key) = LeaseSet2::random();
+            let destination = leaseset.header.destination.clone();
+            let outbound_destination_id = leaseset.header.destination.id();
+
+            (
+                Bytes::from(leaseset.serialize(&signing_key)),
+                outbound_destination_id,
+                destination,
+                signing_key,
+            )
+        };
+        let mut outbound_session = SessionManager::<MockRuntime>::new(
+            outbound_destination_id.clone(),
+            outbound_private_key.clone(),
+            outbound_leaseset,
+        );
+        outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
+
+        // send and handle NS message
+        let message = outbound_session.encrypt(&inbound_destination_id, vec![1u8; 4]).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, vec![1u8; 4]);
+
+        // send NSR as reply to the new NS
+        let message = inbound_session.encrypt(&outbound_destination_id, vec![2u8; 4]).unwrap();
+        decrypt_and_verify!(&mut outbound_session, message, vec![2u8; 4]);
+
+        // send ES message to bob, finalizing the session
+        let message = outbound_session.encrypt(&inbound_destination_id, vec![3u8; 4]).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, vec![3u8; 4]);
+
+        // send ES message to alice
+        let message = inbound_session.encrypt(&outbound_destination_id, vec![5u8; 4]).unwrap();
+        decrypt_and_verify!(&mut outbound_session, message, vec![5u8; 4]);
+
+        assert!(inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // create new lease set for `outbound_session`
+        let gateway_router = RouterId::random();
+        let gateway_tunnel = TunnelId::random();
+
+        let lease_set = Bytes::from(
+            LeaseSet2 {
+                header: LeaseSet2Header {
+                    destination: outbound_destination.clone(),
+                    expires: (MockRuntime::time_since_epoch() + Duration::from_secs(10 * 60))
+                        .as_secs() as u32,
+                    is_unpublished: false,
+                    offline_signature: None,
+                    published: MockRuntime::time_since_epoch().as_secs() as u32,
+                },
+                public_keys: vec![outbound_private_key.public()],
+                leases: vec![Lease {
+                    router_id: gateway_router.clone(),
+                    tunnel_id: gateway_tunnel,
+                    expires: MockRuntime::time_since_epoch() + Duration::from_secs(10 * 60),
+                }],
+            }
+            .serialize(&outbound_signing_key),
+        );
+        outbound_session.register_lease_set(lease_set);
+        let ls_message = outbound_session.publish_local_lease_set(&inbound_destination_id).unwrap();
+        let message =
+            outbound_session.encrypt(&inbound_destination_id, ls_message.clone()).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, ls_message);
+
+        // Assert we have an incoming ack request
+        assert!(!inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // Assert we have outgoing pending ack request
+        assert!(!outbound_session
+            .active
+            .get(&inbound_destination_id)
+            .expect("to exist")
+            .outbound_ack_requests
+            .is_empty());
+
+        // assert that nothing is ready immediately
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), inbound_session.next())
+                .await
+                .err()
+                .is_some()
+        );
+
+        let ack_message =
+            match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
+                .await
+                .expect("no timeout")
+                .expect("to succeed")
+            {
+                SessionManagerEvent::SendMessage {
+                    destination_id,
+                    message,
+                } => {
+                    assert_eq!(destination_id, outbound_destination_id);
+                    message
+                }
+                _ => panic!(""),
+            };
+
+        let _ = outbound_session
+            .decrypt(Message {
+                payload: ack_message.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Assert we no longer have an inbound ack request
+        assert!(inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // assert that nothing else is ready
+        assert!(tokio::time::timeout(
+            LOW_PRIORITY_RESPONSE_INTERVAL + LOW_PRIORITY_RESPONSE_INTERVAL,
+            inbound_session.next()
+        )
+        .await
+        .err()
+        .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_protocol_response_canceled() {
+        // create inbound `SessionManager`
+        let inbound_private_key = StaticPrivateKey::random(thread_rng());
+        let inbound_public_key = inbound_private_key.public();
+        let (inbound_leaseset, inbound_destination_id) = {
+            let (leaseset, signing_key) = LeaseSet2::random();
+            let inbound_destination_id = leaseset.header.destination.id();
+
+            (
+                Bytes::from(leaseset.serialize(&signing_key)),
+                inbound_destination_id,
+            )
+        };
+        let mut inbound_session = SessionManager::<MockRuntime>::new(
+            inbound_destination_id.clone(),
+            inbound_private_key,
+            inbound_leaseset,
+        );
+
+        // create outbound `SessionManager`
+        let outbound_private_key = StaticPrivateKey::random(thread_rng());
+        let (
+            outbound_leaseset,
+            outbound_destination_id,
+            outbound_destination,
+            outbound_signing_key,
+        ) = {
+            let (leaseset, signing_key) = LeaseSet2::random();
+            let destination = leaseset.header.destination.clone();
+            let outbound_destination_id = leaseset.header.destination.id();
+
+            (
+                Bytes::from(leaseset.serialize(&signing_key)),
+                outbound_destination_id,
+                destination,
+                signing_key,
+            )
+        };
+        let mut outbound_session = SessionManager::<MockRuntime>::new(
+            outbound_destination_id.clone(),
+            outbound_private_key.clone(),
+            outbound_leaseset,
+        );
+        outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
+
+        // send and handle NS message
+        let message = outbound_session.encrypt(&inbound_destination_id, vec![1u8; 4]).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, vec![1u8; 4]);
+
+        // send NSR as reply to the new NS
+        let message = inbound_session.encrypt(&outbound_destination_id, vec![2u8; 4]).unwrap();
+        decrypt_and_verify!(&mut outbound_session, message, vec![2u8; 4]);
+
+        // send ES message to bob, finalizing the session
+        let message = outbound_session.encrypt(&inbound_destination_id, vec![3u8; 4]).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, vec![3u8; 4]);
+
+        // send ES message to alice
+        let message = inbound_session.encrypt(&outbound_destination_id, vec![5u8; 4]).unwrap();
+        decrypt_and_verify!(&mut outbound_session, message, vec![5u8; 4]);
+
+        assert!(inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // create new lease set for `outbound_session`
+        let gateway_router = RouterId::random();
+        let gateway_tunnel = TunnelId::random();
+
+        let lease_set = Bytes::from(
+            LeaseSet2 {
+                header: LeaseSet2Header {
+                    destination: outbound_destination.clone(),
+                    expires: (MockRuntime::time_since_epoch() + Duration::from_secs(10 * 60))
+                        .as_secs() as u32,
+                    is_unpublished: false,
+                    offline_signature: None,
+                    published: MockRuntime::time_since_epoch().as_secs() as u32,
+                },
+                public_keys: vec![outbound_private_key.public()],
+                leases: vec![Lease {
+                    router_id: gateway_router.clone(),
+                    tunnel_id: gateway_tunnel,
+                    expires: MockRuntime::time_since_epoch() + Duration::from_secs(10 * 60),
+                }],
+            }
+            .serialize(&outbound_signing_key),
+        );
+        outbound_session.register_lease_set(lease_set);
+        let ls_message = outbound_session.publish_local_lease_set(&inbound_destination_id).unwrap();
+        let message =
+            outbound_session.encrypt(&inbound_destination_id, ls_message.clone()).unwrap();
+        decrypt_and_verify!(&mut inbound_session, message, ls_message);
+
+        // Assert we have an incoming ack request
+        assert!(!inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // Assert we have outgoing pending ack request
+        assert!(!outbound_session
+            .active
+            .get(&inbound_destination_id)
+            .expect("to exist")
+            .outbound_ack_requests
+            .is_empty());
+
+        // Upper-level activity
+        let message = inbound_session.encrypt(&outbound_destination_id, vec![1u8; 4]).unwrap();
+        decrypt_and_verify!(&mut outbound_session, message, vec![1u8; 4]);
+
+        // Assert we no longer have an inbound ack request
+        assert!(inbound_session
+            .active
+            .get(&outbound_destination_id)
+            .expect("to exist")
+            .inbound_ack_requests
+            .is_empty());
+
+        // assert that nothing else is ready
+        assert!(tokio::time::timeout(
+            LOW_PRIORITY_RESPONSE_INTERVAL + LOW_PRIORITY_RESPONSE_INTERVAL,
+            inbound_session.next()
+        )
+        .await
+        .err()
+        .is_some());
     }
 }

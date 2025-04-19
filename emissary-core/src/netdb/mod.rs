@@ -2018,8 +2018,9 @@ mod tests {
         events::EventManager,
         i2np::database::lookup::DatabaseLookupBuilder,
         primitives::{
-            Capabilities, Date, Destination, DestinationId, Lease, LeaseSet2Header, RouterAddress,
-            RouterIdentity, RouterInfo, RouterInfoBuilder, Str, TransportKind, TunnelId,
+            Capabilities, Date, Destination, DestinationId, Lease, LeaseSet2Header, Mapping,
+            RouterAddress, RouterIdentity, RouterInfo, RouterInfoBuilder, Str, TransportKind,
+            TunnelId,
         },
         runtime::mock::MockRuntime,
         subsystem::{InnerSubsystemEvent, SubsystemCommand},
@@ -2693,7 +2694,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -2802,7 +2803,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -3102,7 +3103,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -3631,7 +3632,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -3664,7 +3665,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -3880,7 +3881,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("99")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),
@@ -4059,7 +4060,7 @@ mod tests {
                                 TransportKind::Ntcp2,
                                 RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
                             )]),
-                            options: HashMap::from_iter([
+                            options: Mapping::from_iter([
                                 (Str::from("netId"), Str::from("2")),
                                 (Str::from("caps"), Str::from("L")),
                             ]),

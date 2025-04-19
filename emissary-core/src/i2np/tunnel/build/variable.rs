@@ -72,7 +72,7 @@ impl<'a> TunnelBuildRecord<'a> {
         let (rest, _request_time) = be_u32(rest)?;
         let (rest, _request_expiration) = be_u32(rest)?;
         let (rest, next_message_id) = be_u32(rest)?;
-        let (rest, _options) = Mapping::parse_multi_frame(rest)?;
+        let (rest, _options) = Mapping::parse_frame(rest)?;
         let (rest, _padding) = take(input.len() - rest.len())(rest)?;
         let role = HopRole::from_u8(flags).ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
 

@@ -33,7 +33,7 @@ use crate::{
         },
         socket::I2cpSocket,
     },
-    primitives::{Date, DestinationId, Lease, Str, TunnelId},
+    primitives::{Date, DestinationId, Lease, Mapping, Str, TunnelId},
     profile::ProfileStorage,
     runtime::{AddressBook, Runtime},
     tunnel::{TunnelManagerHandle, TunnelPoolConfig, TunnelPoolEvent, TunnelPoolHandle},
@@ -71,7 +71,7 @@ pub struct I2cpSessionContext<R: Runtime> {
     pub leaseset: Bytes,
 
     /// Session options.
-    pub options: HashMap<Str, Str>,
+    pub options: Mapping,
 
     /// Active outbound tunnels.
     pub outbound: HashSet<TunnelId>,
@@ -113,7 +113,7 @@ enum PendingSessionState<R: Runtime> {
         socket: I2cpSocket<R>,
 
         /// Session options.
-        options: HashMap<Str, Str>,
+        options: Mapping,
 
         /// Tunnel pool build future.
         ///
@@ -134,7 +134,7 @@ enum PendingSessionState<R: Runtime> {
         socket: I2cpSocket<R>,
 
         /// Session options.
-        options: HashMap<Str, Str>,
+        options: Mapping,
 
         /// Handle to the built tunnel pool.
         handle: TunnelPoolHandle,
@@ -158,7 +158,7 @@ enum PendingSessionState<R: Runtime> {
         socket: I2cpSocket<R>,
 
         /// Session options.
-        options: HashMap<Str, Str>,
+        options: Mapping,
 
         /// Handle to the built tunnel pool.
         handle: TunnelPoolHandle,

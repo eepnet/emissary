@@ -186,7 +186,7 @@ impl TunnelBuildRecord {
         let (rest, _request_time) = be_u32(rest)?;
         let (rest, _request_expiration) = be_u32(rest)?;
         let (rest, next_message_id) = be_u32(rest)?;
-        let (rest, _options) = Mapping::parse_multi_frame(rest)?;
+        let (rest, _options) = Mapping::parse_frame(rest)?;
         let (rest, _padding) = take(rest.len())(rest)?;
         let role = HopRole::from_u8(flags).ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
 
@@ -236,8 +236,6 @@ impl TunnelBuildRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::Str;
-    use core::str::FromStr;
 
     #[test]
     fn all_zero_bytes() {
@@ -295,16 +293,13 @@ mod tests {
         out.put_u32(0u32);
 
         {
-            let option1 = Mapping::new(
-                Str::from_str("hello").unwrap(),
-                Str::from_str("world").unwrap(),
-            )
-            .serialize();
-            let option2 = Mapping::new(
-                Str::from_str("goodbye").unwrap(),
-                Str::from_str("world").unwrap(),
-            )
-            .serialize();
+            let mut option1 = Mapping::default();
+            option1.insert("hello".into(), "world".into());
+            let option1 = option1.serialize();
+
+            let mut option2 = Mapping::default();
+            option2.insert("goodbye".into(), "world".into());
+            let option2 = option2.serialize();
 
             out.put_u16((option1.len() + option2.len()) as u16);
             out.put_slice(&option1);
