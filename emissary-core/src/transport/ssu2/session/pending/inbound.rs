@@ -306,7 +306,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     return Ok(None);
                 }
                 kind => {
-                    tracing::trace!(
+                    tracing::debug!(
                         target: LOG_TARGET,
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
@@ -443,11 +443,8 @@ impl<R: Runtime> InboundSsu2Session<R> {
         k_header_2: [u8; 32],
         k_session_created: [u8; 32],
     ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
-        match HeaderReader::new(self.intro_key, &mut pkt)?
-            .parse(k_header_2)
-            .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be other error
-        {
-            HeaderKind::SessionConfirmed { pkt_num } =>
+        match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2) {
+            Some(HeaderKind::SessionConfirmed { pkt_num }) =>
                 if pkt_num != 0 {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -459,14 +456,20 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     return Err(Ssu2Error::Malformed);
                 },
             kind => {
-                tracing::trace!(
+                tracing::debug!(
                     target: LOG_TARGET,
                     dst_id = ?self.dst_id,
                     src_id = ?self.src_id,
                     ?kind,
-                    "invalid message, expected `SessionRequest`",
+                    "received unexpected message, ignoring",
                 );
-                return Err(Ssu2Error::UnexpectedMessage);
+
+                self.state = PendingSessionState::AwaitingSessionConfirmed {
+                    ephemeral_key,
+                    k_header_2,
+                    k_session_created,
+                };
+                return Ok(None);
             }
         }
 
@@ -946,8 +949,6 @@ mod tests {
 
     #[tokio::test]
     async fn use_new_token_for_session_request() {
-        crate::util::init_logger();
-
         let (
             InboundContext {
                 mut inbound_session,
@@ -1004,6 +1005,117 @@ mod tests {
                 PendingSessionState::AwaitingSessionConfirmed { .. } => {}
                 _ => panic!("invalid state"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_session_request() {
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: ob_sess_tx,
+                outbound_socket_rx,
+            },
+        ) = create_session();
+
+        let intro_key = inbound_session.intro_key;
+        let outbound_session = tokio::spawn(outbound_session);
+
+        // send retry message to outbound session
+        {
+            let Packet { mut pkt, address } = inbound_socket_rx.try_recv().unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+
+            ob_sess_tx.send(Packet { pkt, address }).await.unwrap();
+        }
+
+        // read session request from outbound session, send it to inbound session
+        // and read session created
+        let _pkt = {
+            let Packet { mut pkt, address } = outbound_socket_rx.recv().await.unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+            ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+
+            tokio::select! {
+                _ = &mut inbound_session => unreachable!(),
+                pkt = inbound_socket_rx.recv() => {
+                    pkt.unwrap()
+                }
+            }
+        };
+
+        // verify that inbound session is awaiting `SessionConfirmed` but don't send the
+        // created `SessionCreated` message which forces a retransmission of `SessionRequest`
+        let pkt = {
+            match inbound_session.state {
+                PendingSessionState::AwaitingSessionConfirmed { .. } => {}
+                _ => panic!("invalid state"),
+            }
+
+            // wait until `SessionRequest` is retransmitted
+            let Packet { mut pkt, address } = outbound_socket_rx.recv().await.unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+            ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+
+            tokio::select! {
+                _ = &mut inbound_session => unreachable!(),
+                pkt = inbound_socket_rx.recv() => {
+                    pkt.unwrap()
+                }
+            }
+        };
+
+        // send `SessionCreated` to outbound session
+        {
+            let Packet { mut pkt, address } = pkt;
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+
+            ob_sess_tx.send(Packet { pkt, address }).await.unwrap();
+        }
+
+        // read `SessionConfirmed` message from outbound session and relay it to inbound session
+        let inbound_session = {
+            // wait until `SessionRequest` is retransmitted
+            let Packet { mut pkt, address } = outbound_socket_rx.recv().await.unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+            ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+
+            // spawn inbound session in the background and get handle for the session result
+            tokio::spawn(inbound_session)
+        };
+
+        // wait for inbound session to finish and the first data packet to outbound session
+        match inbound_session.await {
+            Ok(PendingSsu2SessionStatus::NewInboundSession {
+                mut pkt, target, ..
+            }) => {
+                let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                let _connection_id = reader.dst_id();
+
+                ob_sess_tx
+                    .send(Packet {
+                        pkt: pkt.to_vec(),
+                        address: target,
+                    })
+                    .await
+                    .unwrap();
+            }
+            _ => panic!("invalid result"),
+        }
+
+        match outbound_session.await {
+            Ok(PendingSsu2SessionStatus::NewOutboundSession { .. }) => {}
+            _ => panic!("invalid result"),
         }
     }
 }
