@@ -120,7 +120,7 @@ impl RouterAddress {
         options.insert(Str::from("i"), Str::from(base64_encode(iv)));
 
         Self {
-            cost: 10,
+            cost: 3,
             expires: Date::new(0),
             transport: TransportKind::Ntcp2,
             options,
@@ -183,7 +183,7 @@ impl RouterAddress {
         options.insert(Str::from("port"), Str::from(port.to_string()));
 
         Self {
-            cost: 10,
+            cost: 8,
             expires: Date::new(0),
             transport: TransportKind::Ssu2,
             options,
@@ -281,7 +281,7 @@ mod tests {
         let static_key = StaticPrivateKey::from([1u8; 32]).public();
 
         let address = RouterAddress::parse(&serialized).unwrap();
-        assert_eq!(address.cost, 10);
+        assert_eq!(address.cost, 3);
         assert_eq!(
             address.options.get(&Str::from("i")),
             Some(&Str::from(base64_encode(&[0xaa; 16])))
@@ -336,7 +336,7 @@ mod tests {
         let intro_key = [2u8; 32];
 
         let address = RouterAddress::parse(&serialized).unwrap();
-        assert_eq!(address.cost, 10);
+        assert_eq!(address.cost, 8);
         assert_eq!(
             address.options.get(&Str::from("s")),
             Some(&Str::from(base64_encode(&static_key)))
