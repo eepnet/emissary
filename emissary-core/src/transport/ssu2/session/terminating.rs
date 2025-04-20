@@ -164,8 +164,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
     /// with a data message containing a termination block.
     fn on_packet(&mut self, mut pkt: Vec<u8>) -> Result<(), Ssu2Error> {
         let pkt_num = match HeaderReader::new(self.intro_key, &mut pkt)?
-            .parse(self.recv_key_ctx.k_header_2)
-            .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be other error
+            .parse(self.recv_key_ctx.k_header_2)?
         {
             HeaderKind::Data { pkt_num } => pkt_num,
             kind => {

@@ -1724,6 +1724,8 @@ pub struct HeaderReader<'a> {
 
 impl<'a> HeaderReader<'a> {
     /// Create new [`HeaderReader`].
+    ///
+    /// Minimum size for `pkt` is 24 bytes as the IVs used for header decryption as 12 bytes long.
     pub fn new(k_header_1: [u8; 32], pkt: &'a mut [u8]) -> Result<Self, Ssu2Error> {
         if pkt.len() < PKT_MIN_SIZE {
             return Err(Ssu2Error::NotEnoughBytes);
@@ -1757,7 +1759,10 @@ impl<'a> HeaderReader<'a> {
         u64::from_le_bytes(TryInto::<[u8; 8]>::try_into(&self.pkt[..8]).expect("to succeed"))
     }
 
-    // Reset key.
+    /// Reset key.
+    ///
+    /// Used for during pending outbound connections when the first and second part of the short
+    /// header are encrypted not with our intro key but remote's intro key.
     pub fn reset_key(&mut self, k_header_1: [u8; 32]) -> &mut Self {
         self.apply_mask(self.k_header_1, self.iv1, 0..8);
         self.apply_mask(self.k_header_1, self.iv2, 8..16);
@@ -1767,21 +1772,27 @@ impl<'a> HeaderReader<'a> {
     }
 
     /// Attempt to parse the second part of the header using `k_header_2`.
-    //
-    // TODO: explain in more detail
-    pub fn parse(&mut self, k_header_2: [u8; 32]) -> Option<HeaderKind> {
+    ///
+    /// Apply mask for the second part of the short header and extract message type from the header.
+    /// Based on the type of the message, decrypt additional header fields (if the message type
+    /// indicated a long header) and return all useful context to caller for further processing.
+    pub fn parse(&mut self, k_header_2: [u8; 32]) -> Result<HeaderKind, Ssu2Error> {
         self.apply_mask(k_header_2, self.iv2, 8..16);
 
         let header =
             u64::from_le_bytes(TryInto::<[u8; 8]>::try_into(&self.pkt[8..16]).expect("to succeed"));
 
-        match MessageType::try_from(((header >> 32) & 0xff) as u8).ok()? {
+        match MessageType::try_from(((header >> 32) & 0xff) as u8)
+            .map_err(|_| Ssu2Error::Malformed)?
+        {
             MessageType::SessionRequest => {
                 if ((header >> 40) as u8) != PROTOCOL_VERSION {
-                    return None;
+                    return Err(Ssu2Error::InvalidVersion);
                 }
 
-                // TODO: ensure packet has enough bytes
+                if self.pkt.len() < 64 {
+                    return Err(Ssu2Error::NotEnoughBytes);
+                }
 
                 ChaCha::with_iv(k_header_2, [0u8; 12]).decrypt_ref(&mut self.pkt[16..64]);
 
@@ -1795,7 +1806,7 @@ impl<'a> HeaderReader<'a> {
                 let ephemeral_key =
                     EphemeralPublicKey::from_bytes(&self.pkt[32..64]).expect("to succeed");
 
-                Some(HeaderKind::SessionRequest {
+                Ok(HeaderKind::SessionRequest {
                     ephemeral_key,
                     net_id,
                     pkt_num,
@@ -1804,10 +1815,12 @@ impl<'a> HeaderReader<'a> {
             }
             MessageType::SessionCreated => {
                 if ((header >> 40) as u8) != PROTOCOL_VERSION {
-                    return None;
+                    return Err(Ssu2Error::InvalidVersion);
                 }
 
-                // TODO: ensure packet has enough bytes
+                if self.pkt.len() < 64 {
+                    return Err(Ssu2Error::NotEnoughBytes);
+                }
 
                 ChaCha::with_iv(k_header_2, [0u8; 12]).decrypt_ref(&mut self.pkt[16..64]);
 
@@ -1818,24 +1831,26 @@ impl<'a> HeaderReader<'a> {
                 let ephemeral_key =
                     EphemeralPublicKey::from_bytes(&self.pkt[32..64]).expect("to succeed");
 
-                Some(HeaderKind::SessionCreated {
+                Ok(HeaderKind::SessionCreated {
                     ephemeral_key,
                     net_id,
                     pkt_num,
                 })
             }
-            MessageType::SessionConfirmed => Some(HeaderKind::SessionConfirmed {
+            MessageType::SessionConfirmed => Ok(HeaderKind::SessionConfirmed {
                 pkt_num: u32::from_be(header as u32),
             }),
-            MessageType::Data => Some(HeaderKind::Data {
+            MessageType::Data => Ok(HeaderKind::Data {
                 pkt_num: u32::from_be(header as u32),
             }),
             MessageType::Retry => {
                 if ((header >> 40) as u8) != PROTOCOL_VERSION {
-                    return None;
+                    return Err(Ssu2Error::InvalidVersion);
                 }
 
-                // TODO: verify packet length
+                if self.pkt.len() < 32 {
+                    return Err(Ssu2Error::NotEnoughBytes);
+                }
 
                 ChaCha::with_iv(k_header_2, [0u8; 12]).decrypt_ref(&mut self.pkt[16..32]);
 
@@ -1847,7 +1862,7 @@ impl<'a> HeaderReader<'a> {
                     TryInto::<[u8; 8]>::try_into(&self.pkt[24..32]).expect("to succeed"),
                 );
 
-                Some(HeaderKind::Retry {
+                Ok(HeaderKind::Retry {
                     net_id,
                     pkt_num,
                     token,
@@ -1855,7 +1870,11 @@ impl<'a> HeaderReader<'a> {
             }
             MessageType::TokenRequest => {
                 if ((header >> 40) as u8) != PROTOCOL_VERSION {
-                    return None;
+                    return Err(Ssu2Error::InvalidVersion);
+                }
+
+                if self.pkt.len() < 32 {
+                    return Err(Ssu2Error::NotEnoughBytes);
                 }
 
                 ChaCha::with_iv(k_header_2, [0u8; 12]).decrypt_ref(&mut self.pkt[16..32]);
@@ -1866,7 +1885,7 @@ impl<'a> HeaderReader<'a> {
                     TryInto::<[u8; 8]>::try_into(&self.pkt[16..24]).expect("to succeed"),
                 );
 
-                Some(HeaderKind::TokenRequest {
+                Ok(HeaderKind::TokenRequest {
                     net_id,
                     pkt_num,
                     src_id,
@@ -1878,7 +1897,7 @@ impl<'a> HeaderReader<'a> {
                     ?message_type,
                     "unsupported message type",
                 );
-                None
+                Err(Ssu2Error::UnexpectedMessage)
             }
         }
     }

@@ -267,33 +267,31 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         router_info: Bytes,
         static_key: StaticPublicKey,
     ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
-        let (pkt_num, token) = match HeaderReader::new(self.intro_key, &mut pkt)?
-            .parse(self.intro_key)
-            .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be too short mesasge
-        {
-            HeaderKind::Retry {
-                net_id,
-                pkt_num,
-                token,
-            } => {
-                if self.net_id != net_id {
-                    return Err(Ssu2Error::NetworkMismatch);
-                }
+        let (pkt_num, token) =
+            match HeaderReader::new(self.intro_key, &mut pkt)?.parse(self.intro_key)? {
+                HeaderKind::Retry {
+                    net_id,
+                    pkt_num,
+                    token,
+                } => {
+                    if self.net_id != net_id {
+                        return Err(Ssu2Error::NetworkMismatch);
+                    }
 
-                (pkt_num, token)
-            }
-            kind => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    dst_id = ?self.dst_id,
-                    src_id = ?self.src_id,
-                    ?kind,
-                    "unexpected message, expected `Retry`",
-                );
-                return Err(Ssu2Error::UnexpectedMessage);
-            }
-        };
+                    (pkt_num, token)
+                }
+                kind => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        dst_id = ?self.dst_id,
+                        src_id = ?self.src_id,
+                        ?kind,
+                        "unexpected message, expected `Retry`",
+                    );
+                    return Err(Ssu2Error::UnexpectedMessage);
+                }
+            };
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -377,39 +375,37 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         let k_header_2 =
             Hmac::new(&temp_key).update(b"SessCreateHeader").update([0x01]).finalize_new();
 
-        let remote_ephemeral_key = match HeaderReader::new(self.intro_key, &mut pkt)?
-            .parse(k_header_2)
-            .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be other error
-        {
-            HeaderKind::SessionCreated {
-                ephemeral_key,
-                net_id,
-                ..
-            } => {
-                if self.net_id != net_id {
-                    return Err(Ssu2Error::NetworkMismatch);
-                }
-
-                ephemeral_key
-            }
-            kind => {
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    dst_id = ?self.dst_id,
-                    src_id = ?self.src_id,
-                    ?kind,
-                    "unexpected message, expected `SessionCreated`",
-                );
-
-                self.state =  PendingSessionState::AwaitingSessionCreated {
+        let remote_ephemeral_key =
+            match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2)? {
+                HeaderKind::SessionCreated {
                     ephemeral_key,
-                    local_static_key,
-                    router_info,
-                };
-                return Ok(None);
-            }
-        };
+                    net_id,
+                    ..
+                } => {
+                    if self.net_id != net_id {
+                        return Err(Ssu2Error::NetworkMismatch);
+                    }
+
+                    ephemeral_key
+                }
+                kind => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        dst_id = ?self.dst_id,
+                        src_id = ?self.src_id,
+                        ?kind,
+                        "unexpected message, expected `SessionCreated`",
+                    );
+
+                    self.state = PendingSessionState::AwaitingSessionCreated {
+                        ephemeral_key,
+                        local_static_key,
+                        router_info,
+                    };
+                    return Ok(None);
+                }
+            };
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -519,7 +515,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .finalize_new();
 
         match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2_ba) {
-            Some(HeaderKind::Data { .. }) => {}
+            Ok(HeaderKind::Data { .. }) => {}
             kind => {
                 tracing::debug!(
                     target: LOG_TARGET,
@@ -761,7 +757,7 @@ mod tests {
             let dst_id = reader.dst_id();
 
             match reader.parse(inbound_intro_key) {
-                Some(HeaderKind::TokenRequest {
+                Ok(HeaderKind::TokenRequest {
                     pkt_num, src_id, ..
                 }) => (pkt, pkt_num, dst_id, src_id),
                 _ => panic!("invalid message"),

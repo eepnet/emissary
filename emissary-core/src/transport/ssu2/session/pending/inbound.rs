@@ -276,16 +276,13 @@ impl<R: Runtime> InboundSsu2Session<R> {
         mut pkt: Vec<u8>,
         token: u64,
     ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
-        let (ephemeral_key, pkt_num, recv_token) = match HeaderReader::new(self.intro_key, &mut pkt)?
-                .parse(self.intro_key)
-                .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be other error
-            {
+        let (ephemeral_key, pkt_num, recv_token) =
+            match HeaderReader::new(self.intro_key, &mut pkt)?.parse(self.intro_key)? {
                 HeaderKind::SessionRequest {
                     ephemeral_key,
                     net_id,
                     pkt_num,
                     token,
-                    ..
                 } => {
                     if self.net_id != net_id {
                         return Err(Ssu2Error::NetworkMismatch);
@@ -293,7 +290,11 @@ impl<R: Runtime> InboundSsu2Session<R> {
 
                     (ephemeral_key, pkt_num, token)
                 }
-                HeaderKind::TokenRequest { net_id , pkt_num, src_id } => {
+                HeaderKind::TokenRequest {
+                    net_id,
+                    pkt_num,
+                    src_id,
+                } => {
                     if self.net_id != net_id {
                         return Err(Ssu2Error::NetworkMismatch);
                     }
@@ -318,7 +319,10 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         "received unexpected `TokenRequest`",
                     );
 
-                    if let Err(error) = self.pkt_tx.try_send(Packet { pkt, address: self.address }) {
+                    if let Err(error) = self.pkt_tx.try_send(Packet {
+                        pkt,
+                        address: self.address,
+                    }) {
                         tracing::warn!(
                             target: LOG_TARGET,
                             local_dst_id = ?self.dst_id,
@@ -472,7 +476,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         k_session_created: [u8; 32],
     ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
         match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2) {
-            Some(HeaderKind::SessionConfirmed { pkt_num }) =>
+            Ok(HeaderKind::SessionConfirmed { pkt_num }) =>
                 if pkt_num != 0 {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -797,7 +801,7 @@ mod tests {
             let dst_id = reader.dst_id();
 
             match reader.parse(inbound_intro_key) {
-                Some(HeaderKind::TokenRequest {
+                Ok(HeaderKind::TokenRequest {
                     pkt_num, src_id, ..
                 }) => (pkt, pkt_num, dst_id, src_id),
                 _ => panic!("invalid message"),
@@ -915,7 +919,7 @@ mod tests {
                     let _connection_id = reader.dst_id();
 
                     match reader.parse(intro_key) {
-                        Some(HeaderKind::Retry { .. }) => break,
+                        Ok(HeaderKind::Retry { .. }) => break,
                         _ => panic!("invalid packet"),
                     }
                 }
@@ -974,7 +978,7 @@ mod tests {
                     let _connection_id = reader.dst_id();
 
                     match reader.parse(intro_key) {
-                        Some(HeaderKind::Retry { .. }) => {
+                        Ok(HeaderKind::Retry { .. }) => {
                             // send the original `Retry` with an expired token
                             ob_sess_tx.send(original_retry.clone()).await.unwrap();
                         },

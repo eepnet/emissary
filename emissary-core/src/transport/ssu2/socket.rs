@@ -224,7 +224,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         }
 
         match reader.parse(self.intro_key) {
-            Some(HeaderKind::TokenRequest {
+            Ok(HeaderKind::TokenRequest {
                 net_id: _,
                 pkt_num,
                 src_id,
@@ -251,7 +251,7 @@ impl<R: Runtime> Ssu2Socket<R> {
 
                 Ok(())
             }
-            Some(kind) => {
+            Ok(kind) => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     ?kind,
@@ -259,7 +259,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 );
                 Ok(())
             }
-            None => match self.pending_outbound.get(&address) {
+            Err(_) => match self.pending_outbound.get(&address) {
                 Some(intro_key) =>
                     match self.sessions.get_mut(&reader.reset_key(*intro_key).dst_id()) {
                         Some(tx) => tx
