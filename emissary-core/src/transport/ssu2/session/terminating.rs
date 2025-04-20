@@ -23,7 +23,7 @@ use crate::{
     runtime::Runtime,
     transport::{
         ssu2::{
-            message::{Block, DataMessageBuilder, HeaderKind, HeaderReader},
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             session::KeyContext,
             Packet,
         },

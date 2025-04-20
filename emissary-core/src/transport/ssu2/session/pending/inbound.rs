@@ -25,8 +25,9 @@ use crate::{
     runtime::Runtime,
     transport::ssu2::{
         message::{
-            Block, DataMessageBuilder, HeaderKind, HeaderReader, RetryBuilder,
-            SessionCreatedBuilder,
+            data::DataMessageBuilder,
+            handshake::{RetryBuilder, SessionCreatedBuilder},
+            Block, HeaderKind, HeaderReader,
         },
         session::{
             active::Ssu2SessionContext,

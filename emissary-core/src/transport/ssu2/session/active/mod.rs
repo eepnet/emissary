@@ -25,7 +25,7 @@ use crate::{
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
-            message::{Block, DataMessageBuilder},
+            message::{data::DataMessageBuilder, Block},
             session::{
                 active::{
                     ack::{LocalAckManager, RemoteAckManager},
@@ -58,6 +58,9 @@ mod fragment;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::session::active";
+
+/// Command channel size.
+const CMD_CHANNEL_SIZE: usize = 512;
 
 /// SSU2 active session context.
 pub struct Ssu2SessionContext {
@@ -146,7 +149,7 @@ impl<R: Runtime> Ssu2Session<R> {
         pkt_tx: Sender<Packet>,
         subsystem_handle: SubsystemHandle,
     ) -> Self {
-        let (cmd_tx, cmd_rx) = channel(666usize);
+        let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
 
         tracing::debug!(
             target: LOG_TARGET,
@@ -176,13 +179,11 @@ impl<R: Runtime> Ssu2Session<R> {
     }
 
     /// Get next outbound packet number.
-    //
-    // TODO: check for overflow and terminate session
-    fn next_pkt_num(&mut self) -> u32 {
-        let pkt_num = self.pkt_num;
-        self.pkt_num += 1;
-
-        pkt_num
+    fn next_pkt_num(&mut self) -> Option<u32> {
+        self.pkt_num.checked_add(1).map(|pkt_num| {
+            self.pkt_num = pkt_num;
+            pkt_num
+        })
     }
 
     /// Handle inbound `message`.
@@ -208,7 +209,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 router_id = %self.router_id,
                 message_id = ?message.message_id,
                 message_type = ?message.message_type,
-                "ignoring duplicat message",
+                "ignoring duplicate message",
             );
             return;
         }
@@ -352,7 +353,7 @@ impl<R: Runtime> Ssu2Session<R> {
         if message.len() <= 1200 {
             let message = DataMessageBuilder::default()
                 .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num())
+                .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
                 .with_key_context(self.intro_key, &self.send_key_ctx)
                 .with_i2np(&message)
                 .with_ack(highest_seen, num_acks, ranges)
@@ -375,7 +376,7 @@ impl<R: Runtime> Ssu2Session<R> {
 
             let first_fragment = DataMessageBuilder::default()
                 .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num())
+                .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
                 .with_key_context(self.intro_key, &self.send_key_ctx)
                 .with_first_fragment(
                     msg.message_type,
@@ -400,7 +401,7 @@ impl<R: Runtime> Ssu2Session<R> {
             fragments.into_iter().enumerate().for_each(|(i, fragment)| {
                 let message = DataMessageBuilder::default()
                     .with_dst_id(self.dst_id)
-                    .with_pkt_num(self.next_pkt_num())
+                    .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
                     .with_key_context(self.intro_key, &self.send_key_ctx)
                     .with_follow_on_fragment(
                         message_id,
@@ -444,7 +445,7 @@ impl<R: Runtime> Ssu2Session<R> {
             address: self.address,
             dst_id: self.dst_id,
             intro_key: self.intro_key,
-            next_pkt_num: self.next_pkt_num(),
+            next_pkt_num: self.next_pkt_num().unwrap(), // TODO: no unwraps
             reason,
             recv_key_ctx: self.recv_key_ctx,
             router_id: self.router_id,
