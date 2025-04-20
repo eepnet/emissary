@@ -233,14 +233,15 @@ impl<R: Runtime> Ssu2Socket<R> {
                 let (tx, rx) = channel(CHANNEL_SIZE);
                 let session = InboundSsu2Session::<R>::new(InboundSsu2Context {
                     address,
-                    src_id,
-                    pkt_num,
                     chaining_key: self.chaining_key.clone(),
                     dst_id: connection_id,
                     intro_key: self.intro_key,
+                    net_id: self.router_ctx.net_id(),
+                    pkt_num,
                     pkt: self.buffer[..nread].to_vec(),
                     pkt_tx: self.pkt_tx.clone(),
                     rx,
+                    src_id,
                     state: self.inbound_state.clone(),
                     static_key: self.static_key.clone(),
                 })?;
@@ -327,6 +328,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             dst_id,
             intro_key,
             local_static_key: self.static_key.clone(),
+            net_id: self.router_ctx.net_id(),
             pkt_tx: self.pkt_tx.clone(),
             router_id,
             router_info,

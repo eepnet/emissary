@@ -74,6 +74,9 @@ pub struct InboundSsu2Context {
     /// Local intro key.
     pub intro_key: [u8; 32],
 
+    /// Net ID.
+    pub net_id: u8,
+
     /// `TokenRequest` packet.
     pub pkt: Vec<u8>,
 
@@ -148,6 +151,9 @@ pub struct InboundSsu2Session<R: Runtime> {
     /// Local intro key.
     intro_key: [u8; 32],
 
+    /// Net ID.
+    net_id: u8,
+
     /// Noise context.
     noise_ctx: NoiseContext,
 
@@ -182,6 +188,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             chaining_key,
             dst_id,
             intro_key,
+            net_id,
             pkt,
             pkt_num,
             pkt_tx,
@@ -242,6 +249,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             address,
             dst_id,
             intro_key,
+            net_id,
             noise_ctx: NoiseContext::new(
                 TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
                 TryInto::<[u8; 32]>::try_into(state.to_vec()).expect("to succeed"),
@@ -274,17 +282,21 @@ impl<R: Runtime> InboundSsu2Session<R> {
             {
                 HeaderKind::SessionRequest {
                     ephemeral_key,
-                    net_id: _,
+                    net_id,
                     pkt_num,
                     token,
                     ..
                 } => {
-                    // TODO: check net id
+                    if self.net_id != net_id {
+                        return Err(Ssu2Error::NetworkMismatch);
+                    }
 
                     (ephemeral_key, pkt_num, token)
                 }
-                HeaderKind::TokenRequest { net_id: _ , pkt_num, src_id } => {
-                    // TODO: check net id
+                HeaderKind::TokenRequest { net_id , pkt_num, src_id } => {
+                    if self.net_id != net_id {
+                        return Err(Ssu2Error::NetworkMismatch);
+                    }
 
                     let token = R::rng().next_u64();
                     let pkt = RetryBuilder::default()
@@ -768,6 +780,7 @@ mod tests {
             chaining_key: Bytes::from(chaining_key.clone()),
             dst_id,
             intro_key: inbound_intro_key,
+            net_id: 2u8,
             local_static_key: outbound_static_key,
             pkt_tx: outbound_socket_tx,
             router_id: router_info.identity.id(),
@@ -796,6 +809,7 @@ mod tests {
             chaining_key: Bytes::from(chaining_key),
             dst_id,
             intro_key: inbound_intro_key,
+            net_id: 2u8,
             pkt,
             pkt_num,
             pkt_tx: inbound_socket_tx,

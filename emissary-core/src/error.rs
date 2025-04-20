@@ -51,6 +51,9 @@ pub enum Ssu2Error {
 
     /// Token mismatch.
     TokenMismatch,
+
+    /// Network mismatch.
+    NetworkMismatch,
 }
 
 impl fmt::Display for Ssu2Error {
@@ -64,6 +67,7 @@ impl fmt::Display for Ssu2Error {
             Self::SessionTerminated(reason) => write!(f, "session forcibly terminated: {reason:?}"),
             Self::UnexpectedMessage => write!(f, "unexpected message"),
             Self::TokenMismatch => write!(f, "token mismatch"),
+            Self::NetworkMismatch => write!(f, "network mismatch"),
         }
     }
 }

@@ -349,4 +349,113 @@ mod tests {
             Ok(()) => {}
         }
     }
+
+    #[tokio::test]
+    async fn connect_ssu2_wrong_network() {
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (ctx1, address1) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
+            port: 0u16,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xaa; 32],
+            intro_key: [0xbb; 32],
+        }))
+        .await
+        .unwrap();
+        let (ctx2, address2) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
+            port: 0u16,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xcc; 32],
+            intro_key: [0xdd; 32],
+        }))
+        .await
+        .unwrap();
+
+        let (static1, signing1) = (
+            StaticPrivateKey::random(MockRuntime::rng()),
+            SigningPrivateKey::random(MockRuntime::rng()),
+        );
+        let (static2, signing2) = (
+            StaticPrivateKey::random(MockRuntime::rng()),
+            SigningPrivateKey::random(MockRuntime::rng()),
+        );
+        let router_info1 = RouterInfo::new::<MockRuntime>(
+            &Default::default(),
+            None,
+            address1,
+            &static1,
+            &signing1,
+            false,
+        );
+        let router_info2 = RouterInfo::new::<MockRuntime>(
+            &Default::default(),
+            None,
+            address2,
+            &static2,
+            &signing2,
+            false,
+        );
+        let (handle1, _event_rx1) = {
+            let (tx, rx) = channel(64);
+            let mut handle = SubsystemHandle::new();
+            handle.register_subsystem(tx);
+
+            (handle, rx)
+        };
+        let (handle2, _event_rx2) = {
+            let (tx, rx) = channel(64);
+            let mut handle = SubsystemHandle::new();
+            handle.register_subsystem(tx);
+
+            (handle, rx)
+        };
+
+        let mut transport1 = Ssu2Transport::<MockRuntime>::new(
+            ctx1.unwrap(),
+            true,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                ProfileStorage::<MockRuntime>::new(&[], &[]),
+                router_info1.identity.id(),
+                Bytes::from(router_info1.serialize(&signing1)),
+                static1,
+                signing1,
+                2u8,
+                event_handle.clone(),
+            ),
+            handle1,
+        );
+        let mut transport2 = Ssu2Transport::<MockRuntime>::new(
+            ctx2.unwrap(),
+            true,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                ProfileStorage::<MockRuntime>::new(&[], &[]),
+                router_info2.identity.id(),
+                Bytes::from(router_info2.serialize(&signing2)),
+                static2,
+                signing2,
+                5u8, // wrong network
+                event_handle.clone(),
+            ),
+            handle2,
+        );
+        tokio::spawn(async move { while let Some(_) = transport2.next().await {} });
+
+        transport1.connect(router_info2);
+        let future = async move {
+            loop {
+                match transport1.next().await.unwrap() {
+                    TransportEvent::ConnectionFailure { .. } => break,
+                    _ => {}
+                }
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(20), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(()) => {}
+        }
+    }
 }

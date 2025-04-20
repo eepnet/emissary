@@ -73,6 +73,9 @@ pub struct OutboundSsu2Context {
     /// Local static key.
     pub local_static_key: StaticPrivateKey,
 
+    /// Network ID.
+    pub net_id: u8,
+
     /// TX channel for sending packets to [`Ssu2Socket`].
     pub pkt_tx: Sender<Packet>,
 
@@ -155,6 +158,9 @@ pub struct OutboundSsu2Session<R: Runtime> {
     /// Intro key.
     intro_key: [u8; 32],
 
+    /// Network ID.
+    net_id: u8,
+
     /// Noise context.
     noise_ctx: NoiseContext,
 
@@ -186,6 +192,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             dst_id,
             intro_key,
             local_static_key,
+            net_id,
             pkt_tx,
             router_id,
             router_info,
@@ -226,6 +233,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             address,
             dst_id,
             intro_key,
+            net_id,
             noise_ctx: NoiseContext::new(
                 TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
                 TryInto::<[u8; 32]>::try_into(state.to_vec()).expect("to succeed"),
@@ -264,11 +272,13 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .ok_or(Ssu2Error::InvalidVersion)? // TODO: could be too short mesasge
         {
             HeaderKind::Retry {
-                net_id: _,
+                net_id,
                 pkt_num,
                 token,
             } => {
-                // TODO: verify net id
+                if self.net_id != net_id {
+                    return Err(Ssu2Error::NetworkMismatch);
+                }
 
                 (pkt_num, token)
             }
@@ -373,10 +383,12 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         {
             HeaderKind::SessionCreated {
                 ephemeral_key,
-                net_id: _,
+                net_id,
                 ..
             } => {
-                // TODO: verify net id
+                if self.net_id != net_id {
+                    return Err(Ssu2Error::NetworkMismatch);
+                }
 
                 ephemeral_key
             }
@@ -733,6 +745,7 @@ mod tests {
             dst_id,
             intro_key: inbound_intro_key,
             local_static_key: outbound_static_key,
+            net_id: 2u8,
             pkt_tx: outbound_socket_tx,
             router_id: router_info.identity.id(),
             router_info: Bytes::from(router_info.serialize(&signing_key)),
@@ -760,6 +773,7 @@ mod tests {
             chaining_key: Bytes::from(chaining_key),
             dst_id,
             intro_key: inbound_intro_key,
+            net_id: 2u8,
             pkt,
             pkt_num,
             pkt_tx: inbound_socket_tx,
