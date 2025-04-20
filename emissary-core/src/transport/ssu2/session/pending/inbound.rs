@@ -45,6 +45,7 @@ use zeroize::Zeroize;
 
 use alloc::vec::Vec;
 use core::{
+    fmt,
     future::Future,
     mem,
     net::SocketAddr,
@@ -119,6 +120,21 @@ enum PendingSessionState {
 
     /// State has been poisoned.
     Poisoned,
+}
+
+impl fmt::Debug for PendingSessionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AwaitingSessionRequest { .. } => f
+                .debug_struct("PendingSessionState::AwaitingSessionRequest")
+                .finish_non_exhaustive(),
+            Self::AwaitingSessionConfirmed { .. } => f
+                .debug_struct("PendingSessionState::AwaitingSessionConfirmed")
+                .finish_non_exhaustive(),
+            Self::Poisoned =>
+                f.debug_struct("PendingSessionState::Poisoned").finish_non_exhaustive(),
+        }
+    }
 }
 
 /// Pending inbound SSU2 session.
@@ -311,7 +327,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
                         ?kind,
-                        "invalid message, expected `SessionRequest`",
+                        "unexpected message, expected `SessionRequest`",
                     );
                     return Err(Ssu2Error::UnexpectedMessage);
                 }
@@ -461,7 +477,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     dst_id = ?self.dst_id,
                     src_id = ?self.src_id,
                     ?kind,
-                    "received unexpected message, ignoring",
+                    "unexpected message, expected `SessionConfirmed`",
                 );
 
                 self.state = PendingSessionState::AwaitingSessionConfirmed {
@@ -647,6 +663,14 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
 
         match futures::ready!(self.pkt_retransmitter.poll_unpin(cx)) {
             PacketRetransmitterEvent::Retransmit { pkt } => {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    dst_id = ?self.dst_id,
+                    src_id = ?self.src_id,
+                    state = ?self.state,
+                    "retransmitting packet",
+                );
+
                 if let Err(error) = self.pkt_tx.try_send(Packet {
                     pkt: pkt.clone(),
                     address: self.address,
@@ -1115,6 +1139,67 @@ mod tests {
 
         match outbound_session.await {
             Ok(PendingSsu2SessionStatus::NewOutboundSession { .. }) => {}
+            _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_created_timeout() {
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: ob_sess_tx,
+                outbound_socket_rx,
+            },
+        ) = create_session();
+
+        let intro_key = inbound_session.intro_key;
+        let _outbound_session = tokio::spawn(outbound_session);
+
+        // send retry message to outbound session
+        {
+            let Packet { mut pkt, address } = inbound_socket_rx.try_recv().unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+
+            ob_sess_tx.send(Packet { pkt, address }).await.unwrap();
+        }
+
+        // read session request from outbound session, send it to inbound session
+        // and read session created
+        let _pkt = {
+            let Packet { mut pkt, address } = outbound_socket_rx.recv().await.unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+            ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+
+            tokio::select! {
+                _ = &mut inbound_session => unreachable!(),
+                pkt = inbound_socket_rx.recv() => {
+                    pkt.unwrap()
+                }
+            }
+        };
+
+        let inbound_session = tokio::spawn(inbound_session);
+
+        for _ in 0..3 {
+            match tokio::time::timeout(Duration::from_secs(10), inbound_socket_rx.recv()).await {
+                Err(_) => panic!("timeout"),
+                Ok(None) => panic!("error"),
+                Ok(Some(_)) => {}
+            }
+        }
+
+        match tokio::time::timeout(Duration::from_secs(10), inbound_session).await {
+            Err(_) => panic!("timeout"),
+            Ok(Err(_)) => panic!("error"),
+            Ok(Ok(PendingSsu2SessionStatus::Timeout { .. })) => {}
             _ => panic!("invalid result"),
         }
     }
