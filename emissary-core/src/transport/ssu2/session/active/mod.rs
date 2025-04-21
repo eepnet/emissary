@@ -115,9 +115,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
 
-    /// Next packet number.
-    pkt_num: u32,
-
     /// RX channel for receiving inbound packets from [`Ssu2Socket`].
     pkt_rx: Receiver<Packet>,
 
@@ -169,7 +166,6 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(),
             intro_key: context.intro_key,
-            pkt_num: 1u32, // TODO: may not be correct for outbound sessions
             pkt_rx: context.pkt_rx,
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
@@ -179,14 +175,6 @@ impl<R: Runtime> Ssu2Session<R> {
             subsystem_handle,
             transmission: TransmissionManager::<R>::new(),
         }
-    }
-
-    /// Get next outbound packet number.
-    fn next_pkt_num(&mut self) -> u32 {
-        let pkt_num = self.pkt_num;
-        self.pkt_num += 1;
-
-        pkt_num
     }
 
     /// Handle inbound `message`.
@@ -390,7 +378,7 @@ impl<R: Runtime> Ssu2Session<R> {
             address: self.address,
             dst_id: self.dst_id,
             intro_key: self.intro_key,
-            next_pkt_num: self.next_pkt_num(),
+            next_pkt_num: self.transmission.next_pkt_num(),
             reason,
             recv_key_ctx: self.recv_key_ctx,
             router_id: self.router_id,

@@ -137,7 +137,7 @@ impl<R: Runtime> TransmissionManager<R> {
     }
 
     /// Get next packet number.
-    fn next_pkt_num(&mut self) -> u32 {
+    pub fn next_pkt_num(&mut self) -> u32 {
         let pkt_num = self.pkt_num;
         self.pkt_num += 1;
 
