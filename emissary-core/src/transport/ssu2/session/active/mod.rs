@@ -16,6 +16,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#![allow(unused)]
+
 use crate::{
     crypto::chachapoly::{ChaCha, ChaChaPoly},
     error::Ssu2Error,
@@ -28,9 +30,8 @@ use crate::{
             message::{data::DataMessageBuilder, Block},
             session::{
                 active::{
-                    ack::{LocalAckManager, RemoteAckManager},
-                    duplicate::DuplicateFilter,
-                    fragment::FragmentHandler,
+                    ack::RemoteAckManager, duplicate::DuplicateFilter, fragment::FragmentHandler,
+                    transmission::TransmissionManager,
                 },
                 terminating::TerminationContext,
                 KeyContext,
@@ -55,6 +56,7 @@ use core::{
 mod ack;
 mod duplicate;
 mod fragment;
+mod transmission;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::session::active";
@@ -113,9 +115,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
 
-    /// Local ACK manager.
-    _local_ack: LocalAckManager,
-
     /// Next packet number.
     pkt_num: u32,
 
@@ -132,6 +131,7 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Remote ACK manager.
     remote_ack: RemoteAckManager,
+
     /// ID of the remote router.
     router_id: RouterId,
 
@@ -140,6 +140,9 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Subsystem handle.
     subsystem_handle: SubsystemHandle,
+
+    /// Transmission manager.
+    transmission: TransmissionManager<R>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -166,7 +169,6 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(),
             intro_key: context.intro_key,
-            _local_ack: LocalAckManager::new(),
             pkt_num: 1u32, // TODO: may not be correct for outbound sessions
             pkt_rx: context.pkt_rx,
             pkt_tx,
@@ -175,15 +177,16 @@ impl<R: Runtime> Ssu2Session<R> {
             router_id: context.router_id,
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
+            transmission: TransmissionManager::<R>::new(),
         }
     }
 
     /// Get next outbound packet number.
-    fn next_pkt_num(&mut self) -> Option<u32> {
-        self.pkt_num.checked_add(1).map(|pkt_num| {
-            self.pkt_num = pkt_num;
-            pkt_num
-        })
+    fn next_pkt_num(&mut self) -> u32 {
+        let pkt_num = self.pkt_num;
+        self.pkt_num += 1;
+
+        pkt_num
     }
 
     /// Handle inbound `message`.
@@ -226,13 +229,11 @@ impl<R: Runtime> Ssu2Session<R> {
         }
     }
 
-    /// Handle ACKs.
-    fn handle_acks(&mut self, _ack_through: u32, _num_acks: u8, _ranges: Vec<(u8, u8)>) {}
-
     /// Handle received `pkt` for this session.
     fn handle_packet(&mut self, pkt: Packet) -> Result<(), Ssu2Error> {
         let Packet { mut pkt, .. } = pkt;
 
+        // TODO: ugly, add to header reader?
         let iv2 = TryInto::<[u8; 12]>::try_into(&pkt[pkt.len() - 12..]).expect("to succeed");
         ChaCha::with_iv(self.recv_key_ctx.k_header_2, iv2)
             .decrypt([0u8; 8])
@@ -244,6 +245,7 @@ impl<R: Runtime> Ssu2Session<R> {
 
         // TODO: immediate ack
 
+        // TODO: wrong if header reader is used
         let pkt_num = u32::from_be_bytes(TryInto::<[u8; 4]>::try_into(&pkt[8..12]).unwrap());
 
         // TODO: unnecessary memory copy
@@ -271,7 +273,6 @@ impl<R: Runtime> Ssu2Session<R> {
                         reason,
                     )));
                 }
-
                 Block::I2Np { message } => {
                     self.handle_message(message);
                     self.remote_ack.register_pkt(pkt_num);
@@ -316,7 +317,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     ranges,
                 } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
-                    self.handle_acks(ack_through, num_acks, ranges);
+                    self.transmission.register_ack(ack_through, num_acks, ranges);
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
@@ -346,17 +347,15 @@ impl<R: Runtime> Ssu2Session<R> {
         );
 
         // TODO: this makes no sense, get unserialized message from subsystem
-        let msg = Message::parse_short(&message).unwrap();
-        let message_id = msg.message_id;
+        let message = Message::parse_short(&message).unwrap();
         let (highest_seen, num_acks, ranges) = self.remote_ack.ack_info();
 
-        if message.len() <= 1200 {
+        for (pkt_num, message_kind) in self.transmission.segment(message) {
             let message = DataMessageBuilder::default()
                 .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
                 .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_i2np(&message)
-                .with_ack(highest_seen, num_acks, ranges)
+                .with_message(pkt_num, message_kind)
+                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
                 .build();
 
             if let Err(error) = self.pkt_tx.try_send(Packet {
@@ -365,66 +364,12 @@ impl<R: Runtime> Ssu2Session<R> {
             }) {
                 tracing::warn!(
                     target: LOG_TARGET,
+                    router_id = %self.router_id,
                     ?error,
                     "failed to send packet",
                 );
             }
-        } else {
-            let mut fragments = msg.payload.chunks(1200).collect::<VecDeque<_>>();
-            let num_fragments = fragments.len();
-            let (highest_seen, num_acks, ranges) = self.remote_ack.ack_info();
-
-            let first_fragment = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_first_fragment(
-                    msg.message_type,
-                    msg.message_id,
-                    msg.expiration.as_secs() as u32,
-                    fragments.pop_front().expect("to exist"),
-                )
-                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: overflow
-                .build();
-
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: first_fragment.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "failed to send packet",
-                );
-            }
-
-            fragments.into_iter().enumerate().for_each(|(i, fragment)| {
-                let message = DataMessageBuilder::default()
-                    .with_dst_id(self.dst_id)
-                    .with_pkt_num(self.next_pkt_num().unwrap()) // TODO: no unwraps
-                    .with_key_context(self.intro_key, &self.send_key_ctx)
-                    .with_follow_on_fragment(
-                        message_id,
-                        i as u8 + 1u8,
-                        i == num_fragments - 2,
-                        fragment,
-                    )
-                    .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: overflow
-                    .build()
-                    .to_vec();
-
-                if let Err(error) = self.pkt_tx.try_send(Packet {
-                    pkt: message,
-                    address: self.address,
-                }) {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?error,
-                        "failed to send packet",
-                    );
-                }
-            });
-        };
+        }
     }
 
     /// Run the event loop of an active SSU2 session.
@@ -445,7 +390,7 @@ impl<R: Runtime> Ssu2Session<R> {
             address: self.address,
             dst_id: self.dst_id,
             intro_key: self.intro_key,
-            next_pkt_num: self.next_pkt_num().unwrap(), // TODO: no unwraps
+            next_pkt_num: self.next_pkt_num(),
             reason,
             recv_key_ctx: self.recv_key_ctx,
             router_id: self.router_id,

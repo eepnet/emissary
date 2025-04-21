@@ -196,6 +196,7 @@ emissary-cli -lsam
   * `emissary::ssu2::message`
   * `emissary::ssu2::session::active`
   * `emissary::ssu2::session::active::duplicate-filter`
+  * `emissary::ssu2::session::active::transmission`
   * `emissary::ssu2::session::inbound`
   * `emissary::ssu2::session::outbound`
   * `emissary::ssu2::session::terminating`

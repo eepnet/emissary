@@ -22,16 +22,6 @@ use core::{
     ops::Deref,
 };
 
-/// Local ACK manager.
-pub struct LocalAckManager {}
-
-impl LocalAckManager {
-    /// Create new [`LocalAckManager`].
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
 /// Packet type.
 #[derive(Debug)]
 enum Packet {

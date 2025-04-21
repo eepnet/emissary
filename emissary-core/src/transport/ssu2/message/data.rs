@@ -29,8 +29,12 @@ use bytes::{BufMut, BytesMut};
 
 use alloc::vec::Vec;
 
+/// Minimum size for an ACK block.
+const ACK_BLOCK_MIN_SIZE: usize = 8usize;
+
 /// Message kind for [`DataMessageBuilder`].
-enum MessageKind<'a> {
+pub enum MessageKind<'a> {
+    /// Unfragmented I2NP message.
     UnFragmented {
         /// Unfragmented I2NP message.
         message: &'a [u8],
@@ -76,16 +80,15 @@ pub struct DataMessageBuilder<'a> {
     // Destination connection ID.
     dst_id: Option<u64>,
 
-    /// Message kind.
-    i2np: Option<MessageKind<'a>>,
-
     /// Key context for the message.
     key_context: Option<([u8; 32], &'a KeyContext)>,
 
-    /// Payload length.
-    payload_len: usize,
+    /// Packet number and [`MessageKind`].
+    message: Option<(u32, MessageKind<'a>)>,
 
     /// Packet number.
+    ///
+    /// Set only if `message` is `None`.
     pkt_num: Option<u32>,
 
     /// Termination reason.
@@ -99,70 +102,23 @@ impl<'a> DataMessageBuilder<'a> {
         self
     }
 
-    /// Specify packet number.
-    pub fn with_pkt_num(mut self, value: u32) -> Self {
-        self.pkt_num = Some(value);
-        self
-    }
-
     /// Specify key context.
     pub fn with_key_context(mut self, intro_key: [u8; 32], key_ctx: &'a KeyContext) -> Self {
         self.key_context = Some((intro_key, key_ctx));
         self
     }
 
-    /// Specify I2NP message.
-    pub fn with_i2np(mut self, message: &'a [u8]) -> Self {
-        self.payload_len = self
-            .payload_len
-            .saturating_add(1usize) // type
-            .saturating_add(2usize) // len
-            .saturating_add(message.len());
-        self.i2np = Some(MessageKind::UnFragmented { message });
+    /// Specify packet number.
+    ///
+    /// Set only if `DataMessageBuilder::with_message()` is not used.
+    pub fn with_pkt_num(mut self, pkt_num: u32) -> Self {
+        self.pkt_num = Some(pkt_num);
         self
     }
 
-    /// Specify first fragment.
-    pub fn with_first_fragment(
-        mut self,
-        message_type: I2npMessageType,
-        message_id: u32,
-        expiration: u32,
-        fragment: &'a [u8],
-    ) -> Self {
-        self.payload_len = self
-            .payload_len
-            .saturating_add(1usize) // type
-            .saturating_add(2usize) // len
-            .saturating_add(fragment.len());
-        self.i2np = Some(MessageKind::FirstFragment {
-            expiration,
-            fragment,
-            message_id,
-            message_type,
-        });
-        self
-    }
-
-    /// Specify follow-on fragment.
-    pub fn with_follow_on_fragment(
-        mut self,
-        message_id: u32,
-        fragment_num: u8,
-        last: bool,
-        fragment: &'a [u8],
-    ) -> Self {
-        self.payload_len = self
-            .payload_len
-            .saturating_add(1usize) // type
-            .saturating_add(2usize) // len
-            .saturating_add(fragment.len());
-        self.i2np = Some(MessageKind::FollowOnFragment {
-            fragment,
-            fragment_num,
-            last,
-            message_id,
-        });
+    /// Specify packet number and [`MessageKind`].
+    pub fn with_message(mut self, pkt_num: u32, message_kind: MessageKind<'a>) -> Self {
+        self.message = Some((pkt_num, message_kind));
         self
     }
 
@@ -173,13 +129,6 @@ impl<'a> DataMessageBuilder<'a> {
         num_acks: u8,
         ranges: Option<Vec<(u8, u8)>>,
     ) -> Self {
-        self.payload_len = self
-            .payload_len
-            .saturating_add(1usize) // type
-            .saturating_add(2usize) // len
-            .saturating_add(4usize) // ack through
-            .saturating_add(1usize) // num acks
-            .saturating_add(ranges.as_ref().map_or(0usize, |ranges| ranges.len() * 2)); // ranges
         self.acks = Some((ack_through, num_acks, ranges));
         self
     }
@@ -192,7 +141,13 @@ impl<'a> DataMessageBuilder<'a> {
 
     /// Build message into one or more packets.
     pub fn build(mut self) -> BytesMut {
-        let pkt_num = self.pkt_num.expect("to exist");
+        let (pkt_num, message) = match self.pkt_num.take() {
+            Some(pkt_num) => (pkt_num, None),
+            None => self
+                .message
+                .map(|(pkt_num, message)| (pkt_num, Some(message)))
+                .expect("to exist"),
+        };
 
         let mut header = {
             let mut out = BytesMut::with_capacity(16usize);
@@ -209,9 +164,10 @@ impl<'a> DataMessageBuilder<'a> {
 
         // build payload
         let mut payload = {
-            let mut out = BytesMut::with_capacity(self.payload_len + POLY13055_MAC_LEN);
+            let mut bytes_left = 1300; // TODO: not correct
+            let mut out = BytesMut::with_capacity(bytes_left);
 
-            match self.i2np.take() {
+            match message {
                 None => {}
                 Some(MessageKind::UnFragmented { message }) => {
                     out.put_u8(BlockType::I2Np.as_u8());
@@ -243,26 +199,32 @@ impl<'a> DataMessageBuilder<'a> {
                     out.put_slice(fragment);
                 }
             }
+            bytes_left = bytes_left.saturating_sub(out.len());
 
             match self.acks.take() {
                 None => {}
-                Some((ack_through, num_acks, None)) => {
-                    out.put_u8(BlockType::Ack.as_u8());
-                    out.put_u16(5u16);
-                    out.put_u32(ack_through);
-                    out.put_u8(num_acks);
-                }
-                Some((ack_through, num_acks, Some(ranges))) => {
-                    out.put_u8(BlockType::Ack.as_u8());
-                    out.put_u16((5usize + ranges.len() * 2) as u16);
-                    out.put_u32(ack_through);
-                    out.put_u8(num_acks);
+                Some((ack_through, num_acks, None)) =>
+                    if bytes_left > ACK_BLOCK_MIN_SIZE {
+                        out.put_u8(BlockType::Ack.as_u8());
+                        out.put_u16(5u16);
+                        out.put_u32(ack_through);
+                        out.put_u8(num_acks);
+                    },
+                Some((ack_through, num_acks, Some(ranges))) =>
+                    if bytes_left > ACK_BLOCK_MIN_SIZE {
+                        out.put_u8(BlockType::Ack.as_u8());
+                        out.put_u16((5usize + ranges.len() * 2) as u16);
+                        out.put_u32(ack_through);
+                        out.put_u8(num_acks);
 
-                    ranges.into_iter().for_each(|(nack, ack)| {
-                        out.put_u8(nack);
-                        out.put_u8(ack);
-                    });
-                }
+                        ranges
+                            .into_iter()
+                            .take(bytes_left.saturating_sub(ACK_BLOCK_MIN_SIZE) / 2)
+                            .for_each(|(nack, ack)| {
+                                out.put_u8(nack);
+                                out.put_u8(ack);
+                            });
+                    },
             }
 
             out.to_vec()
@@ -300,6 +262,15 @@ impl<'a> DataMessageBuilder<'a> {
         out.put_slice(&header);
         out.put_slice(&payload);
 
+        debug_assert!(out.len() < 1500 - 68);
         out
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test() {}
 }
