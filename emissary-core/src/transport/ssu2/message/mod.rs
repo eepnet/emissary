@@ -988,6 +988,9 @@ pub enum HeaderKind {
 
     /// Data.
     Data {
+        /// Was immediate ACK requested.
+        immediate_ack: bool,
+
         /// Packet number.
         pkt_num: u32,
     },
@@ -1038,8 +1041,14 @@ impl fmt::Debug for HeaderKind {
                 .field("pkt_num", &pkt_num)
                 .field("src_id", &src_id)
                 .finish(),
-            Self::Data { pkt_num } =>
-                f.debug_struct("HeaderKind::Data").field("pkt_num", &pkt_num).finish(),
+            Self::Data {
+                immediate_ack,
+                pkt_num,
+            } => f
+                .debug_struct("HeaderKind::Data")
+                .field("pkt_num", &pkt_num)
+                .field("immediate_ack", &immediate_ack)
+                .finish(),
         }
     }
 }
@@ -1171,6 +1180,7 @@ impl<'a> HeaderReader<'a> {
                 pkt_num: u32::from_be(header as u32),
             }),
             MessageType::Data => Ok(HeaderKind::Data {
+                immediate_ack: ((header >> 24) & 0x01) == 0x01,
                 pkt_num: u32::from_be(header as u32),
             }),
             MessageType::Retry => {

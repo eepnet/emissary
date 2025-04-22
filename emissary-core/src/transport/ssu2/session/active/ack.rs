@@ -82,9 +82,7 @@ impl RemoteAckManager {
     }
 
     /// Register ACK-eliciting packet.
-    //
-    // TODO: return true/false if immediate ack should be sent?
-    pub fn register_pkt(&mut self, pkt_num: u32) {
+    pub fn register_pkt(&mut self, pkt_num: u32, _immediate_ack: bool) {
         // next expected packet number
         if self.highest_seen + 1 == pkt_num {
             self.packets.insert(Reverse(Packet::Received(self.highest_seen)));
@@ -114,8 +112,8 @@ impl RemoteAckManager {
     }
 
     /// Register non-ACK-eliciting packet.
-    pub fn register_non_ack_eliciting_pkt(&mut self, pkt_num: u32) {
-        self.register_pkt(pkt_num);
+    pub fn register_non_ack_eliciting_pkt(&mut self, pkt_num: u32, immediate_ack: bool) {
+        self.register_pkt(pkt_num, immediate_ack);
     }
 
     /// Get ACK information added to an outbound message.
@@ -192,18 +190,18 @@ mod tests {
 
     #[test]
     fn ack_one_packet() {
-        let mut manager = RemoteAckManager::new();
-        manager.register_pkt(1);
+        let mut manager = RemoteAckManager::new(Default::default());
+        manager.register_pkt(1, true);
 
         assert_eq!(manager.ack_info(), (1, 1, None));
     }
 
     #[test]
     fn ack_multiple_packets() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
         for i in 1..=3 {
-            manager.register_pkt(i);
+            manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -213,10 +211,10 @@ mod tests {
 
     #[test]
     fn too_many_unacked_packets() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
         for i in 1..=300 {
-            manager.register_pkt(i);
+            manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -225,10 +223,10 @@ mod tests {
 
     #[test]
     fn max_acks() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
         for i in 1..=256 {
-            manager.register_pkt(i);
+            manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -237,9 +235,9 @@ mod tests {
 
     #[test]
     fn next_pkt_missing() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
-        manager.register_pkt(300);
+        manager.register_pkt(300, true);
         assert_eq!(manager.highest_seen, 300);
         assert_eq!(
             manager
@@ -260,7 +258,7 @@ mod tests {
 
         // pkt 299 missing, no acks below 300
         for i in 1..=298 {
-            manager.register_pkt(i);
+            manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, 300);
             assert_eq!(
                 manager
@@ -285,28 +283,28 @@ mod tests {
 
     #[test]
     fn packet_dropped() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
-        manager.register_pkt(10);
-        manager.register_pkt(9);
-        manager.register_pkt(8);
-        manager.register_pkt(6);
-        manager.register_pkt(5);
-        manager.register_pkt(2);
-        manager.register_pkt(1);
+        manager.register_pkt(10, true);
+        manager.register_pkt(9, true);
+        manager.register_pkt(8, true);
+        manager.register_pkt(6, true);
+        manager.register_pkt(5, true);
+        manager.register_pkt(2, true);
+        manager.register_pkt(1, true);
 
         assert_eq!(manager.ack_info(), (10, 2, Some(vec![(1, 2), (2, 3)])));
     }
 
     #[test]
     fn packet_dropped_2() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
-        manager.register_pkt(10);
-        manager.register_pkt(8);
-        manager.register_pkt(6);
-        manager.register_pkt(4);
-        manager.register_pkt(2);
+        manager.register_pkt(10, true);
+        manager.register_pkt(8, true);
+        manager.register_pkt(6, true);
+        manager.register_pkt(4, true);
+        manager.register_pkt(2, true);
 
         assert_eq!(
             manager.ack_info(),
@@ -316,10 +314,10 @@ mod tests {
 
     #[test]
     fn packet_dropped_3() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
         for i in 2..=10 {
-            manager.register_pkt(i);
+            manager.register_pkt(i, true);
         }
 
         assert_eq!(manager.ack_info(), (10, 8, Some(vec![(1, 1)])));
@@ -327,9 +325,9 @@ mod tests {
 
     #[test]
     fn packet_dropped_4() {
-        let mut manager = RemoteAckManager::new();
+        let mut manager = RemoteAckManager::new(Default::default());
 
-        manager.register_pkt(10);
+        manager.register_pkt(10, true);
 
         assert_eq!(manager.ack_info(), (10, 0, Some(vec![(9, 1)])));
     }

@@ -221,20 +221,32 @@ impl<R: Runtime> Ssu2Session<R> {
     fn handle_packet(&mut self, pkt: Packet) -> Result<(), Ssu2Error> {
         let Packet { mut pkt, .. } = pkt;
 
-        // TODO: ugly, add to header reader?
-        let iv2 = TryInto::<[u8; 12]>::try_into(&pkt[pkt.len() - 12..]).expect("to succeed");
-        ChaCha::with_iv(self.recv_key_ctx.k_header_2, iv2)
-            .decrypt([0u8; 8])
-            .into_iter()
-            .zip(&mut pkt[8..])
-            .for_each(|(a, b)| {
-                *b ^= a;
-            });
+        let (pkt_num, immediate_ack) = match HeaderReader::new(self.intro_key, &mut pkt)?
+            .parse(self.recv_key_ctx.k_header_2)?
+        {
+            HeaderKind::Data {
+                immediate_ack,
+                pkt_num,
+            } => (pkt_num, immediate_ack),
+            kind => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?kind,
+                    "unexpected packet",
+                );
+                return Err(Ssu2Error::UnexpectedMessage);
+            }
+        };
 
-        // TODO: immediate ack
-
-        // TODO: wrong if header reader is used
-        let pkt_num = u32::from_be_bytes(TryInto::<[u8; 4]>::try_into(&pkt[8..12]).unwrap());
+        tracing::trace!(
+            target: LOG_TARGET,
+            router_id = %self.router_id,
+            ?pkt_num,
+            pkt_len = ?pkt.len(),
+            ?immediate_ack,
+            "handle packet",
+        );
 
         // TODO: unnecessary memory copy
         let mut payload = pkt[16..].to_vec();
@@ -247,7 +259,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     reason,
                     num_valid_pkts,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
 
                     tracing::debug!(
                         target: LOG_TARGET,
@@ -263,7 +275,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 }
                 Block::I2Np { message } => {
                     self.handle_message(message);
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
                 }
                 Block::FirstFragment {
                     message_type,
@@ -271,7 +283,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     expiration,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
 
                     if let Some(message) = self.fragment_handler.first_fragment(
                         message_type,
@@ -288,7 +300,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment_num,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
 
                     if let Some(message) = self.fragment_handler.follow_on_fragment(
                         message_id,
@@ -304,11 +316,19 @@ impl<R: Runtime> Ssu2Session<R> {
                     num_acks,
                     ranges,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
-                    self.transmission.register_ack(ack_through, num_acks, ranges);
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        router = %self.router_id,
+                        ?ack_through,
+                        ?num_acks,
+                        ?ranges,
+                        "handle ack",
+                    );
+
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
                 }
                 block => {
                     tracing::debug!(
@@ -317,7 +337,7 @@ impl<R: Runtime> Ssu2Session<R> {
                         ?block,
                         "ignoring block",
                     );
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
                 }
             }
         }

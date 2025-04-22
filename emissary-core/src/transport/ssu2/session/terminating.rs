@@ -166,7 +166,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
         let pkt_num = match HeaderReader::new(self.intro_key, &mut pkt)?
             .parse(self.recv_key_ctx.k_header_2)?
         {
-            HeaderKind::Data { pkt_num } => pkt_num,
+            HeaderKind::Data { pkt_num, .. } => pkt_num,
             kind => {
                 tracing::trace!(
                     target: LOG_TARGET,
