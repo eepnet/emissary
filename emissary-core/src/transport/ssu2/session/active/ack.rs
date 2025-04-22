@@ -73,6 +73,7 @@ impl PartialEq for Packet {
 }
 
 /// ACK info.
+#[derive(Debug, PartialEq, Eq)]
 pub struct AckInfo {
     /// Highest seen packet number.
     pub highest_seen: u32,
@@ -277,18 +278,26 @@ impl<R: Runtime> Future for RemoteAckManager<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::mock::MockRuntime;
 
     #[test]
     fn ack_one_packet() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
         manager.register_pkt(1, true);
 
-        assert_eq!(manager.ack_info(), (1, 1, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 1,
+                num_acks: 1,
+                ranges: None
+            }
+        );
     }
 
     #[test]
     fn ack_multiple_packets() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=3 {
             manager.register_pkt(i, true);
@@ -296,36 +305,57 @@ mod tests {
         }
 
         // 3 is highest seen and 2 packets below 3 are also acked
-        assert_eq!(manager.ack_info(), (3, 3, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 3,
+                num_acks: 3,
+                ranges: None
+            }
+        );
     }
 
     #[test]
     fn too_many_unacked_packets() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=300 {
             manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, i);
         }
 
-        assert_eq!(manager.ack_info(), (300, 255, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 300,
+                num_acks: 255,
+                ranges: None
+            }
+        );
     }
 
     #[test]
     fn max_acks() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=256 {
             manager.register_pkt(i, true);
             assert_eq!(manager.highest_seen, i);
         }
 
-        assert_eq!(manager.ack_info(), (256, 255, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 256,
+                num_acks: 255,
+                ranges: None
+            }
+        );
     }
 
     #[test]
     fn next_pkt_missing() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(300, true);
         assert_eq!(manager.highest_seen, 300);
@@ -368,12 +398,19 @@ mod tests {
             );
         }
 
-        assert_eq!(manager.ack_info(), (300, 0, Some(vec![(1, 255)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 300,
+                num_acks: 0,
+                ranges: Some(vec![(1, 255)])
+            }
+        );
     }
 
     #[test]
     fn packet_dropped() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);
         manager.register_pkt(9, true);
@@ -383,12 +420,19 @@ mod tests {
         manager.register_pkt(2, true);
         manager.register_pkt(1, true);
 
-        assert_eq!(manager.ack_info(), (10, 2, Some(vec![(1, 2), (2, 3)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 2,
+                ranges: Some(vec![(1, 2), (2, 3)])
+            }
+        );
     }
 
     #[test]
     fn packet_dropped_2() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);
         manager.register_pkt(8, true);
@@ -398,27 +442,45 @@ mod tests {
 
         assert_eq!(
             manager.ack_info(),
-            (10, 0, Some(vec![(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)]))
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 0,
+                ranges: Some(vec![(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
+            }
         );
     }
 
     #[test]
     fn packet_dropped_3() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 2..=10 {
             manager.register_pkt(i, true);
         }
 
-        assert_eq!(manager.ack_info(), (10, 8, Some(vec![(1, 1)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 8,
+                ranges: Some(vec![(1, 1)])
+            }
+        );
     }
 
     #[test]
     fn packet_dropped_4() {
-        let mut manager = RemoteAckManager::new(Default::default());
+        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);
 
-        assert_eq!(manager.ack_info(), (10, 0, Some(vec![(9, 1)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 0,
+                ranges: Some(vec![(9, 1)])
+            }
+        );
     }
 }
