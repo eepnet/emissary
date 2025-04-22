@@ -126,7 +126,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             .with_pkt_num(ctx.next_pkt_num)
             .with_key_context(ctx.intro_key, &ctx.send_key_ctx)
             .with_termination(ctx.reason)
-            .build()
+            .build::<R>()
             .to_vec();
 
         // send `TerminationReceived` if the reason was anything but `TerminationReceived`

@@ -596,7 +596,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 },
             )
             .with_ack(0u32, 0u8, None)
-            .build();
+            .build::<R>();
 
         Ok(Some(PendingSsu2SessionStatus::NewInboundSession {
             context: Ssu2SessionContext {

@@ -344,7 +344,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 .with_key_context(self.intro_key, &self.send_key_ctx)
                 .with_message(pkt_num, message_kind)
                 .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                .build();
+                .build::<R>();
 
             if let Err(error) = self.pkt_tx.try_send(Packet {
                 pkt: message.to_vec(),

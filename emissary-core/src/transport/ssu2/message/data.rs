@@ -19,6 +19,7 @@
 use crate::{
     crypto::chachapoly::{ChaCha, ChaChaPoly},
     i2np::MessageType as I2npMessageType,
+    runtime::Runtime,
     transport::{
         ssu2::{message::*, session::KeyContext},
         TerminationReason,
@@ -26,11 +27,15 @@ use crate::{
 };
 
 use bytes::{BufMut, BytesMut};
+use rand_core::RngCore;
 
 use alloc::vec::Vec;
 
 /// Minimum size for an ACK block.
 const ACK_BLOCK_MIN_SIZE: usize = 8usize;
+
+/// Minimum size for `Data` packet.
+const DATA_PKT_MIN_SIZE: usize = 24usize;
 
 /// Message kind for [`DataMessageBuilder`].
 pub enum MessageKind<'a> {
@@ -140,7 +145,7 @@ impl<'a> DataMessageBuilder<'a> {
     }
 
     /// Build message into one or more packets.
-    pub fn build(mut self) -> BytesMut {
+    pub fn build<R: Runtime>(mut self) -> BytesMut {
         let (pkt_num, message) = match self.pkt_num.take() {
             Some(pkt_num) => (pkt_num, None),
             None => self
@@ -225,6 +230,18 @@ impl<'a> DataMessageBuilder<'a> {
                                 out.put_u8(ack);
                             });
                     },
+            }
+
+            if out.len() < DATA_PKT_MIN_SIZE {
+                let padding = {
+                    let mut padding = vec![0u8; (R::rng().next_u32() % 128 + 8) as usize];
+                    R::rng().fill_bytes(&mut padding);
+
+                    padding
+                };
+                out.put_u8(BlockType::Padding.as_u8());
+                out.put_u16(padding.len() as u16);
+                out.put_slice(&padding);
             }
 
             out.to_vec()
