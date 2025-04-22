@@ -839,7 +839,7 @@ impl<R: Runtime> SessionManager<R> {
                             "ack request received",
                         );
                         session.inbound_ack_requests.insert((tag_set_id, tag_index));
-                        self.maybe_set_low_priority_timer_for_session(destination_id.clone());
+                        self.schedule_low_priority_response(destination_id.clone());
                         None
                     }
                     None => {
@@ -897,8 +897,8 @@ impl<R: Runtime> SessionManager<R> {
                     }
                 },
                 GarlicMessageBlock::NextKey { .. } => {
-                    //Schedule a NextKey response if there is no traffic on this session
-                    self.maybe_set_low_priority_timer_for_session(destination_id.clone());
+                    // Schedule a NextKey response if there is no traffic on this session
+                    self.schedule_low_priority_response(destination_id.clone());
                     None
                 }
                 msg_type => {
@@ -963,7 +963,7 @@ impl<R: Runtime> SessionManager<R> {
 
     /// If the session associated with `destination_id` exists and a timer has not already
     /// been queued, create a timer to send an explicit response message
-    fn maybe_set_low_priority_timer_for_session(&mut self, destination_id: DestinationId) {
+    fn schedule_low_priority_response(&mut self, destination_id: DestinationId) {
         if let Some(session) = self.active.get_mut(&destination_id) {
             if !session.low_priority_timer_set {
                 session.low_priority_timer_set = true;
@@ -992,7 +992,8 @@ impl<R: Runtime> Stream for SessionManager<R> {
 
         loop {
             match self.lease_set_publish_timers.poll_next_unpin(cx) {
-                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(destination_id)) => {
                     match self.publish_local_lease_set(&destination_id) {
                         None => continue,
@@ -1008,7 +1009,8 @@ impl<R: Runtime> Stream for SessionManager<R> {
 
         loop {
             match self.protocol_response_timers.poll_next_unpin(cx) {
-                Poll::Pending | Poll::Ready(None) => break,
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(destination_id)) => {
                     match self.explicit_protocol_response_message(&destination_id) {
                         None => continue,
@@ -3131,13 +3133,9 @@ mod tests {
             .is_empty());
 
         // assert that nothing is ready immediately
-        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
-            .await
-            .err()
-            .is_some();
-
+        assert!(inbound_session.next().now_or_never().is_none());
         let ack_message =
-            match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
+            match tokio::time::timeout(2 * LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
                 .await
                 .expect("no timeout")
                 .expect("to succeed")
@@ -3398,13 +3396,9 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
-            .await
-            .err()
-            .is_some();
-
+        assert!(inbound_session.next().now_or_never().is_none());
         let ack_message =
-            match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
+            match tokio::time::timeout(2 * LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
                 .await
                 .expect("no timeout")
                 .expect("to succeed")
@@ -3680,13 +3674,9 @@ mod tests {
             .has_pending_next_key());
 
         // assert that nothing is ready immediately
-        let _ = tokio::time::timeout(Duration::from_millis(1), inbound_session.next())
-            .await
-            .err()
-            .is_some();
-
+        assert!(inbound_session.next().now_or_never().is_none());
         let ack_message =
-            match tokio::time::timeout(LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
+            match tokio::time::timeout(2 * LOW_PRIORITY_RESPONSE_INTERVAL, inbound_session.next())
                 .await
                 .expect("no timeout")
                 .expect("to succeed")
