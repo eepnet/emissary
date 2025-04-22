@@ -24,8 +24,10 @@ use crate::{
 
 use alloc::{
     collections::{BTreeMap, VecDeque},
+    sync::Arc,
     vec::Vec,
 };
+use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
@@ -124,24 +126,21 @@ pub struct TransmissionManager<R: Runtime> {
     segments: BTreeMap<u32, Segment<R>>,
 
     /// Next packet number.
-    pkt_num: u32,
+    pkt_num: Arc<AtomicU32>,
 }
 
 impl<R: Runtime> TransmissionManager<R> {
     /// Create new [`TransmissionManager`].
-    pub fn new() -> Self {
+    pub fn new(pkt_num: Arc<AtomicU32>) -> Self {
         Self {
             segments: BTreeMap::new(),
-            pkt_num: 1u32,
+            pkt_num,
         }
     }
 
     /// Get next packet number.
     pub fn next_pkt_num(&mut self) -> u32 {
-        let pkt_num = self.pkt_num;
-        self.pkt_num += 1;
-
-        pkt_num
+        self.pkt_num.fetch_add(1u32, Ordering::Relaxed)
     }
 
     /// Split `message` into segments.
@@ -233,5 +232,7 @@ impl<R: Runtime> TransmissionManager<R> {
     /// - `ack_through` marks the highest packet that was ACKed.
     /// - `num_acks` marks the number of ACKs below `ack_through`
     /// - `range` contains a `(# of NACK, # of ACK)` tuples
-    pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: Vec<(u8, u8)>) {}
+    pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
+        // tracing::error!(target: LOG_TARGET, num_segments = ?self.segments.len());
+    }
 }

@@ -16,10 +16,19 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use alloc::{collections::BTreeSet, vec, vec::Vec};
+use crate::runtime::Runtime;
+
+use futures::FutureExt;
+
+use alloc::{collections::BTreeSet, sync::Arc, vec, vec::Vec};
 use core::{
     cmp::{min, Ordering, Reverse},
+    future::Future,
     ops::Deref,
+    pin::Pin,
+    sync::atomic::AtomicU32,
+    task::{Context, Poll},
+    time::Duration,
 };
 
 /// Packet type.
@@ -63,31 +72,62 @@ impl PartialEq for Packet {
     }
 }
 
+/// ACK info.
+pub struct AckInfo {
+    /// Highest seen packet number.
+    pub highest_seen: u32,
+
+    /// Number of ACKs below `ack_through`.
+    pub num_acks: u8,
+
+    /// NACK/ACK ranges.
+    ///
+    /// First element of the tuple is NACKs, second is ACKs.
+    ///
+    /// `None` if there were no ranges.
+    pub ranges: Option<Vec<(u8, u8)>>,
+}
+
 /// Remote ACK manager.
-pub struct RemoteAckManager {
+pub struct RemoteAckManager<R: Runtime> {
+    /// ACK timer.
+    ///
+    /// `None` if there are no pending ACKs.
+    ack_timer: Option<R::Timer>,
+
     /// Highest seen packet number.
     highest_seen: u32,
 
     /// Packets, either received or missing.
     packets: BTreeSet<Reverse<Packet>>,
+
+    /// Next packet number.
+    pkt_num: Arc<AtomicU32>,
 }
 
-impl RemoteAckManager {
+impl<R: Runtime> RemoteAckManager<R> {
     /// Create new [`RemoteAckManager`].
-    pub fn new() -> Self {
+    pub fn new(pkt_num: Arc<AtomicU32>) -> Self {
         Self {
+            ack_timer: None,
             highest_seen: 0u32,
             packets: BTreeSet::new(),
+            pkt_num,
         }
     }
 
     /// Register ACK-eliciting packet.
-    pub fn register_pkt(&mut self, pkt_num: u32, _immediate_ack: bool) {
+    pub fn register_pkt(&mut self, pkt_num: u32, immediate_ack: bool) {
         // next expected packet number
         if self.highest_seen + 1 == pkt_num {
             self.packets.insert(Reverse(Packet::Received(self.highest_seen)));
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
             self.highest_seen = pkt_num;
+
+            if immediate_ack && self.ack_timer.is_none() {
+                self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
+            }
+
             return;
         }
 
@@ -109,6 +149,10 @@ impl RemoteAckManager {
             self.packets.remove(&Reverse(Packet::Missing(pkt_num)));
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
         }
+
+        if immediate_ack && self.ack_timer.is_none() {
+            self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
+        }
     }
 
     /// Register non-ACK-eliciting packet.
@@ -116,8 +160,29 @@ impl RemoteAckManager {
         self.register_pkt(pkt_num, immediate_ack);
     }
 
+    /// Register ACK.
+    ///
+    /// - `ack_through` marks the highest packet that was ACKed.
+    /// - `num_acks` marks the number of ACKs below `ack_through`
+    /// - `range` contains a `(# of NACK, # of ACK)` tuples
+    ///
+    /// [`RemoteAckManager`] checks if any of the received ACKs are related to sent ACK packets,
+    /// allowing it to stop tracking those packets.
+    pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
+        // tracing::info!(
+        //     target: LOG_TARGET,
+        //     ?ack_through,
+        //     ?num_acks,
+        //     ?ranges,
+        //     "handle ack",
+        // );
+    }
+
     /// Get ACK information added to an outbound message.
-    pub fn ack_info(&mut self) -> (u32, u8, Option<Vec<(u8, u8)>>) {
+    //
+    // TODO: take pkt number as parameter
+    // TODO: when ack block is received
+    pub fn ack_info(&mut self) -> AckInfo {
         let num_acks = min(
             self.packets
                 .iter()
@@ -135,7 +200,11 @@ impl RemoteAckManager {
         let mut iter = self.packets.iter();
 
         if !iter.any(|pkt| core::matches!(pkt.0, Packet::Missing(_))) {
-            return (self.highest_seen, num_acks, None);
+            return AckInfo {
+                highest_seen: self.highest_seen,
+                num_acks,
+                ranges: None,
+            };
         }
 
         // if `packets` contained any missing packets, go through all of them until the end and
@@ -180,7 +249,28 @@ impl RemoteAckManager {
             .map(|chunk| (min(chunk[0], 255) as u8, min(chunk[1], 255) as u8))
             .collect::<Vec<(_, _)>>();
 
-        (self.highest_seen, num_acks, Some(ranges))
+        AckInfo {
+            highest_seen: self.highest_seen,
+            num_acks,
+            ranges: Some(ranges),
+        }
+    }
+}
+
+impl<R: Runtime> Future for RemoteAckManager<R> {
+    type Output = AckInfo;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let Some(timer) = self.ack_timer.as_mut() else {
+            return Poll::Pending;
+        };
+
+        if !timer.poll_unpin(cx).is_ready() {
+            return Poll::Pending;
+        }
+
+        self.ack_timer = None;
+        Poll::Ready(self.ack_info())
     }
 }
 

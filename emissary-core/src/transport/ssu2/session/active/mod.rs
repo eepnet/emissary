@@ -27,10 +27,12 @@ use crate::{
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
-            message::{data::DataMessageBuilder, Block},
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             session::{
                 active::{
-                    ack::RemoteAckManager, duplicate::DuplicateFilter, fragment::FragmentHandler,
+                    ack::{AckInfo, RemoteAckManager},
+                    duplicate::DuplicateFilter,
+                    fragment::FragmentHandler,
                     transmission::TransmissionManager,
                 },
                 terminating::TerminationContext,
@@ -45,11 +47,12 @@ use crate::{
 use futures::FutureExt;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{collections::VecDeque, vec, vec::Vec};
+use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
 use core::{
     future::Future,
     net::SocketAddr,
     pin::Pin,
+    sync::atomic::{AtomicU32, Ordering},
     task::{Context, Poll},
 };
 
@@ -115,6 +118,9 @@ pub struct Ssu2Session<R: Runtime> {
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
 
+    /// Next packet number.
+    pkt_num: Arc<AtomicU32>,
+
     /// RX channel for receiving inbound packets from [`Ssu2Socket`].
     pkt_rx: Receiver<Packet>,
 
@@ -127,7 +133,7 @@ pub struct Ssu2Session<R: Runtime> {
     recv_key_ctx: KeyContext,
 
     /// Remote ACK manager.
-    remote_ack: RemoteAckManager,
+    remote_ack: RemoteAckManager<R>,
 
     /// ID of the remote router.
     router_id: RouterId,
@@ -150,6 +156,7 @@ impl<R: Runtime> Ssu2Session<R> {
         subsystem_handle: SubsystemHandle,
     ) -> Self {
         let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
+        let pkt_num = Arc::new(AtomicU32::new(1u32));
 
         tracing::debug!(
             target: LOG_TARGET,
@@ -166,14 +173,15 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(),
             intro_key: context.intro_key,
+            pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
-            remote_ack: RemoteAckManager::new(),
+            remote_ack: RemoteAckManager::<R>::new(Arc::clone(&pkt_num)),
             router_id: context.router_id,
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
-            transmission: TransmissionManager::<R>::new(),
+            transmission: TransmissionManager::<R>::new(pkt_num),
         }
     }
 
@@ -326,6 +334,8 @@ impl<R: Runtime> Ssu2Session<R> {
                     );
 
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_ack(ack_through, num_acks, &ranges);
+                    self.transmission.register_ack(ack_through, num_acks, &ranges);
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
@@ -356,7 +366,11 @@ impl<R: Runtime> Ssu2Session<R> {
 
         // TODO: this makes no sense, get unserialized message from subsystem
         let message = Message::parse_short(&message).unwrap();
-        let (highest_seen, num_acks, ranges) = self.remote_ack.ack_info();
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack.ack_info();
 
         for (pkt_num, message_kind) in self.transmission.segment(message) {
             let message = DataMessageBuilder::default()
@@ -439,6 +453,42 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                         "failed to process packet",
                     ),
                 },
+            }
+        }
+        if let Poll::Ready(AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        }) = self.remote_ack.poll_unpin(cx)
+        {
+            tracing::error!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?highest_seen,
+                ?num_acks,
+                ?ranges,
+                "send explicit ack",
+            );
+
+            let message = DataMessageBuilder::default()
+                .with_dst_id(self.dst_id)
+                .with_key_context(self.intro_key, &self.send_key_ctx)
+                .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
+                .with_ack(highest_seen, num_acks, ranges)
+                .build::<R>();
+
+            // TODO: report `pkt_num` to `RemoteAckManager`?
+
+            if let Err(error) = self.pkt_tx.try_send(Packet {
+                pkt: message.to_vec(),
+                address: self.address,
+            }) {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?error,
+                    "failed to send explicit ack packet",
+                );
             }
         }
 

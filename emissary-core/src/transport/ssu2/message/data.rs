@@ -283,11 +283,3 @@ impl<'a> DataMessageBuilder<'a> {
         out
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test() {}
-}
