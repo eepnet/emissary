@@ -485,7 +485,7 @@ impl RetryBuilder {
             out.put_u8(2u8); // TODO: make configurable
             out.put_u8(0u8);
             out.put_u64_le(self.src_id.expect("to exist"));
-            out.put_u64(self.token.expect("to exist"));
+            out.put_u64_le(self.token.expect("to exist"));
 
             (out, pkt_num)
         };
