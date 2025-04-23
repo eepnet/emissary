@@ -1,0 +1,43 @@
+name: Binaries
+
+# on:
+#   push:
+#     tags:
+#       - "v*.*.*"
+
+on:
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build-and-release:
+    name: Build Windows binary
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          override: true
+
+      - name: Build emissary-cli
+        run: cargo build --release --no-default-features --features web-ui
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: emissary-cli
+          path: target/x86_64-pc-windows-gnu/release/emissary-cli.exe
+
+      # - name: Upload release to GitHub
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: target/release/emissary-cli.exe
+      #     draft: true
+      #     prerelease: false
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
