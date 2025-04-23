@@ -24,6 +24,9 @@ jobs:
           target: x86_64-pc-windows-msvc
           override: true
 
+      - name: Install nasm
+        run: choco install nasm -y
+
       - name: Build emissary-cli
         run: cargo build --release --no-default-features --features web-ui
 
