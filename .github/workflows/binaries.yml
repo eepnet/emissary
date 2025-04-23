@@ -32,7 +32,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: emissary-cli
-          path: target/x86_64-pc-windows-gnu/release/emissary-cli.exe
+          path: target/release/emissary-cli.exe
 
       # - name: Upload release to GitHub
       #   uses: softprops/action-gh-release@v2
