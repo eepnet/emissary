@@ -26,6 +26,7 @@ use ed25519_dalek::Signer;
 use lazy_static::lazy_static;
 use p256::ecdsa::signature::Verifier as _;
 use rand_core::{CryptoRng, RngCore};
+use sha2::Digest;
 use zeroize::Zeroize;
 
 use alloc::{string::String, vec::Vec};
@@ -391,7 +392,9 @@ impl SigningPublicKey {
             Self::DsaSha1(public_key) => {
                 let signature = DsaSignature::from_bytes(signature).ok_or(Error::InvalidData)?;
 
-                match public_key.verify(message, &signature) {
+                let hashed = sha1::Sha1::digest(message);
+
+                match public_key.verify(&hashed, &signature) {
                     true => Ok(()),
                     false => Err(Error::InvalidData),
                 }
