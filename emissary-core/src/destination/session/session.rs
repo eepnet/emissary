@@ -829,6 +829,11 @@ impl<R: Runtime> Session<R> {
         }
     }
 
+    /// Returns true if there is a pending next key
+    pub fn has_pending_next_key(&self) -> bool {
+        self.pending_next_key.is_some()
+    }
+
     /// Decrypt `message` using `garlic_tag` which identifies a `TagSetEntry`.
     ///
     /// Retuns the tag set ID and tag index of the decrypted message, along with the message itself.

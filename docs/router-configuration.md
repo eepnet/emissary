@@ -6,7 +6,7 @@ outline: deep
 
 `emissary-cli` can be configured in two ways: either through a router configuration file (`router.toml`) or via command-line arguments. Command line arguments override options specified in the router configuration. For example, if `router.toml` specifies `allow_local = false` and the router is started with `emissary-cli --allow-local`, NTCP2 and SSU2 are able to connect to routers within a local network. 
 
-To get a full list of available command-line arguments, run `emissary-cli --help`.
+To get a full list of available command-line arguments, run `emissary-cli --help`. They are also listed under [Command-line arguments](#command-line-arguments).
 
 ## Enabling and disabling subsystems
 
@@ -224,3 +224,122 @@ emissary-cli -lsam
     * `emissary::tunnel::transit::ibgw`
     * `emissary::tunnel::transit::obep`
     * `emissary::tunnel::transit::participant`
+
+
+### Command-line arguments
+
+```bash
+-b, --base-path <PATH>
+        Base path where all i2p-related files are stored
+
+        Defaults to $HOME/.emissary/ and if it doesn't exist, new directory is created
+
+-l, --log <LOG>
+        Logging targets
+
+        By default, INFO is enabled for all logging targets
+
+        Example: -lemissary::tunnel=debug,emissary::sam,emissary::streaming=trace,emissary::ntcp2=off
+
+        Enables debug logging for tunnels, trace logging for SAM and streaming and turns off logging for NTCP2
+
+    --floodfill
+        Run the router as a floodfill
+
+    --allow-local
+        Allow local addresses
+
+    --caps <CAPS>
+        Router capabilities
+
+    --net-id <NET_ID>
+        Network ID
+
+    --overwrite-config
+        Overwrite configuration
+
+    --exploratory-inbound-len <NUM>
+        Length of an inbound exploratory tunnel
+
+    --exploratory-inbound-count <NUM>
+        Number of inbound exploratory tunnels
+
+    --exploratory-outbound-len <NUM>
+        Length of an outbound exploratory tunnel
+
+    --exploratory-outbound-count <NUM>
+        Number of outbound exploratory tunnels
+
+    --insecure-tunnels
+        Allow emissary to build insecure tunnels
+
+        Disables /16 subnet and maximum tunnel participation checks
+
+        Should only be used for testing
+
+    --reseed-hosts <HOST>...
+        Comma-separated list of reseed hosts
+
+        Example: --reseed-hosts https://host1.com,https://host2.com,https://host3.com
+
+    --disable-reseed
+        Don't reseed the router even if there aren't enough routers
+
+    --reseed-threshold <RESEED_THRESHOLD>
+        Reseed threshold
+
+    --force-reseed
+        Forcibly reseed the router even if there are enough routers
+
+    --metrics-server-port <METRICS_SERVER_PORT>
+        Metrics server port
+
+    --disable-metrics
+        Disable metrics
+
+    --http-proxy-port <PORT>
+        HTTP proxy port.
+
+        Defaults to 4444
+
+    --http-proxy-host <HOST>
+        HTTP proxy host.
+
+        Defaults to 127.0.0.1
+
+    --max-transit-tunnels <MAX_TUNNELS>
+        Maximum number of transit tunnels
+
+    --disable-transit-tunnels
+        Disable transit tunnel manager
+
+    --disable-upnp
+        Disable UPnP
+
+    --disable-nat-pmp
+        Disable NAT-PMP
+
+    --upnp-name <NAME>
+        Name for the UPnP client
+
+    --disable-ui
+        Disable router UI
+
+    --refresh-interval <REFRESH_INTERVAL>
+        Router UI refresh interval
+
+        How often are events gathered from different subsystem and redrawn in the UI
+
+        Unit is seconds and must be at least 1
+
+    --theme <THEME>
+        Router UI theme
+
+        [possible values: light, dark]
+
+-h, --help
+        Print help (see a summary with '-h')
+
+-V, --version
+        Print version
+```

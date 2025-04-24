@@ -1550,7 +1550,7 @@ dependencies = [
 
 [[package]]
 name = "emissary-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "emissary-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes",
  "bytes",
@@ -1634,7 +1634,7 @@ dependencies = [
 
 [[package]]
 name = "emissary-util"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-std",

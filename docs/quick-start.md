@@ -4,6 +4,8 @@ outline: deep
 
 # Quick start
 
+*Prebuilt binaries for Windows are available on [Github](https://github.com/altonen/emissary/releases)*
+
 ### Installing `emissary-cli`
 
 #### Install Rust
@@ -59,7 +61,7 @@ Default listening ports:
 |   SAMv3 UDP   |   7655   |
 |      I2CP     |   7654   |
 |      HTTP     |   4444   |
-|     Web UI    |   7675   |
+|     Web UI    |   7657   |
 
 ### Graceful shutdown
 

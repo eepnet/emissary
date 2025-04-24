@@ -1,6 +1,6 @@
 [package]
 name = "emissary-util"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -12,7 +12,7 @@ categories.workspace = true
 
 [dependencies]
 async-std = { version = "1.13.1", features = ["unstable"], optional = true }
-emissary-core = { path = "../emissary-core", version = "0.1.0", features = ["std"] }
+emissary-core = { path = "../emissary-core", version = "0.2.0", features = ["std"] }
 flate2 = "1.1.1"
 metrics = "0.24.1"
 metrics-exporter-prometheus = "0.16.2"

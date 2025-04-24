@@ -1,6 +1,6 @@
 [package]
 name = "emissary-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
@@ -14,8 +14,8 @@ readme.workspace = true
 axum = { version = "0.8.3", features = ["ws", "macros"], optional = true }
 clap = { version = "4.5.35", features = ["derive"] }
 ctrlc = "3.4.5"
-emissary-core = { path = "../emissary-core", version = "0.1.0", features = ["std"] }
-emissary-util = { path = "../emissary-util", version = "0.1.0", features = ["tokio"] }
+emissary-core = { path = "../emissary-core", version = "0.2.0", features = ["std"] }
+emissary-util = { path = "../emissary-util", version = "0.2.0", features = ["tokio"] }
 futures = "0.3.31"
 home = "=0.5.9"
 httparse = "1.10.1"
