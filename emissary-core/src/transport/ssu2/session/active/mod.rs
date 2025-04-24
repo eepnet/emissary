@@ -44,7 +44,7 @@ use crate::{
     },
 };
 
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
 use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
@@ -178,10 +178,10 @@ impl<R: Runtime> Ssu2Session<R> {
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
             remote_ack: RemoteAckManager::<R>::new(Arc::clone(&pkt_num)),
-            router_id: context.router_id,
+            router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
-            transmission: TransmissionManager::<R>::new(pkt_num),
+            transmission: TransmissionManager::<R>::new(context.router_id, pkt_num),
         }
     }
 
@@ -324,15 +324,6 @@ impl<R: Runtime> Ssu2Session<R> {
                     num_acks,
                     ranges,
                 } => {
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        router = %self.router_id,
-                        ?ack_through,
-                        ?num_acks,
-                        ?ranges,
-                        "handle ack",
-                    );
-
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
                     self.remote_ack.register_ack(ack_through, num_acks, &ranges);
                     self.transmission.register_ack(ack_through, num_acks, &ranges);

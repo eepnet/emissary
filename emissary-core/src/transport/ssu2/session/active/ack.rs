@@ -170,13 +170,7 @@ impl<R: Runtime> RemoteAckManager<R> {
     /// [`RemoteAckManager`] checks if any of the received ACKs are related to sent ACK packets,
     /// allowing it to stop tracking those packets.
     pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
-        // tracing::info!(
-        //     target: LOG_TARGET,
-        //     ?ack_through,
-        //     ?num_acks,
-        //     ?ranges,
-        //     "handle ack",
-        // );
+        // TODO: print something if this acked our ack
     }
 
     /// Get ACK information added to an outbound message.

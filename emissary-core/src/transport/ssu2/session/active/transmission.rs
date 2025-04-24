@@ -18,16 +18,25 @@
 
 use crate::{
     i2np::{Message, MessageType},
-    runtime::Runtime,
+    primitives::RouterId,
+    runtime::{Instant, Runtime},
     transport::ssu2::message::data::MessageKind,
 };
+
+use futures::{FutureExt, Stream};
 
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
     vec::Vec,
 };
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::{
+    ops::Deref,
+    pin::Pin,
+    sync::atomic::{AtomicU32, Ordering},
+    task::{Context, Poll},
+    time::Duration,
+};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
@@ -36,6 +45,99 @@ const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
 ///
 /// Short header + block type + Poly1305 authentication tag.
 const SSU2_OVERHEAD: usize = 16usize + 1usize + 16usize;
+
+/// SSU2 resend timeout
+const SSU2_RESEND_TIMEOUT: Duration = Duration::from_millis(40);
+
+/// SSU2 initial RTO.
+const SSU2_INITIAL_RTO: Duration = Duration::from_millis(540);
+
+/// SSU2 minimum RTO.
+const SSU2_MIN_RTO: Duration = Duration::from_millis(100);
+
+/// SSU2 maximum RTO.
+const SSU2_MAX_RTO: Duration = Duration::from_millis(250);
+
+/// RTT dampening factor (alpha).
+const RTT_DAMPENING_FACTOR: f64 = 0.125f64;
+
+/// RTTDEV dampening factor (beta).
+const RTTDEV_DAMPENING_FACTOR: f64 = 0.25;
+
+/// Retransmission timeout (RTO).
+enum RetransmissionTimeout {
+    /// Unsampled RTO.
+    Unsampled,
+
+    /// Sample RTO.
+    Sampled {
+        /// RTO.
+        rto: Duration,
+
+        /// Round-trip time (RTT).
+        rtt: Duration,
+
+        /// RTT var TODO: ???.
+        rtt_var: Duration,
+    },
+}
+
+impl RetransmissionTimeout {
+    /// Calculate retransmission timeout (RTO).
+    ///
+    /// If this is the first measured sample, use it as-is. Otherwise calculate a smoothed
+    /// round-trip time (RTT) and from that calculate a smoothed RTO.
+    fn calculate_rto(&mut self, sample: Duration) {
+        let rtt = match self {
+            Self::Unsampled => sample,
+            Self::Sampled { rtt, .. } => Duration::from_millis(
+                ((1f64 - RTT_DAMPENING_FACTOR) * rtt.as_millis() as f64
+                    + RTT_DAMPENING_FACTOR * sample.as_millis() as f64) as u64,
+            ),
+        };
+
+        match self {
+            Self::Unsampled => {
+                *self = Self::Sampled {
+                    rto: rtt * 2,
+                    rtt,
+                    rtt_var: rtt / 2,
+                };
+            }
+            Self::Sampled { rtt_var, .. } => {
+                // calculate smoothed rto:
+                //
+                // rtt_var = (1 − β) × RTTVAR + β ×∣SRTT − RTT∣
+                let srtt = rtt.as_millis() as i64;
+                let abs = {
+                    let sample = sample.as_millis() as i64;
+                    RTTDEV_DAMPENING_FACTOR * i64::abs(srtt - sample) as f64
+                };
+                let rtt_var = rtt_var.as_millis() as f64;
+                let rtt_var = (1f64 - RTTDEV_DAMPENING_FACTOR) * rtt_var + abs;
+                let rto = Duration::from_millis((srtt as f64 + 4f64 * rtt_var) as u64);
+
+                // TODO: min/max rto
+                *self = Self::Sampled {
+                    rto,
+                    rtt,
+                    rtt_var: Duration::from_millis(rtt_var as u64),
+                };
+            }
+        }
+    }
+}
+
+impl Deref for RetransmissionTimeout {
+    type Target = Duration;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Unsampled => &SSU2_INITIAL_RTO,
+            Self::Sampled { rto, .. } => &rto,
+        }
+    }
+}
 
 /// Segment kind.
 enum SegmentKind {
@@ -119,19 +221,31 @@ struct Segment<R: Runtime> {
 
 /// Transmission manager.
 pub struct TransmissionManager<R: Runtime> {
-    /// In-flight segments.
-    segments: BTreeMap<u32, Segment<R>>,
-
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
+
+    /// ID of the remote router.
+    router_id: RouterId,
+
+    /// RTO.
+    rto: RetransmissionTimeout,
+
+    /// RTO timer.
+    rto_timer: Option<R::Timer>,
+
+    /// In-flight segments.
+    segments: BTreeMap<u32, Segment<R>>,
 }
 
 impl<R: Runtime> TransmissionManager<R> {
     /// Create new [`TransmissionManager`].
-    pub fn new(pkt_num: Arc<AtomicU32>) -> Self {
+    pub fn new(router_id: RouterId, pkt_num: Arc<AtomicU32>) -> Self {
         Self {
-            segments: BTreeMap::new(),
             pkt_num,
+            router_id,
+            rto: RetransmissionTimeout::Unsampled,
+            rto_timer: None,
+            segments: BTreeMap::new(),
         }
     }
 
@@ -165,7 +279,10 @@ impl<R: Runtime> TransmissionManager<R> {
                 },
             );
 
-            // TODO: start timer for resends
+            // TODO: don't use rto for timer
+            if self.rto_timer.is_none() {
+                self.rto_timer = Some(R::timer(*self.rto));
+            }
 
             // segment must exist since it was just inserted into `segments`
             return vec![(
@@ -219,7 +336,10 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        // TODO: start timer for resends
+        // TODO: don't use rto for timer
+        if self.rto_timer.is_none() {
+            self.rto_timer = Some(R::timer(*self.rto));
+        }
 
         packets.into_iter()
     }
@@ -234,9 +354,22 @@ impl<R: Runtime> TransmissionManager<R> {
     /// if there are any ranges specified, go through them and marked packets as received dropped.
     /// Packets have not been explicitly NACKed are also considered dropped.
     pub fn register_ack(&mut self, ack_through: u32, mut num_acks: u8, ranges: &[(u8, u8)]) {
+        tracing::trace!(
+            target: LOG_TARGET,
+            ?ack_through,
+            ?num_acks,
+            ?ranges,
+            num_segments = ?self.segments.len(),
+            "handle ack",
+        );
+
         (0..=num_acks).for_each(|i| {
-            // TODO: rtt
-            self.segments.remove(&(ack_through.saturating_sub(i as u32)));
+            // TODO: only calculate if it hasn't been resent?
+            if let Some(Segment { sent, .. }) =
+                self.segments.remove(&(ack_through.saturating_sub(i as u32)))
+            {
+                self.rto.calculate_rto(sent.elapsed());
+            }
         });
 
         // first packet in the ranges start at `ack_through - num_acks` and the first acked packet
@@ -249,12 +382,13 @@ impl<R: Runtime> TransmissionManager<R> {
             for i in 1..=*ack {
                 next_pkt = next_pkt.saturating_sub(1);
 
-                // TODO: rtt
-                self.segments.remove(&next_pkt);
+                // TODO: only calculate if it hasn't been resent?
+                if let Some(Segment { sent, .. }) = self.segments.remove(&next_pkt) {
+                    self.rto.calculate_rto(sent.elapsed());
+                }
             }
         }
 
-        // TODO: if `segments` is empty, cancel timer
         // TODO: update window?
     }
 }
@@ -266,7 +400,10 @@ mod tests {
 
     #[tokio::test]
     async fn ack_one_packet() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![1, 2, 3],
@@ -284,7 +421,10 @@ mod tests {
 
     #[tokio::test]
     async fn ack_multiple_packets_last_packet_missing() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 3 + 512],
@@ -303,7 +443,10 @@ mod tests {
 
     #[tokio::test]
     async fn ack_multiple_packets_first_packet_missing() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 3 + 512],
@@ -322,7 +465,10 @@ mod tests {
 
     #[tokio::test]
     async fn ack_multiple_packets_middle_packets_nacked() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 3 + 512],
@@ -342,7 +488,10 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_ranges() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 10 + 512],
@@ -362,7 +511,10 @@ mod tests {
 
     #[tokio::test]
     async fn alternating() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -385,7 +537,10 @@ mod tests {
 
     #[tokio::test]
     async fn no_ranges() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -404,7 +559,10 @@ mod tests {
 
     #[tokio::test]
     async fn highest_pkts_not_received() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -424,7 +582,10 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_nack_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -444,7 +605,10 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_ack_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -462,7 +626,10 @@ mod tests {
 
     #[tokio::test]
     async fn num_acks_out_of_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -480,7 +647,10 @@ mod tests {
 
     #[tokio::test]
     async fn nacks_out_of_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -499,7 +669,10 @@ mod tests {
 
     #[tokio::test]
     async fn acks_out_of_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -517,7 +690,10 @@ mod tests {
 
     #[tokio::test]
     async fn highest_seen_out_of_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
@@ -535,7 +711,10 @@ mod tests {
 
     #[tokio::test]
     async fn num_ack_out_of_range() {
-        let mut mgr = TransmissionManager::<MockRuntime>::new(Arc::new(AtomicU32::new(1u32)));
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
         let pkts = mgr
             .segment(Message {
                 payload: vec![0u8; 1200 * 9 + 512],
