@@ -22,7 +22,7 @@ use anyhow::anyhow;
 use rand::{thread_rng, Rng};
 use reqwest::{
     header::{HeaderMap, HeaderValue, CONNECTION, USER_AGENT},
-    Client, ClientBuilder,
+    ClientBuilder,
 };
 
 use std::{
