@@ -22,16 +22,22 @@ use anyhow::anyhow;
 use rand::{thread_rng, Rng};
 use reqwest::{
     header::{HeaderMap, HeaderValue, CONNECTION, USER_AGENT},
-    Client,
+    Client, ClientBuilder,
 };
 
-use std::collections::HashSet;
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::reseeder";
 
 /// How many times is reseeding retried before giving up.
 const NUM_RETRIES: usize = 5usize;
+
+/// How many routers should [`Reseeder`] find before terminating the process.
+const MIN_ROUTER_INFOS_TO_DOWNLOAD: usize = 100usize;
 
 /// Reseed servers.
 const RESEED_SERVERS: &[&str] = &[
@@ -56,7 +62,7 @@ pub struct Reseeder;
 impl Reseeder {
     /// Attempt to reseed from `hosts` and parse response into a vector of serialized router infos.
     async fn reseed_inner(hosts: &[&str]) -> anyhow::Result<Vec<ReseedRouterInfo>> {
-        let client = Client::new();
+        let client = ClientBuilder::new().timeout(Duration::from_secs(15)).build()?;
         let headers = HeaderMap::from_iter([
             (USER_AGENT, HeaderValue::from_static("Wget/1.11.4")),
             (CONNECTION, HeaderValue::from_static("close")),
@@ -64,6 +70,7 @@ impl Reseeder {
 
         // servers which have failed
         let mut already_tried = HashSet::<usize>::new();
+        let mut routers = HashMap::<String, ReseedRouterInfo>::new();
 
         for _ in 0..NUM_RETRIES {
             let server = loop {
@@ -74,6 +81,12 @@ impl Reseeder {
                 }
             };
 
+            tracing::info!(
+                target: LOG_TARGET,
+                host = %hosts[server],
+                "reseed from host"
+            );
+
             let response = match client
                 .get(format!("{}/i2pseeds.su3", hosts[server]))
                 .headers(headers.clone())
@@ -81,10 +94,10 @@ impl Reseeder {
                 .await
             {
                 Err(error) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: LOG_TARGET,
                         server = ?hosts[server],
-                        ?error,
+                        %error,
                         "failed to reseed"
                     );
                     continue;
@@ -93,7 +106,7 @@ impl Reseeder {
             };
 
             if !response.status().is_success() {
-                tracing::debug!(
+                tracing::warn!(
                     target: LOG_TARGET,
                     status = ?response.status(),
                     "request to reseed server failed",
@@ -104,17 +117,34 @@ impl Reseeder {
             match response.bytes().await {
                 Ok(bytes) => match Su3::parse_reseed(&bytes, false) {
                     None => continue,
-                    Some(routers) => return Ok(routers),
+                    Some(downloaded) => {
+                        routers
+                            .extend(downloaded.into_iter().map(|info| (info.name.clone(), info)));
+
+                        if routers.len() >= MIN_ROUTER_INFOS_TO_DOWNLOAD {
+                            return Ok(routers.into_values().collect());
+                        }
+                    }
                 },
                 Err(error) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: LOG_TARGET,
                         server = ?hosts[server],
-                        ?error,
+                        %error,
                         "failed to get response from reseeed server"
                     );
                 }
             }
+        }
+
+        if routers.len() < MIN_ROUTER_INFOS_TO_DOWNLOAD {
+            tracing::warn!(
+                target: LOG_TARGET,
+                num_downloaded = ?routers.len(),
+                limit = ?MIN_ROUTER_INFOS_TO_DOWNLOAD,
+                "could not download enough uniqueu router infos",
+            );
+            return Ok(routers.into_values().collect());
         }
 
         Err(anyhow!("failed to reseed server"))

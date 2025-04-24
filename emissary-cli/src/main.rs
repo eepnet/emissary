@@ -124,7 +124,7 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
         match Reseeder::reseed(config.reseed.as_ref().and_then(|config| config.hosts.clone())).await
         {
             Ok(routers) => {
-                tracing::debug!(
+                tracing::info!(
                     target: LOG_TARGET,
                     num_routers = ?routers.len(),
                     "router reseeded",
