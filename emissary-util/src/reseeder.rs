@@ -51,9 +51,12 @@ const RESEED_SERVERS: &[&str] = &[
     "https://reseed.diva.exchange/",
     "https://reseed.i2pgit.org/",
     "https://i2p.novg.net/",
-    "https://i2pseed.creativecowpat.net:8443/",
     "https://reseed.onion.im/",
     "https://reseed.memcpy.io/",
+    //
+    // self-signed reseed hosts do not work with rustls
+    // "https://i2pseed.creativecowpat.net:8443/",
+    // "https://cubicchaos.net:8443/"
 ];
 
 /// HTTPS reseeder.
