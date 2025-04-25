@@ -1,6 +1,8 @@
 // Copyright (c) 2017-2023 The Ire Developers. The canonical list of project
 // contributors who hold copyright over the project can be found at:
 //
+// https://github.com/str4d/ire/blob/master/AUTHORS.md
+//
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
 // to deal in the Software without restriction, including without limitation

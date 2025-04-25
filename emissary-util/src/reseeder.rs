@@ -144,7 +144,7 @@ impl Reseeder {
             }
         }
 
-        if routers.len() < MIN_ROUTER_INFOS_TO_DOWNLOAD {
+        if !routers.is_empty() && routers.len() < MIN_ROUTER_INFOS_TO_DOWNLOAD {
             tracing::warn!(
                 target: LOG_TARGET,
                 num_downloaded = ?routers.len(),
@@ -154,7 +154,7 @@ impl Reseeder {
             return Ok(routers.into_values().collect());
         }
 
-        Err(anyhow!("failed to reseed server"))
+        Err(anyhow!("failed to reseed"))
     }
 
     /// Reseed from `hosts` or from `RESEED_SERVERS` if `hosts` are not specified.
