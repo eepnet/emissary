@@ -29,7 +29,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use hashbrown::HashMap;
 use nom::bytes::complete::take;
-use sha2::Digest;
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
