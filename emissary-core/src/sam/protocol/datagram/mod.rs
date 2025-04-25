@@ -112,10 +112,9 @@ impl<R: Runtime> DatagramManager<R> {
                     take::<_, _, ()>(destination.verifying_key().signature_len())(rest)
                         .map_err(|_| Error::InvalidData)?;
 
-                if let SigningPublicKey::DsaSha1(_) = destination.verifying_key() {
-                    destination.verifying_key().verify(&sha1::Sha1::digest(rest), signature)?;
-                } else {
-                    destination.verifying_key().verify(rest, signature)?;
+                match destination.verifying_key() {
+                    SigningPublicKey::DsaSha1(_) => return Err(Error::NotSupported),
+                    verifying_key => verifying_key.verify(rest, signature)?,
                 }
 
                 // TODO: ensure there is a listener in `src_port`
