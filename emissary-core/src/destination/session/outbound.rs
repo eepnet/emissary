@@ -100,12 +100,15 @@ impl<R: Runtime> OutboundSession<R> {
     ///
     /// This function can only be called once, after the outbound session has been initialized and
     /// its state is `OutboundSessionPending`, for other states the call will panic.
-    pub fn generate_new_session_reply_tags(&self) -> impl Iterator<Item = TagSetEntry> {
+    pub fn generate_new_session_reply_tags(
+        &self,
+        ratchet_threshold: u16,
+    ) -> impl Iterator<Item = TagSetEntry> {
         let mut temp_key = Hmac::new(&self.chaining_key).update([]).finalize();
         let tag_set_key =
             Hmac::new(&temp_key).update(b"SessionReplyTags").update([0x01]).finalize();
 
-        let mut nsr_tag_set = TagSet::new(&self.chaining_key, tag_set_key);
+        let mut nsr_tag_set = TagSet::new(&self.chaining_key, tag_set_key, ratchet_threshold);
 
         temp_key.zeroize();
 
@@ -124,6 +127,7 @@ impl<R: Runtime> OutboundSession<R> {
         &mut self,
         tag_set_entry: TagSetEntry,
         message: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<(Vec<u8>, TagSet, TagSet), SessionError> {
         if message.len() < NSR_MINIMUM_LEN {
             tracing::warn!(
@@ -205,8 +209,8 @@ impl<R: Runtime> OutboundSession<R> {
         };
 
         // initialize send and receive tag sets
-        let send_tag_set = TagSet::new(&chaining_key, send_key);
-        let recv_tag_set = TagSet::new(chaining_key, &recv_key);
+        let send_tag_set = TagSet::new(&chaining_key, send_key, ratchet_threshold);
+        let recv_tag_set = TagSet::new(chaining_key, &recv_key, ratchet_threshold);
 
         // decode payload of the `NewSessionReply` message
         let mut temp_key = Hmac::new(&recv_key).update([]).finalize();
