@@ -55,6 +55,7 @@ const RESEED_SERVERS: &[&str] = &[
     "https://reseed.memcpy.io/",
     //
     // self-signed reseed hosts do not work with rustls
+    // TODO: switch to openssl?
     // "https://i2pseed.creativecowpat.net:8443/",
     // "https://cubicchaos.net:8443/"
 ];
@@ -65,7 +66,10 @@ pub struct Reseeder;
 impl Reseeder {
     /// Attempt to reseed from `hosts` and parse response into a vector of serialized router infos.
     async fn reseed_inner(hosts: &[&str]) -> anyhow::Result<Vec<ReseedRouterInfo>> {
-        let client = ClientBuilder::new().timeout(Duration::from_secs(15)).build()?;
+        let client = ClientBuilder::new()
+            .timeout(Duration::from_secs(15))
+            .local_address("0.0.0.0:0".parse().ok())
+            .build()?;
         let headers = HeaderMap::from_iter([
             (USER_AGENT, HeaderValue::from_static("Wget/1.11.4")),
             (CONNECTION, HeaderValue::from_static("close")),

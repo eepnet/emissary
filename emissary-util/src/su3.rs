@@ -251,7 +251,7 @@ impl<'a> Su3<'a> {
 
             // taken from ire
             rsa::Pkcs1v15Sign::new_unprefixed()
-                .verify(key, &Sha512::digest(su3.message), &su3.signature)
+                .verify(key, &Sha512::digest(su3.message), su3.signature)
                 .ok()?;
         }
 
