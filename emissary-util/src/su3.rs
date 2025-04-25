@@ -1,3 +1,6 @@
+// Copyright (c) 2017-2023 The Ire Developers. The canonical list of project
+// contributors who hold copyright over the project can be found at:
+//
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the "Software"),
 // to deal in the Software without restriction, including without limitation
@@ -25,9 +28,8 @@ use nom::{
     Err, IResult,
 };
 use rsa::{
-    pkcs1v15::{Signature, VerifyingKey},
-    sha2::Sha512,
-    signature::Verifier,
+    sha2::{Digest, Sha512},
+    traits::SignatureScheme,
 };
 use tempfile::TempDir;
 
@@ -203,7 +205,11 @@ impl<'a> Su3<'a> {
         let (rest, version) = take(version_len)(rest)?;
         let (rest, signer_id) = take(signer_id_len)(rest)?;
         let (rest, content) = take(content_len)(rest)?;
-        let message = &input[..rest.len()];
+
+        // header + version + signer id + content
+        let message_len = 40 + version_len as usize + signer_id_len as usize + content_len as usize;
+        let message = &input[..message_len];
+
         let (rest, signature) = take(signature_len)(rest)?;
 
         Ok((
@@ -226,33 +232,27 @@ impl<'a> Su3<'a> {
         let (_, su3) = Self::parse_inner(input).ok()?;
 
         if verify {
-            match std::str::from_utf8(su3.signer_id) {
-                Ok(signer_id) => match PUBLIC_KEYS.get(signer_id) {
-                    None => tracing::warn!(
-                        target: LOG_TARGET,
-                        ?signer_id,
-                        "public key for signer id not found",
-                    ),
-                    Some(key) =>
-                        if let Ok(signature) = Signature::try_from(su3.signature) {
-                            let verifying_key = VerifyingKey::<Sha512>::new(key.clone());
-
-                            if let Err(error) = verifying_key.verify(su3.message, &signature) {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    ?signer_id,
-                                    ?error,
-                                    "failed to verify signature",
-                                )
-                            }
-                        },
-                },
-                Err(error) => tracing::warn!(
+            let Ok(signer_id) = std::str::from_utf8(su3.signer_id) else {
+                tracing::warn!(
                     target: LOG_TARGET,
-                    ?error,
                     "invalid signer id",
-                ),
-            }
+                );
+                return None;
+            };
+
+            let Some(key) = PUBLIC_KEYS.get(signer_id) else {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    ?signer_id,
+                    "public key for signer id not found",
+                );
+                return None;
+            };
+
+            // taken from ire
+            rsa::Pkcs1v15Sign::new_unprefixed()
+                .verify(key, &Sha512::digest(su3.message), &su3.signature)
+                .ok()?;
         }
 
         match (su3.file_kind, su3.content_kind) {
@@ -307,10 +307,30 @@ impl<'a> Su3<'a> {
 mod tests {
     use super::*;
 
+    const SU3: &'static [u8] = include_bytes!("../assets/i2pseeds.su3");
+
     #[test]
     fn parse_su3() {
-        const ROUTER_INFO: &'static [u8] = include_bytes!("../assets/i2pseeds.su3");
+        assert!(Su3::parse_reseed(SU3, true).is_some());
+    }
 
-        assert!(Su3::parse_reseed(ROUTER_INFO, false).is_some());
+    #[test]
+    fn parse_su3_invalid_signature() {
+        let mut bytes = SU3.to_vec();
+        for i in bytes.len() - 10..bytes.len() {
+            bytes[i] = bytes[i].overflowing_add(1).0;
+        }
+
+        assert!(Su3::parse_reseed(&bytes, true).is_none());
+    }
+
+    #[test]
+    fn parse_su3_invalid_signature_verify_skipped() {
+        let mut bytes = SU3.to_vec();
+        for i in bytes.len() - 10..bytes.len() {
+            bytes[i] = bytes[i].overflowing_add(1).0;
+        }
+
+        assert!(Su3::parse_reseed(&bytes, false).is_some());
     }
 }

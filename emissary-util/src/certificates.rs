@@ -89,20 +89,20 @@ const R4SAS_RESEED: &str = include_str!(concat!(
 
 /// Certificates of the reseed bundle signers.
 pub const CERTIFICATES: &[(&str, &str); 14] = &[
-    ("acetone@mail.i2p.crt", ACETONE),
-    ("creativecowpat@mail.i2p.crt", CREATIVECOWPAT),
-    ("hottuna@mail.i2p.crt", HOTTUNA),
-    ("lazygravy@mail.i2p.crt", LAZYGRAVY),
-    ("rambler@mail.i2p.crt", RAMBLER),
-    ("admin@stormycloud.org.crt", ADMIN),
-    ("echelon3@mail.i2p.crt", ECHELON3),
-    ("i2p-reseed@mk16.de.crt", I2P_RESEED),
-    ("orignal@mail.i2p.crt", ORIGNAL),
-    ("reseed@diva.exchange.crt", RESEED_DIVA),
-    ("arnavbhatt288@mail.i2p.crt", ARNAVBHATT288),
-    ("hankhill19580@gmail.com.crt", HANKHILL19580),
-    ("igor@novg.net.crt", IGOR),
-    ("r4sas-reseed@mail.i2p.crt", R4SAS_RESEED),
+    ("acetone@mail.i2p", ACETONE),
+    ("creativecowpat@mail.i2p", CREATIVECOWPAT),
+    ("hottuna@mail.i2p", HOTTUNA),
+    ("lazygravy@mail.i2p", LAZYGRAVY),
+    ("rambler@mail.i2p", RAMBLER),
+    ("admin@stormycloud.org", ADMIN),
+    ("echelon3@mail.i2p", ECHELON3),
+    ("i2p-reseed@mk16.de", I2P_RESEED),
+    ("orignal@mail.i2p", ORIGNAL),
+    ("reseed@diva.exchange", RESEED_DIVA),
+    ("arnavbhatt288@mail.i2p", ARNAVBHATT288),
+    ("hankhill19580@gmail.com", HANKHILL19580),
+    ("igor@novg.net", IGOR),
+    ("r4sas-reseed@mail.i2p", R4SAS_RESEED),
 ];
 
 /// Public keys of the reseed bundle signers.
@@ -113,7 +113,7 @@ pub static PUBLIC_KEYS: LazyLock<HashMap<&'static str, RsaPublicKey>> = LazyLock
             let cert = pem::parse(value).ok()?.into_contents();
             let (_, cert) = x509_parser::parse_x509_certificate(&cert).ok()?;
 
-            match cert.public_key().parsed().unwrap() {
+            match cert.public_key().parsed().ok()? {
                 PublicKey::RSA(public_key) => {
                     let modulus = BigUint::from_bytes_be(public_key.modulus);
                     let exponent = BigUint::from_bytes_be(public_key.exponent);

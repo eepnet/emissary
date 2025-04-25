@@ -118,7 +118,7 @@ impl Reseeder {
             }
 
             match response.bytes().await {
-                Ok(bytes) => match Su3::parse_reseed(&bytes, false) {
+                Ok(bytes) => match Su3::parse_reseed(&bytes, true) {
                     None => continue,
                     Some(downloaded) => {
                         routers
