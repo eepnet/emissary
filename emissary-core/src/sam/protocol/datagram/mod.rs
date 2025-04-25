@@ -18,7 +18,6 @@
 
 use crate::{
     crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
-    destination,
     error::Error,
     i2cp::I2cpPayload,
     primitives::Destination,

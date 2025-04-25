@@ -26,7 +26,6 @@ use ed25519_dalek::Signer;
 use lazy_static::lazy_static;
 use p256::ecdsa::signature::Verifier as _;
 use rand_core::{CryptoRng, RngCore};
-use sha2::Digest;
 use zeroize::Zeroize;
 
 use alloc::{string::String, vec::Vec};
