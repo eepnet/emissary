@@ -17,7 +17,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base64_encode, SigningPrivateKey},
+    crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
+    destination,
     error::Error,
     i2cp::I2cpPayload,
     primitives::Destination,
@@ -29,6 +30,7 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use hashbrown::HashMap;
 use nom::bytes::complete::take;
+use sha2::Digest;
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
@@ -111,7 +113,11 @@ impl<R: Runtime> DatagramManager<R> {
                     take::<_, _, ()>(destination.verifying_key().signature_len())(rest)
                         .map_err(|_| Error::InvalidData)?;
 
-                destination.verifying_key().verify(rest, signature)?;
+                if let SigningPublicKey::DsaSha1(_) = destination.verifying_key() {
+                    destination.verifying_key().verify(&sha1::Sha1::digest(rest), signature)?;
+                } else {
+                    destination.verifying_key().verify(rest, signature)?;
+                }
 
                 // TODO: ensure there is a listener in `src_port`
                 let port = self.options.get("PORT").ok_or(Error::InvalidState)?;

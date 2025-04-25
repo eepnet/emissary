@@ -392,9 +392,7 @@ impl SigningPublicKey {
             Self::DsaSha1(public_key) => {
                 let signature = DsaSignature::from_bytes(signature).ok_or(Error::InvalidData)?;
 
-                let hashed = sha1::Sha1::digest(message);
-
-                match public_key.verify(&hashed, &signature) {
+                match public_key.verify(message, &signature) {
                     true => Ok(()),
                     false => Err(Error::InvalidData),
                 }
