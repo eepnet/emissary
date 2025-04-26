@@ -28,7 +28,7 @@ use flate2::{
 use futures::{
     future::BoxFuture,
     stream::{BoxStream, FuturesUnordered},
-    AsyncRead as _, Stream, StreamExt,
+    AsyncRead as _, AsyncWrite as _, Stream, StreamExt,
 };
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
 use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
