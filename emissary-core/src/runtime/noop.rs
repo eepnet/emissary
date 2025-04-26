@@ -92,6 +92,7 @@ impl TcpListener<NoopTcpStream> for NoopTcpListener {
     }
 }
 
+#[derive(Clone)]
 pub struct NoopUdpSocket();
 
 impl UdpSocket for NoopUdpSocket {

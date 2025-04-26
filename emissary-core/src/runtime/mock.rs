@@ -137,11 +137,12 @@ impl TcpListener<MockTcpStream> for MockTcpListener {
     }
 }
 
-pub struct MockUdpSocket(net::UdpSocket);
+#[derive(Clone)]
+pub struct MockUdpSocket(Arc<net::UdpSocket>);
 
 impl UdpSocket for MockUdpSocket {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>> {
-        async move { net::UdpSocket::bind(address).await.ok().map(|socket| Self(socket)) }
+        async move { net::UdpSocket::bind(address).await.ok().map(|socket| Self(Arc::new(socket))) }
     }
 
     fn poll_send_to(

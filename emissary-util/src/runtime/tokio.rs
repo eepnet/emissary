@@ -36,11 +36,12 @@ use std::{
     io::Write,
     net::SocketAddr,
     pin::{pin, Pin},
+    sync::Arc,
     task::{Context, Poll, Waker},
     time::{Duration, Instant, SystemTime},
 };
 
-/// Logging targer for the file.
+/// Logging target for the file.
 const LOG_TARGET: &str = "emissary::runtime::tokio";
 
 #[derive(Default, Clone)]
@@ -192,11 +193,12 @@ impl TcpListener<TokioTcpStream> for TokioTcpListener {
     }
 }
 
-pub struct TokioUdpSocket(net::UdpSocket);
+#[derive(Clone)]
+pub struct TokioUdpSocket(Arc<net::UdpSocket>);
 
 impl UdpSocket for TokioUdpSocket {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>> {
-        async move { net::UdpSocket::bind(address).await.ok().map(Self) }
+        async move { net::UdpSocket::bind(address).await.ok().map(|socket| Self(Arc::new(socket))) }
     }
 
     fn poll_send_to(
