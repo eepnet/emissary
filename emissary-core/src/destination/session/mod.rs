@@ -103,6 +103,14 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 // ref: https://geti2p.net/spec/ecies#ack
 const LOW_PRIORITY_RESPONSE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Number of seconds in the past that is allowable for a `DateTime` block
+/// for a new session message
+const NEW_SESSION_MAX_AGE: u32 = 5 * 60;
+
+/// Number of seconds in the future that is allowable for a `DateTime` block
+/// for a new session_message
+const NEW_SESSION_FUTURE_LIMIT: u32 = 2 * 60;
+
 /// Active session with remote destination.
 struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
@@ -656,7 +664,42 @@ impl<R: Runtime> SessionManager<R> {
                     SessionError::Malformed
                 })?;
 
-                // TODO: verify `DateTime`
+                // locate `DateTime` message from the clove set
+                let Some(GarlicMessageBlock::DateTime { timestamp }) = clove_set
+                    .blocks
+                    .iter()
+                    .find(|clove| core::matches!(clove, GarlicMessageBlock::DateTime { .. }))
+                else {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        id = %self.destination_id,
+                        "clove set doesn't contain `DateTime`",
+                    );
+
+                    return Err(SessionError::Malformed);
+                };
+
+                if clove_set
+                    .blocks
+                    .iter()
+                    .filter(|clove| core::matches!(clove, GarlicMessageBlock::DateTime { .. }))
+                    .count()
+                    > 1
+                {
+                    // Only one DateTime block is allowed
+                    return Err(SessionError::Malformed);
+                }
+
+                // The spec states that the timestamp will
+                // wrap for the year 2038 problem
+                let now = R::time_since_epoch();
+                let epoch_seconds = now.as_secs() as u32;
+
+                let past = epoch_seconds.saturating_sub(NEW_SESSION_MAX_AGE);
+                let future = epoch_seconds.saturating_add(NEW_SESSION_FUTURE_LIMIT);
+                if past > *timestamp || future < *timestamp {
+                    return Err(SessionError::Timestamp);
+                }
 
                 // locate `DatabaseStore` i2np message from the clove set
                 let Some(GarlicMessageBlock::GarlicClove { message_body, .. }) =
