@@ -92,6 +92,9 @@ pub enum SessionError {
 
     /// Invalid key.
     InvalidKey,
+
+    /// New session message has an invalid timestamp
+    Timestamp,
 }
 
 impl fmt::Display for SessionError {
@@ -103,6 +106,7 @@ impl fmt::Display for SessionError {
             Self::Chacha => write!(f, "encryption/decryption error"),
             Self::InvalidState => write!(f, "invalid state"),
             Self::InvalidKey => write!(f, "invalid key"),
+            Self::Timestamp => write!(f, "excess message timestamp skew"),
         }
     }
 }
@@ -229,20 +233,23 @@ pub enum StreamingError {
 impl fmt::Display for StreamingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::StreamIdMismatch(send, recv) =>
-                write!(f, "stream mismatch: {send} (send) vs {recv} (recv)"),
+            Self::StreamIdMismatch(send, recv) => {
+                write!(f, "stream mismatch: {send} (send) vs {recv} (recv)")
+            }
             Self::SignatureMissing => write!(f, "signature missing"),
             Self::DestinationMissing => write!(f, "destination missing"),
             Self::VerifyingKeyMissing => write!(f, "verifying key mssing"),
-            Self::ReplayProtectionCheckFailed =>
-                write!(f, "nack field didn't contain correct destination id"),
+            Self::ReplayProtectionCheckFailed => {
+                write!(f, "nack field didn't contain correct destination id")
+            }
             Self::InvalidSignature => write!(f, "invalid signature"),
             Self::Malformed => write!(f, "malformed packet"),
             Self::ListenerMismatch => write!(f, "listener kind mismatch"),
             Self::Closed => write!(f, "stream closed"),
             Self::ReceiveWindowFull => write!(f, "receive window is full"),
-            Self::SequenceNumberTooHigh =>
-                write!(f, "sequnce number for the packet is unexpectedly high"),
+            Self::SequenceNumberTooHigh => {
+                write!(f, "sequnce number for the packet is unexpectedly high")
+            }
         }
     }
 }
@@ -324,8 +331,9 @@ impl fmt::Display for TunnelError {
             Self::NotEnoughHops(hops) => write!(f, "not enough hops {hops}"),
             Self::RecordNotFound => write!(f, "local record not found"),
             Self::MessageRejected(reason) => write!(f, "message rejected, reason: {reason:?}"),
-            Self::MessageDoesntExist(message_id) =>
-                write!(f, "message doesn't exist: {message_id}"),
+            Self::MessageDoesntExist(message_id) => {
+                write!(f, "message doesn't exist: {message_id}")
+            }
         }
     }
 }
@@ -382,8 +390,9 @@ impl fmt::Display for RoutingError {
             Self::FailedToParseRoute(_) => write!(f, "failed to parse route"),
             Self::ChannelFull(_) => write!(f, "channel full"),
             Self::ChannelClosed(_) => write!(f, "channel closed"),
-            Self::TunnelExists(tunnel_id) =>
-                write!(f, "tunnel ({tunnel_id}) exists in the routing table"),
+            Self::TunnelExists(tunnel_id) => {
+                write!(f, "tunnel ({tunnel_id}) exists in the routing table")
+            }
         }
     }
 }

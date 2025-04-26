@@ -103,6 +103,14 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 // ref: https://geti2p.net/spec/ecies#ack
 const LOW_PRIORITY_RESPONSE_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Number of seconds in the past that is allowable for a `DateTime` block
+/// for a new session message
+const NEW_SESSION_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+
+/// Number of seconds in the future that is allowable for a `DateTime` block
+/// for a new session_message
+const NEW_SESSION_FUTURE_LIMIT: Duration = Duration::from_secs(2 * 60);
+
 /// Active session with remote destination.
 struct ActiveSession<R: Runtime> {
     /// Pending ACK requests received from remote.
@@ -681,7 +689,82 @@ impl<R: Runtime> SessionManager<R> {
                     SessionError::Malformed
                 })?;
 
-                // TODO: verify `DateTime`
+                // locate `DateTime` message from the clove set
+                let date_time_blocks: Box<[_]> = clove_set
+                    .blocks
+                    .iter()
+                    .filter(|clove| core::matches!(clove, GarlicMessageBlock::DateTime { .. }))
+                    .collect();
+
+                if date_time_blocks.len() > 1 {
+                    // Only one DateTime block is allowed
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        id = %self.destination_id,
+                        "clove set contains multiple `DateTime` blocks",
+                    );
+
+                    return Err(SessionError::Malformed);
+                }
+
+                let Some(GarlicMessageBlock::DateTime { timestamp }) =
+                    date_time_blocks.into_iter().next()
+                else {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        id = %self.destination_id,
+                        "clove set doesn't contain `DateTime`",
+                    );
+
+                    return Err(SessionError::Malformed);
+                };
+
+                let now = R::time_since_epoch();
+                let past = now.saturating_sub(NEW_SESSION_MAX_AGE);
+                let future = now.saturating_add(NEW_SESSION_FUTURE_LIMIT);
+
+                // The spec states that the timestamp will
+                // wrap for the year 2106 problem (u32 rollover)
+                let rollover = u32::MAX as u64;
+                let datetime_timestamp = Duration::from_secs(*timestamp as u64);
+                let wrapped_past = Duration::new(past.as_secs() % rollover, past.subsec_nanos());
+                let wrapped_future =
+                    Duration::new(future.as_secs() % rollover, future.subsec_nanos());
+
+                if wrapped_future < wrapped_past {
+                    // We are on the boundary of the 32bit timestamp epoch
+
+                    // TODO: This case will only ever happen for several minutes once
+                    // every 136 years or so and only when creating new sessions.
+                    // Should we care about it?
+
+                    if datetime_timestamp < wrapped_past && datetime_timestamp > wrapped_future {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            id = %self.destination_id,
+                            "`DateTime` is out of bounds for epoch shift",
+                        );
+                        return Err(SessionError::Timestamp);
+                    }
+                } else {
+                    if datetime_timestamp < wrapped_past {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            id = %self.destination_id,
+                            "`DateTime` is less than maximum age skew",
+                        );
+                        return Err(SessionError::Timestamp);
+                    }
+
+                    if datetime_timestamp > wrapped_future {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            id = %self.destination_id,
+                            "`DateTime` is greater than future skew",
+                        );
+                        return Err(SessionError::Timestamp);
+                    }
+                }
 
                 // locate `DatabaseStore` i2np message from the clove set
                 let Some(GarlicMessageBlock::GarlicClove { message_body, .. }) =
@@ -3761,5 +3844,34 @@ mod tests {
         .await
         .err()
         .is_some());
+    }
+
+    #[tokio::test]
+    async fn test_ns_too_old() {
+        let private_key = StaticPrivateKey::random(thread_rng());
+        let public_key = private_key.public();
+        let destination_id = DestinationId::random();
+        let (leaseset, signing_key) = LeaseSet2::random();
+        let leaseset = Bytes::from(leaseset.serialize(&signing_key));
+        let mut session =
+            SessionManager::<MockRuntime>::new(destination_id.clone(), private_key, leaseset);
+
+        // create outbound `SessionManager`
+        let outbound_private_key = StaticPrivateKey::random(thread_rng());
+        let (outbound_leaseset, outbound_destination_id) = {
+            let (leaseset, signing_key) = LeaseSet2::random();
+            let outbound_destination_id = leaseset.header.destination.id();
+
+            (
+                Bytes::from(leaseset.serialize(&signing_key)),
+                outbound_destination_id,
+            )
+        };
+        let mut outbound_session = SessionManager::<MockRuntime>::new(
+            outbound_destination_id.clone(),
+            outbound_private_key,
+            outbound_leaseset,
+        );
+        outbound_session.add_remote_destination(destination_id.clone(), public_key);
     }
 }
