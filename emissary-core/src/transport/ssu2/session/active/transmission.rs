@@ -349,11 +349,14 @@ impl<R: Runtime> TransmissionManager<R> {
         );
 
         (0..=num_acks).for_each(|i| {
-            // TODO: only calculate if it hasn't been resent?
-            if let Some(Segment { sent, .. }) =
+            // TODO: if-let chain
+            if let Some(Segment { num_sent, sent, .. }) =
                 self.segments.remove(&(ack_through.saturating_sub(i as u32)))
             {
-                self.rto.calculate_rto(sent.elapsed());
+                // packet has not been resent
+                if num_sent == 1 {
+                    self.rto.calculate_rto(sent.elapsed());
+                }
             }
         });
 
@@ -367,9 +370,12 @@ impl<R: Runtime> TransmissionManager<R> {
             for i in 1..=*ack {
                 next_pkt = next_pkt.saturating_sub(1);
 
-                // TODO: only calculate if it hasn't been resent?
-                if let Some(Segment { sent, .. }) = self.segments.remove(&next_pkt) {
-                    self.rto.calculate_rto(sent.elapsed());
+                // TODO: if-let chain
+                if let Some(Segment { num_sent, sent, .. }) = self.segments.remove(&next_pkt) {
+                    // packet has not been resent
+                    if num_sent == 1 {
+                        self.rto.calculate_rto(sent.elapsed());
+                    }
                 }
             }
         }
