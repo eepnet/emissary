@@ -274,8 +274,8 @@ mod tests {
     use super::*;
     use crate::runtime::mock::MockRuntime;
 
-    #[test]
-    fn ack_one_packet() {
+    #[tokio::test]
+    async fn ack_one_packet() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
         manager.register_pkt(1, true);
 
@@ -289,8 +289,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ack_multiple_packets() {
+    #[tokio::test]
+    async fn ack_multiple_packets() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=3 {
@@ -309,8 +309,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn too_many_unacked_packets() {
+    #[tokio::test]
+    async fn too_many_unacked_packets() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=300 {
@@ -328,8 +328,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn max_acks() {
+    #[tokio::test]
+    async fn max_acks() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 1..=256 {
@@ -347,8 +347,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn next_pkt_missing() {
+    #[tokio::test]
+    async fn next_pkt_missing() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(300, true);
@@ -402,8 +402,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packet_dropped() {
+    #[tokio::test]
+    async fn packet_dropped() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);
@@ -424,8 +424,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packet_dropped_2() {
+    #[tokio::test]
+    async fn packet_dropped_2() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);
@@ -444,8 +444,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packet_dropped_3() {
+    #[tokio::test]
+    async fn packet_dropped_3() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         for i in 2..=10 {
@@ -462,8 +462,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn packet_dropped_4() {
+    #[tokio::test]
+    async fn packet_dropped_4() {
         let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
 
         manager.register_pkt(10, true);

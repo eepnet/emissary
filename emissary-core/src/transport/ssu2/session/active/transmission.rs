@@ -43,20 +43,26 @@ const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
 /// Short header + block type + Poly1305 authentication tag.
 const SSU2_OVERHEAD: usize = 16usize + 1usize + 16usize;
 
-/// SSU2 initial RTO.
-const SSU2_INITIAL_RTO: Duration = Duration::from_millis(540);
+/// Initial RTO.
+const INITIAL_RTO: Duration = Duration::from_millis(540);
 
-/// SSU2 minimum RTO.
-const SSU2_MIN_RTO: Duration = Duration::from_millis(100);
+/// Minimum RTO.
+const MIN_RTO: Duration = Duration::from_millis(100);
 
-/// SSU2 maximum RTO.
-const SSU2_MAX_RTO: Duration = Duration::from_millis(2500);
+/// Maximum RTO.
+const MAX_RTO: Duration = Duration::from_millis(2500);
 
 /// RTT dampening factor (alpha).
 const RTT_DAMPENING_FACTOR: f64 = 0.125f64;
 
 /// RTTDEV dampening factor (beta).
 const RTTDEV_DAMPENING_FACTOR: f64 = 0.25;
+
+/// Minimum window size.
+const MIN_WINDOW_SIZE: usize = 16usize;
+
+/// Maximum window size.
+const MAX_WINDOW_SIZE: usize = 256usize;
 
 /// Retransmission timeout (RTO).
 enum RetransmissionTimeout {
@@ -71,7 +77,7 @@ enum RetransmissionTimeout {
         /// Round-trip time (RTT).
         rtt: Duration,
 
-        /// RTT var TODO: ???.
+        /// RTT variance.
         rtt_var: Duration,
     },
 }
@@ -112,7 +118,7 @@ impl RetransmissionTimeout {
                 let rto = Duration::from_millis((srtt as f64 + 4f64 * rtt_var) as u64);
 
                 *self = Self::Sampled {
-                    rto: min(SSU2_MAX_RTO, max(rto, SSU2_MIN_RTO)),
+                    rto: min(MAX_RTO, max(rto, MIN_RTO)),
                     rtt,
                     rtt_var: Duration::from_millis(rtt_var as u64),
                 };
@@ -126,7 +132,7 @@ impl Deref for RetransmissionTimeout {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Self::Unsampled => &SSU2_INITIAL_RTO,
+            Self::Unsampled => &INITIAL_RTO,
             Self::Sampled { rto, .. } => &rto,
         }
     }
@@ -228,6 +234,12 @@ pub struct TransmissionManager<R: Runtime> {
 
     /// In-flight segments.
     segments: BTreeMap<u32, Segment<R>>,
+
+    /// Pending segments.
+    pending: VecDeque<SegmentKind>,
+
+    /// Window size.
+    window_size: usize,
 }
 
 impl<R: Runtime> TransmissionManager<R> {
@@ -236,14 +248,23 @@ impl<R: Runtime> TransmissionManager<R> {
         Self {
             pkt_num,
             router_id,
+            pending: VecDeque::new(),
             rto: RetransmissionTimeout::Unsampled,
             segments: BTreeMap::new(),
+            window_size: MIN_WINDOW_SIZE,
         }
     }
 
     /// Get next packet number.
     pub fn next_pkt_num(&mut self) -> u32 {
         self.pkt_num.fetch_add(1u32, Ordering::Relaxed)
+    }
+
+    /// Does [`TransmissionManager`] have capacity to send more packets?
+    ///
+    /// Compares the current window size to the number of in-flight packets.
+    pub fn has_capacity(&self) -> bool {
+        self.segments.len() < self.window_size
     }
 
     /// Split `message` into segments.
@@ -259,6 +280,14 @@ impl<R: Runtime> TransmissionManager<R> {
     /// and one or more `MessageKind::FollowOnFragment`s.
     pub fn segment(&mut self, message: Message) -> impl Iterator<Item = (u32, MessageKind<'_>)> {
         if message.serialized_len_short() + SSU2_OVERHEAD <= 1200 {
+            // no window size left to send more packets
+            if !self.has_capacity() {
+                self.pending.push_back(SegmentKind::UnFragmented {
+                    message: message.serialize_short(),
+                });
+
+                return vec![].into_iter();
+            }
             let pkt_num = self.next_pkt_num();
 
             self.segments.insert(
@@ -286,32 +315,38 @@ impl<R: Runtime> TransmissionManager<R> {
         let fragments = fragments
             .into_iter()
             .enumerate()
-            .map(|(fragment_num, fragment)| {
+            .filter_map(|(fragment_num, fragment)| {
                 let pkt_num = self.next_pkt_num();
+                let segment = match fragment_num {
+                    0 => SegmentKind::FirstFragment {
+                        fragment: fragment.to_vec(),
+                        expiration: message.expiration.as_secs() as u32,
+                        message_type: message.message_type,
+                        message_id: message.message_id,
+                    },
+                    _ => SegmentKind::FollowOnFragment {
+                        fragment: fragment.to_vec(),
+                        fragment_num: fragment_num as u8,
+                        last: fragment_num == num_fragments - 1,
+                        message_id: message.message_id,
+                    },
+                };
+
+                if !self.has_capacity() {
+                    self.pending.push_back(segment);
+                    return None;
+                }
 
                 self.segments.insert(
                     pkt_num,
                     Segment {
                         num_sent: 1usize,
                         sent: R::now(),
-                        segment: match fragment_num {
-                            0 => SegmentKind::FirstFragment {
-                                fragment: fragment.to_vec(),
-                                expiration: message.expiration.as_secs() as u32,
-                                message_type: message.message_type,
-                                message_id: message.message_id,
-                            },
-                            _ => SegmentKind::FollowOnFragment {
-                                fragment: fragment.to_vec(),
-                                fragment_num: fragment_num as u8,
-                                last: fragment_num == num_fragments - 1,
-                                message_id: message.message_id,
-                            },
-                        },
+                        segment,
                     },
                 );
 
-                pkt_num
+                return Some(pkt_num);
             })
             .collect::<Vec<_>>();
 
@@ -357,6 +392,8 @@ impl<R: Runtime> TransmissionManager<R> {
                 if num_sent == 1 {
                     self.rto.calculate_rto(sent.elapsed());
                 }
+
+                self.window_size += 1;
             }
         });
 
@@ -376,11 +413,54 @@ impl<R: Runtime> TransmissionManager<R> {
                     if num_sent == 1 {
                         self.rto.calculate_rto(sent.elapsed());
                     }
+
+                    self.window_size += 1;
                 }
             }
         }
 
-        // TODO: update window?
+        if self.window_size > MAX_WINDOW_SIZE {
+            self.window_size = MAX_WINDOW_SIZE;
+        }
+    }
+
+    /// Get pending packets, if any.
+    pub fn pending_packets(&mut self) -> Option<impl Iterator<Item = (u32, MessageKind<'_>)>> {
+        if self.pending.is_empty() {
+            return None;
+        }
+
+        let pkts_to_send = (0..min(
+            self.pending.len(),
+            self.window_size.saturating_sub(self.segments.len()),
+        ))
+            .filter_map(|_| {
+                let segment = self.pending.pop_front()?;
+                let pkt_num = self.next_pkt_num();
+
+                self.segments.insert(
+                    pkt_num,
+                    Segment {
+                        num_sent: 1usize,
+                        sent: R::now(),
+                        segment,
+                    },
+                );
+
+                Some(pkt_num)
+            })
+            .collect::<Vec<_>>();
+
+        let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
+
+        for pkt_num in pkts_to_send {
+            packets.push((
+                pkt_num,
+                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
+            ));
+        }
+
+        Some(packets.into_iter())
     }
 
     /// Go through packets and check if any of them need to be resent.
@@ -399,13 +479,6 @@ impl<R: Runtime> TransmissionManager<R> {
         if expired.is_empty() {
             return None;
         }
-
-        tracing::trace!(
-            target: LOG_TARGET,
-            router_id = %self.router_id,
-            num_pkts = ?expired.len(),
-            "resend packets",
-        );
 
         // reassign packet number for each segment and reinsert it into `self.segments`
         let pkts_to_resend = expired
@@ -432,7 +505,22 @@ impl<R: Runtime> TransmissionManager<R> {
             })
             .collect::<Vec<_>>();
 
-        // TODO: decrease window size
+        // halve window size because of packet loss
+        {
+            self.window_size /= 2;
+
+            if self.window_size < MIN_WINDOW_SIZE {
+                self.window_size = MIN_WINDOW_SIZE;
+            }
+        }
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            router_id = %self.router_id,
+            num_pkts = ?pkts_to_resend.len(),
+            window = ?self.window_size,
+            "resend packets",
+        );
 
         // all segments must exist since they were inserted into `self.segments` above
         let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
@@ -822,7 +910,7 @@ mod tests {
         assert_eq!(mgr.segments.len(), 10);
         assert!(mgr.resend().is_none());
 
-        tokio::time::sleep(SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+        tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
@@ -848,7 +936,7 @@ mod tests {
         assert_eq!(mgr.segments.len(), 10);
         assert!(mgr.resend().is_none());
 
-        tokio::time::sleep(SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+        tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
@@ -856,7 +944,7 @@ mod tests {
 
         // ack some of the packets and wait for another timeout
         mgr.register_ack(20, 3, &[(2, 2), (2, 0)]);
-        tokio::time::sleep(2 * SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+        tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
         let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
         assert_eq!(pkt_nums.len(), 4);
@@ -864,5 +952,143 @@ mod tests {
 
         mgr.register_ack(24, 3, &[]);
         assert!(mgr.segments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn window_size_increases() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 9 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.segments.len(), 10);
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
+
+        mgr.register_ack(10, 3, &[(5, 1)]);
+
+        assert_eq!(mgr.segments.len(), 5);
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE + 5);
+
+        mgr.register_ack(6, 4, &[]);
+
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE + 10);
+    }
+
+    #[tokio::test]
+    async fn window_size_decreases() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 15 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
+        assert!(mgr.pending.is_empty());
+        assert!(mgr.resend().is_none());
+
+        mgr.register_ack(8, 7, &[]);
+        assert_eq!(mgr.segments.len(), 8);
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE + 8);
+
+        // packet loss has occurred
+        tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
+
+        // verify that all of the packets are sent the second time
+        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
+        assert_eq!(pkt_nums.len(), 8);
+
+        // window size has been halved
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
+
+        // more packet loss, verify that window size is clamped to minimum
+        tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
+
+        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
+        assert_eq!(pkt_nums.len(), 8);
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
+    }
+
+    #[tokio::test]
+    async fn excess_packets_marked_as_pending() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 31 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.pending.len(), MIN_WINDOW_SIZE);
+        assert!(mgr.resend().is_none());
+        assert!(!mgr.has_capacity());
+
+        mgr.register_ack(16, 15, &[]);
+        assert!(mgr.segments.is_empty());
+        assert_eq!(mgr.window_size, 2 * MIN_WINDOW_SIZE);
+        assert!(mgr.has_capacity());
+
+        // get pending packets after acking previous packets
+        let pkt_nums =
+            mgr.pending_packets().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+
+        assert_eq!(pkt_nums.len(), 16);
+        assert_eq!(mgr.segments.len(), 16);
+        assert!(mgr.pending.is_empty());
+        assert!(mgr.has_capacity()); // window size has grown
+    }
+
+    #[tokio::test]
+    async fn pending_packets_partially_sent() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 39 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.pending.len(), 40 - MIN_WINDOW_SIZE);
+        assert!(mgr.resend().is_none());
+        assert!(!mgr.has_capacity());
+
+        mgr.register_ack(16, 5, &[]);
+        assert!(!mgr.segments.is_empty());
+        assert_eq!(mgr.window_size, MIN_WINDOW_SIZE + 6);
+        assert!(mgr.has_capacity());
+
+        // get pending packets after acking previous packets
+        let pkt_nums =
+            mgr.pending_packets().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+
+        assert_eq!(pkt_nums.len(), 12);
+        assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE + 6);
+        assert!(!mgr.pending.is_empty());
+        assert!(!mgr.has_capacity());
     }
 }

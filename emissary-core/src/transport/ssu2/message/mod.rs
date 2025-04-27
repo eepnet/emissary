@@ -1180,7 +1180,7 @@ impl<'a> HeaderReader<'a> {
                 pkt_num: u32::from_be(header as u32),
             }),
             MessageType::Data => Ok(HeaderKind::Data {
-                immediate_ack: ((header >> 24) & 0x01) == 0x01,
+                immediate_ack: ((header >> 16) & 0x01) == 0x01,
                 pkt_num: u32::from_be(header as u32),
             }),
             MessageType::Retry => {
