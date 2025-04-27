@@ -29,6 +29,7 @@ use alloc::{
     vec::Vec,
 };
 use core::{
+    cmp::{max, min},
     ops::Deref,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
@@ -49,7 +50,7 @@ const SSU2_INITIAL_RTO: Duration = Duration::from_millis(540);
 const SSU2_MIN_RTO: Duration = Duration::from_millis(100);
 
 /// SSU2 maximum RTO.
-const SSU2_MAX_RTO: Duration = Duration::from_millis(250);
+const SSU2_MAX_RTO: Duration = Duration::from_millis(2500);
 
 /// RTT dampening factor (alpha).
 const RTT_DAMPENING_FACTOR: f64 = 0.125f64;
@@ -110,9 +111,8 @@ impl RetransmissionTimeout {
                 let rtt_var = (1f64 - RTTDEV_DAMPENING_FACTOR) * rtt_var + abs;
                 let rto = Duration::from_millis((srtt as f64 + 4f64 * rtt_var) as u64);
 
-                // TODO: min/max rto
                 *self = Self::Sampled {
-                    rto,
+                    rto: min(SSU2_MAX_RTO, max(rto, SSU2_MIN_RTO)),
                     rtt,
                     rtt_var: Duration::from_millis(rtt_var as u64),
                 };
