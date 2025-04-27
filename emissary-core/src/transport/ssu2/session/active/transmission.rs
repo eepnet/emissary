@@ -23,8 +23,6 @@ use crate::{
     transport::ssu2::message::data::MessageKind,
 };
 
-use futures::{FutureExt, Stream};
-
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
@@ -32,9 +30,7 @@ use alloc::{
 };
 use core::{
     ops::Deref,
-    pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
-    task::{Context, Poll},
     time::Duration,
 };
 
@@ -45,9 +41,6 @@ const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
 ///
 /// Short header + block type + Poly1305 authentication tag.
 const SSU2_OVERHEAD: usize = 16usize + 1usize + 16usize;
-
-/// SSU2 resend timeout
-const SSU2_RESEND_TIMEOUT: Duration = Duration::from_millis(40);
 
 /// SSU2 initial RTO.
 const SSU2_INITIAL_RTO: Duration = Duration::from_millis(540);
@@ -210,13 +203,16 @@ impl<'a> From<&'a SegmentKind> for MessageKind<'a> {
 
 /// In-flight segment.
 struct Segment<R: Runtime> {
-    /// When was the packet sent.
-    sent: R::Instant,
+    /// How many times the packet has been sent to remote router.
+    num_sent: usize,
 
     /// Segment kind.
     ///
     /// Either an unfragmented I2NP message or a fragment of an I2NP message.
     segment: SegmentKind,
+
+    /// When was the packet sent.
+    sent: R::Instant,
 }
 
 /// Transmission manager.
@@ -230,9 +226,6 @@ pub struct TransmissionManager<R: Runtime> {
     /// RTO.
     rto: RetransmissionTimeout,
 
-    /// RTO timer.
-    rto_timer: Option<R::Timer>,
-
     /// In-flight segments.
     segments: BTreeMap<u32, Segment<R>>,
 }
@@ -244,7 +237,6 @@ impl<R: Runtime> TransmissionManager<R> {
             pkt_num,
             router_id,
             rto: RetransmissionTimeout::Unsampled,
-            rto_timer: None,
             segments: BTreeMap::new(),
         }
     }
@@ -272,17 +264,13 @@ impl<R: Runtime> TransmissionManager<R> {
             self.segments.insert(
                 pkt_num,
                 Segment {
+                    num_sent: 1usize,
                     sent: R::now(),
                     segment: SegmentKind::UnFragmented {
                         message: message.serialize_short(),
                     },
                 },
             );
-
-            // TODO: don't use rto for timer
-            if self.rto_timer.is_none() {
-                self.rto_timer = Some(R::timer(*self.rto));
-            }
 
             // segment must exist since it was just inserted into `segments`
             return vec![(
@@ -304,6 +292,7 @@ impl<R: Runtime> TransmissionManager<R> {
                 self.segments.insert(
                     pkt_num,
                     Segment {
+                        num_sent: 1usize,
                         sent: R::now(),
                         segment: match fragment_num {
                             0 => SegmentKind::FirstFragment {
@@ -336,11 +325,6 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        // TODO: don't use rto for timer
-        if self.rto_timer.is_none() {
-            self.rto_timer = Some(R::timer(*self.rto));
-        }
-
         packets.into_iter()
     }
 
@@ -360,6 +344,7 @@ impl<R: Runtime> TransmissionManager<R> {
             ?num_acks,
             ?ranges,
             num_segments = ?self.segments.len(),
+            router_id = %self.router_id,
             "handle ack",
         );
 
@@ -391,10 +376,76 @@ impl<R: Runtime> TransmissionManager<R> {
 
         // TODO: update window?
     }
+
+    /// Go through packets and check if any of them need to be resent.
+    ///
+    /// Returns an iterator of `(packet number, `MessageKind`)` tuples.
+    pub fn resend(&mut self) -> Option<impl Iterator<Item = (u32, MessageKind<'_>)>> {
+        // TODO: `take_while()` + reverse order
+        let expired = self
+            .segments
+            .iter()
+            .filter_map(|(pkt_num, segment)| {
+                (segment.sent.elapsed() > (*self.rto * segment.num_sent as u32)).then_some(*pkt_num)
+            })
+            .collect::<Vec<_>>();
+
+        if expired.is_empty() {
+            return None;
+        }
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            router_id = %self.router_id,
+            num_pkts = ?expired.len(),
+            "resend packets",
+        );
+
+        // reassign packet number for each segment and reinsert it into `self.segments`
+        let pkts_to_resend = expired
+            .into_iter()
+            .map(|pkt_num| {
+                // the segment must exist since it was just found in `self.segments`
+                let Segment {
+                    num_sent,
+                    segment,
+                    sent,
+                } = self.segments.remove(&pkt_num).expect("to exist");
+                let pkt_num = self.next_pkt_num();
+
+                self.segments.insert(
+                    pkt_num,
+                    Segment {
+                        num_sent: num_sent + 1,
+                        segment,
+                        sent,
+                    },
+                );
+
+                pkt_num
+            })
+            .collect::<Vec<_>>();
+
+        // TODO: decrease window size
+
+        // all segments must exist since they were inserted into `self.segments` above
+        let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
+
+        for pkt_num in pkts_to_resend {
+            packets.push((
+                pkt_num,
+                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
+            ));
+        }
+
+        Some(packets.into_iter())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
+
     use super::*;
     use crate::runtime::mock::MockRuntime;
 
@@ -727,6 +778,85 @@ mod tests {
 
         mgr.register_ack(15u32, 255, &[]);
 
+        assert!(mgr.segments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn nothing_to_resend() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 9 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.segments.len(), 10);
+        assert!(mgr.resend().is_none());
+    }
+
+    #[tokio::test]
+    async fn packets_resent() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 9 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.segments.len(), 10);
+        assert!(mgr.resend().is_none());
+
+        tokio::time::sleep(SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+
+        // verify that all of the packets are sent the second time
+        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        assert!(pkt_nums
+            .into_iter()
+            .all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
+    }
+
+    #[tokio::test]
+    async fn some_packets_resent() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let pkts = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 9 + 512],
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.segments.len(), 10);
+        assert!(mgr.resend().is_none());
+
+        tokio::time::sleep(SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+
+        // verify that all of the packets are sent the second time
+        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
+
+        // ack some of the packets and wait for another timeout
+        mgr.register_ack(20, 3, &[(2, 2), (2, 0)]);
+        tokio::time::sleep(2 * SSU2_INITIAL_RTO + Duration::from_millis(10)).await;
+
+        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        assert_eq!(pkt_nums.len(), 4);
+        assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
+
+        mgr.register_ack(24, 3, &[]);
         assert!(mgr.segments.is_empty());
     }
 }

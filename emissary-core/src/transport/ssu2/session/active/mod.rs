@@ -27,7 +27,10 @@ use crate::{
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
-            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
+            message::{
+                data::{DataMessageBuilder, MessageKind},
+                Block, HeaderKind, HeaderReader,
+            },
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -54,6 +57,7 @@ use core::{
     pin::Pin,
     sync::atomic::{AtomicU32, Ordering},
     task::{Context, Poll},
+    time::Duration,
 };
 
 mod ack;
@@ -66,6 +70,9 @@ const LOG_TARGET: &str = "emissary::ssu2::session::active";
 
 /// Command channel size.
 const CMD_CHANNEL_SIZE: usize = 512;
+
+/// SSU2 resend timeout
+const SSU2_RESEND_TIMEOUT: Duration = Duration::from_millis(40);
 
 /// SSU2 active session context.
 pub struct Ssu2SessionContext {
@@ -135,6 +142,9 @@ pub struct Ssu2Session<R: Runtime> {
     /// Remote ACK manager.
     remote_ack: RemoteAckManager<R>,
 
+    /// Resend timer.
+    resend_timer: Option<R::Timer>,
+
     /// ID of the remote router.
     router_id: RouterId,
 
@@ -178,6 +188,7 @@ impl<R: Runtime> Ssu2Session<R> {
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
             remote_ack: RemoteAckManager::<R>::new(Arc::clone(&pkt_num)),
+            resend_timer: None,
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
@@ -382,7 +393,46 @@ impl<R: Runtime> Ssu2Session<R> {
                     "failed to send packet",
                 );
             }
+
+            if self.resend_timer.is_none() {
+                self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+            }
         }
+    }
+
+    fn resend(&mut self) -> usize {
+        let Some(packets_to_resend) = self.transmission.resend() else {
+            return 0;
+        };
+
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack.ack_info();
+
+        packets_to_resend.fold(0usize, |mut pkt_count, (pkt_num, message_kind)| {
+            let message = DataMessageBuilder::default()
+                .with_dst_id(self.dst_id)
+                .with_key_context(self.intro_key, &self.send_key_ctx)
+                .with_message(pkt_num, message_kind)
+                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                .build::<R>();
+
+            if let Err(error) = self.pkt_tx.try_send(Packet {
+                pkt: message.to_vec(),
+                address: self.address,
+            }) {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?error,
+                    "failed to send packet",
+                );
+            }
+
+            pkt_count + 1
+        })
     }
 
     /// Run the event loop of an active SSU2 session.
@@ -446,6 +496,40 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                 },
             }
         }
+
+        loop {
+            match self.cmd_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
+                Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
+                    self.send_message(message),
+                Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
+            }
+        }
+
+        loop {
+            match &mut self.resend_timer {
+                None => break,
+                Some(timer) => match timer.poll_unpin(cx) {
+                    Poll::Pending => break,
+                    Poll::Ready(_) => {
+                        let num_resent = self.resend();
+
+                        if num_resent > 0 {
+                            tracing::trace!(
+                                target: LOG_TARGET,
+                                router_id = %self.router_id,
+                                ?num_resent,
+                                "packet resent",
+                            );
+                        }
+
+                        self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+                    }
+                },
+            }
+        }
+
         if let Poll::Ready(AckInfo {
             highest_seen,
             num_acks,
@@ -481,16 +565,8 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                     "failed to send explicit ack packet",
                 );
             }
-        }
 
-        loop {
-            match self.cmd_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
-                Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
-                    self.send_message(message),
-                Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
-            }
+            // TODO: start resend timer for ack?
         }
 
         // poll duplicate message filter and fragment handler
