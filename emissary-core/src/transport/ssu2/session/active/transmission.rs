@@ -26,6 +26,7 @@ use crate::{
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 use core::{
@@ -267,6 +268,14 @@ impl<R: Runtime> TransmissionManager<R> {
         self.segments.len() < self.window_size
     }
 
+    /// Get reference to measured Round-trip time (RTT).
+    pub fn round_trip_time(&self) -> Duration {
+        match &self.rto {
+            RetransmissionTimeout::Unsampled => INITIAL_RTO,
+            RetransmissionTimeout::Sampled { rtt, .. } => *rtt,
+        }
+    }
+
     /// Split `message` into segments.
     ///
     /// The created segments are stored into [`TransmissionManager`] which keeps track of which of
@@ -371,7 +380,7 @@ impl<R: Runtime> TransmissionManager<R> {
     /// Start from `ack_through` and mark it and `num_acks` many packet that follow as received and
     /// if there are any ranges specified, go through them and marked packets as received dropped.
     /// Packets have not been explicitly NACKed are also considered dropped.
-    pub fn register_ack(&mut self, ack_through: u32, mut num_acks: u8, ranges: &[(u8, u8)]) {
+    pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
         tracing::trace!(
             target: LOG_TARGET,
             ?ack_through,
@@ -403,7 +412,7 @@ impl<R: Runtime> TransmissionManager<R> {
         for (nack, ack) in ranges {
             next_pkt = next_pkt.saturating_sub(*nack as u32);
 
-            for i in 1..=*ack {
+            for _ in 1..=*ack {
                 next_pkt = next_pkt.saturating_sub(1);
 
                 // TODO: if-let chain
@@ -537,8 +546,6 @@ impl<R: Runtime> TransmissionManager<R> {
 
 #[cfg(test)]
 mod tests {
-    use futures::StreamExt;
-
     use super::*;
     use crate::runtime::mock::MockRuntime;
 

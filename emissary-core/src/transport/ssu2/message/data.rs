@@ -29,7 +29,7 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use rand_core::RngCore;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 
 /// Minimum size for an ACK block.
 const ACK_BLOCK_MIN_SIZE: usize = 8usize;

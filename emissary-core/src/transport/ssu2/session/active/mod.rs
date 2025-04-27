@@ -16,10 +16,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#![allow(unused)]
-
 use crate::{
-    crypto::chachapoly::{ChaCha, ChaChaPoly},
+    crypto::chachapoly::ChaChaPoly,
     error::Ssu2Error,
     i2np::Message,
     primitives::RouterId,
@@ -27,10 +25,7 @@ use crate::{
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
-            message::{
-                data::{DataMessageBuilder, MessageKind},
-                Block, HeaderKind, HeaderReader,
-            },
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -47,11 +42,12 @@ use crate::{
     },
 };
 
-use futures::{FutureExt, StreamExt};
+use futures::FutureExt;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{collections::VecDeque, sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
+    cmp::min,
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -75,6 +71,12 @@ const CMD_CHANNEL_SIZE: usize = 512;
 
 /// SSU2 resend timeout
 const SSU2_RESEND_TIMEOUT: Duration = Duration::from_millis(40);
+
+/// Maximum timeout for immediate ACK response.
+const MAX_IMMEDIATE_ACK_TIMEOUT: Duration = Duration::from_millis(5);
+
+/// Maximum timeout for ACK.
+const MAX_ACK_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// SSU2 active session context.
 pub struct Ssu2SessionContext {
@@ -104,6 +106,9 @@ pub struct Ssu2SessionContext {
 
 /// Active SSU2 session.
 pub struct Ssu2Session<R: Runtime> {
+    /// Immediate ACK timer.
+    ack_timer: Option<R::Timer>,
+
     /// Socket address of the remote router.
     address: SocketAddr,
 
@@ -142,7 +147,7 @@ pub struct Ssu2Session<R: Runtime> {
     recv_key_ctx: KeyContext,
 
     /// Remote ACK manager.
-    remote_ack: RemoteAckManager<R>,
+    remote_ack: RemoteAckManager,
 
     /// Resend timer.
     resend_timer: Option<R::Timer>,
@@ -178,6 +183,7 @@ impl<R: Runtime> Ssu2Session<R> {
         );
 
         Self {
+            ack_timer: None,
             address: context.address,
             cmd_rx,
             cmd_tx,
@@ -189,7 +195,7 @@ impl<R: Runtime> Ssu2Session<R> {
             pkt_rx: context.pkt_rx,
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
-            remote_ack: RemoteAckManager::<R>::new(Arc::clone(&pkt_num)),
+            remote_ack: RemoteAckManager::new(),
             resend_timer: None,
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
@@ -280,7 +286,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     reason,
                     num_valid_pkts,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
 
                     tracing::debug!(
                         target: LOG_TARGET,
@@ -296,7 +302,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 }
                 Block::I2Np { message } => {
                     self.handle_message(message);
-                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_pkt(pkt_num);
                 }
                 Block::FirstFragment {
                     message_type,
@@ -304,7 +310,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     expiration,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_pkt(pkt_num);
 
                     if let Some(message) = self.fragment_handler.first_fragment(
                         message_type,
@@ -321,7 +327,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment_num,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_pkt(pkt_num);
 
                     if let Some(message) = self.fragment_handler.follow_on_fragment(
                         message_id,
@@ -337,7 +343,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     num_acks,
                     ranges,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
                     self.remote_ack.register_ack(ack_through, num_acks, &ranges);
                     self.transmission.register_ack(ack_through, num_acks, &ranges);
 
@@ -381,7 +387,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     }
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
                 }
                 block => {
                     tracing::debug!(
@@ -390,9 +396,21 @@ impl<R: Runtime> Ssu2Session<R> {
                         ?block,
                         "ignoring block",
                     );
-                    self.remote_ack.register_pkt(pkt_num, immediate_ack);
+                    self.remote_ack.register_pkt(pkt_num);
                 }
             }
+        }
+
+        if immediate_ack {
+            self.ack_timer = Some(R::timer(min(
+                self.transmission.round_trip_time() / 16,
+                MAX_IMMEDIATE_ACK_TIMEOUT,
+            )));
+        } else if self.ack_timer.is_none() {
+            self.ack_timer = Some(R::timer(min(
+                self.transmission.round_trip_time() / 6,
+                MAX_ACK_TIMEOUT,
+            )));
         }
 
         Ok(())
@@ -464,7 +482,7 @@ impl<R: Runtime> Ssu2Session<R> {
 
         packets_to_resend
             .into_iter()
-            .fold(0usize, |mut pkt_count, (pkt_num, message_kind)| {
+            .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
                 let message = DataMessageBuilder::default()
                     .with_dst_id(self.dst_id)
                     .with_key_context(self.intro_key, &self.send_key_ctx)
@@ -584,43 +602,44 @@ impl<R: Runtime> Future for Ssu2Session<R> {
             }
         }
 
-        if let Poll::Ready(AckInfo {
-            highest_seen,
-            num_acks,
-            ranges,
-        }) = self.remote_ack.poll_unpin(cx)
-        {
-            tracing::trace!(
-                target: LOG_TARGET,
-                router_id = %self.router_id,
-                ?highest_seen,
-                ?num_acks,
-                ?ranges,
-                "send explicit ack",
-            );
+        if let Some(timer) = &mut self.ack_timer {
+            if timer.poll_unpin(cx).is_ready() {
+                let AckInfo {
+                    highest_seen,
+                    num_acks,
+                    ranges,
+                } = self.remote_ack.ack_info();
 
-            let message = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
-                .with_ack(highest_seen, num_acks, ranges)
-                .build::<R>();
-
-            // TODO: report `pkt_num` to `RemoteAckManager`?
-
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: message.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
+                tracing::trace!(
                     target: LOG_TARGET,
                     router_id = %self.router_id,
-                    ?error,
-                    "failed to send explicit ack packet",
+                    ?highest_seen,
+                    ?num_acks,
+                    ?ranges,
+                    "send explicit ack",
                 );
-            }
 
-            // TODO: start resend timer for ack?
+                let message = DataMessageBuilder::default()
+                    .with_dst_id(self.dst_id)
+                    .with_key_context(self.intro_key, &self.send_key_ctx)
+                    .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
+                    .with_ack(highest_seen, num_acks, ranges)
+                    .build::<R>();
+
+                // TODO: report `pkt_num` to `RemoteAckManager`?
+
+                if let Err(error) = self.pkt_tx.try_send(Packet {
+                    pkt: message.to_vec(),
+                    address: self.address,
+                }) {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        ?error,
+                        "failed to send explicit ack packet",
+                    );
+                }
+            }
         }
 
         // poll duplicate message filter and fragment handler
@@ -676,7 +695,7 @@ mod tests {
             tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
 
             match cmd_rx.recv().await.unwrap() {
-                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { router, tx } => tx,
+                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } => tx,
                 _ => panic!("invalid event"),
             }
         };
@@ -714,10 +733,7 @@ mod tests {
             let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
 
             match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
-                HeaderKind::Data {
-                    immediate_ack,
-                    pkt_num,
-                } => {}
+                HeaderKind::Data { .. } => {}
                 _ => panic!("invalid packet"),
             }
         }

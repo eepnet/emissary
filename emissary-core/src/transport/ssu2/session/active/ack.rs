@@ -16,19 +16,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::runtime::Runtime;
-
-use futures::FutureExt;
-
-use alloc::{collections::BTreeSet, sync::Arc, vec, vec::Vec};
+use alloc::{collections::BTreeSet, vec, vec::Vec};
 use core::{
     cmp::{min, Ordering, Reverse},
-    future::Future,
     ops::Deref,
-    pin::Pin,
-    sync::atomic::AtomicU32,
-    task::{Context, Poll},
-    time::Duration,
 };
 
 /// Packet type.
@@ -90,45 +81,30 @@ pub struct AckInfo {
 }
 
 /// Remote ACK manager.
-pub struct RemoteAckManager<R: Runtime> {
-    /// ACK timer.
-    ///
-    /// `None` if there are no pending ACKs.
-    ack_timer: Option<R::Timer>,
-
+pub struct RemoteAckManager {
     /// Highest seen packet number.
     highest_seen: u32,
 
     /// Packets, either received or missing.
     packets: BTreeSet<Reverse<Packet>>,
-
-    /// Next packet number.
-    pkt_num: Arc<AtomicU32>,
 }
 
-impl<R: Runtime> RemoteAckManager<R> {
+impl RemoteAckManager {
     /// Create new [`RemoteAckManager`].
-    pub fn new(pkt_num: Arc<AtomicU32>) -> Self {
+    pub fn new() -> Self {
         Self {
-            ack_timer: None,
             highest_seen: 0u32,
             packets: BTreeSet::new(),
-            pkt_num,
         }
     }
 
     /// Register ACK-eliciting packet.
-    pub fn register_pkt(&mut self, pkt_num: u32, immediate_ack: bool) {
+    pub fn register_pkt(&mut self, pkt_num: u32) {
         // next expected packet number
         if self.highest_seen + 1 == pkt_num {
             self.packets.insert(Reverse(Packet::Received(self.highest_seen)));
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
             self.highest_seen = pkt_num;
-
-            // TODO: move this to `Ssu2Session`
-            if immediate_ack && self.ack_timer.is_none() {
-                self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
-            }
 
             return;
         }
@@ -151,16 +127,11 @@ impl<R: Runtime> RemoteAckManager<R> {
             self.packets.remove(&Reverse(Packet::Missing(pkt_num)));
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
         }
-
-        // TODO: move this to `Ssu2Session`
-        if immediate_ack && self.ack_timer.is_none() {
-            self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
-        }
     }
 
     /// Register non-ACK-eliciting packet.
-    pub fn register_non_ack_eliciting_pkt(&mut self, pkt_num: u32, immediate_ack: bool) {
-        self.register_pkt(pkt_num, immediate_ack);
+    pub fn register_non_ack_eliciting_pkt(&mut self, pkt_num: u32) {
+        self.register_pkt(pkt_num);
     }
 
     /// Register ACK.
@@ -171,7 +142,7 @@ impl<R: Runtime> RemoteAckManager<R> {
     ///
     /// [`RemoteAckManager`] checks if any of the received ACKs are related to sent ACK packets,
     /// allowing it to stop tracking those packets.
-    pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
+    pub fn register_ack(&mut self, _ack_through: u32, _num_acks: u8, _ranges: &[(u8, u8)]) {
         // TODO: print something if this acked our ack
     }
 
@@ -254,32 +225,14 @@ impl<R: Runtime> RemoteAckManager<R> {
     }
 }
 
-impl<R: Runtime> Future for RemoteAckManager<R> {
-    type Output = AckInfo;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let Some(timer) = self.ack_timer.as_mut() else {
-            return Poll::Pending;
-        };
-
-        if !timer.poll_unpin(cx).is_ready() {
-            return Poll::Pending;
-        }
-
-        self.ack_timer = None;
-        Poll::Ready(self.ack_info())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::mock::MockRuntime;
 
     #[tokio::test]
     async fn ack_one_packet() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
-        manager.register_pkt(1, true);
+        let mut manager = RemoteAckManager::new();
+        manager.register_pkt(1);
 
         assert_eq!(
             manager.ack_info(),
@@ -293,10 +246,10 @@ mod tests {
 
     #[tokio::test]
     async fn ack_multiple_packets() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
         for i in 1..=3 {
-            manager.register_pkt(i, true);
+            manager.register_pkt(i);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -313,10 +266,10 @@ mod tests {
 
     #[tokio::test]
     async fn too_many_unacked_packets() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
         for i in 1..=300 {
-            manager.register_pkt(i, true);
+            manager.register_pkt(i);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -332,10 +285,10 @@ mod tests {
 
     #[tokio::test]
     async fn max_acks() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
         for i in 1..=256 {
-            manager.register_pkt(i, true);
+            manager.register_pkt(i);
             assert_eq!(manager.highest_seen, i);
         }
 
@@ -351,9 +304,9 @@ mod tests {
 
     #[tokio::test]
     async fn next_pkt_missing() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(300, true);
+        manager.register_pkt(300);
         assert_eq!(manager.highest_seen, 300);
         assert_eq!(
             manager
@@ -374,7 +327,7 @@ mod tests {
 
         // pkt 299 missing, no acks below 300
         for i in 1..=298 {
-            manager.register_pkt(i, true);
+            manager.register_pkt(i);
             assert_eq!(manager.highest_seen, 300);
             assert_eq!(
                 manager
@@ -406,15 +359,15 @@ mod tests {
 
     #[tokio::test]
     async fn packet_dropped() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(10, true);
-        manager.register_pkt(9, true);
-        manager.register_pkt(8, true);
-        manager.register_pkt(6, true);
-        manager.register_pkt(5, true);
-        manager.register_pkt(2, true);
-        manager.register_pkt(1, true);
+        manager.register_pkt(10);
+        manager.register_pkt(9);
+        manager.register_pkt(8);
+        manager.register_pkt(6);
+        manager.register_pkt(5);
+        manager.register_pkt(2);
+        manager.register_pkt(1);
 
         assert_eq!(
             manager.ack_info(),
@@ -428,13 +381,13 @@ mod tests {
 
     #[tokio::test]
     async fn packet_dropped_2() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(10, true);
-        manager.register_pkt(8, true);
-        manager.register_pkt(6, true);
-        manager.register_pkt(4, true);
-        manager.register_pkt(2, true);
+        manager.register_pkt(10);
+        manager.register_pkt(8);
+        manager.register_pkt(6);
+        manager.register_pkt(4);
+        manager.register_pkt(2);
 
         assert_eq!(
             manager.ack_info(),
@@ -448,10 +401,10 @@ mod tests {
 
     #[tokio::test]
     async fn packet_dropped_3() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
         for i in 2..=10 {
-            manager.register_pkt(i, true);
+            manager.register_pkt(i);
         }
 
         assert_eq!(
@@ -466,9 +419,9 @@ mod tests {
 
     #[tokio::test]
     async fn packet_dropped_4() {
-        let mut manager = RemoteAckManager::<MockRuntime>::new(Default::default());
+        let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(10, true);
+        manager.register_pkt(10);
 
         assert_eq!(
             manager.ack_info(),
