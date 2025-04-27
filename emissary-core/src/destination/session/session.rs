@@ -230,13 +230,14 @@ impl<R: Runtime> PendingSession<R> {
         outbound: OutboundSession<R>,
         garlic_tags: Arc<RwLock<HashMap<u64, DestinationId>>>,
         key_context: KeyContext<R>,
+        ratchet_threshold: u16,
     ) -> Self {
         // generate and store tag set entries for NSR
         let nsr_tag_set_entries = {
             let mut inner = garlic_tags.write();
 
             outbound
-                .generate_new_session_reply_tags()
+                .generate_new_session_reply_tags(ratchet_threshold)
                 .map(|tag_set| {
                     inner.insert(tag_set.tag, remote.clone());
                     (tag_set.tag, (0usize, tag_set))
@@ -271,6 +272,7 @@ impl<R: Runtime> PendingSession<R> {
         &mut self,
         lease_set: Bytes,
         message: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<PendingSessionEvent<R>, SessionError> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::InboundActive {
@@ -303,7 +305,8 @@ impl<R: Runtime> PendingSession<R> {
                     .build();
 
                 // create `NewSessionReply` and garlic receive tags
-                let (message, entries) = inbound.create_new_session_reply(message)?;
+                let (message, entries) =
+                    inbound.create_new_session_reply(message, ratchet_threshold)?;
 
                 // store receive garlic tags both in the global storage common for all destinations
                 // so `SessionManager` can dispatch received messages to the correct `Session` and
@@ -352,10 +355,12 @@ impl<R: Runtime> PendingSession<R> {
                 {
                     let mut inner = garlic_tags.write();
 
-                    session.generate_new_session_reply_tags().for_each(|tag_set| {
-                        inner.insert(tag_set.tag, self.remote.clone());
-                        nsr_tag_set_entries.insert(tag_set.tag, (outbound.len(), tag_set));
-                    });
+                    session.generate_new_session_reply_tags(ratchet_threshold).for_each(
+                        |tag_set| {
+                            inner.insert(tag_set.tag, self.remote.clone());
+                            nsr_tag_set_entries.insert(tag_set.tag, (outbound.len(), tag_set));
+                        },
+                    );
                 }
                 outbound.insert(outbound.len(), session);
 
@@ -464,6 +469,7 @@ impl<R: Runtime> PendingSession<R> {
         &mut self,
         garlic_tag: u64,
         message: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<PendingSessionEvent<R>, SessionError> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::InboundActive {
@@ -544,7 +550,7 @@ impl<R: Runtime> PendingSession<R> {
                 let (message, send_tag_set, mut recv_tag_set) = outbound
                     .get_mut(&session_idx)
                     .expect("to exist")
-                    .handle_new_session_reply(tag_set_entry, message)?;
+                    .handle_new_session_reply(tag_set_entry, message, ratchet_threshold)?;
 
                 // generate tag set entries for inbound messages and store remote's id in the global
                 // storage under the generated garlic tags and store the tag set entries themselves
@@ -614,7 +620,7 @@ impl<R: Runtime> PendingSession<R> {
                 let (message, _send_tag_set, mut _recv_tag_set) = outbound
                     .get_mut(&session_idx)
                     .expect("to exist")
-                    .handle_new_session_reply(tag_set_entry, message)?;
+                    .handle_new_session_reply(tag_set_entry, message, ratchet_threshold)?;
 
                 self.state = PendingSessionState::AwaitingEsTransmit {
                     outbound,
@@ -695,6 +701,7 @@ impl<R: Runtime> NsrContext<R> {
         &mut self,
         garlic_tag: u64,
         message: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<(u16, u16, Vec<u8>), SessionError> {
         let NsrContext::Active {
             tag_set_entries,
@@ -719,7 +726,7 @@ impl<R: Runtime> NsrContext<R> {
         let tag_index = tag_set_entry.tag_index;
 
         session
-            .handle_new_session_reply(tag_set_entry, message)
+            .handle_new_session_reply(tag_set_entry, message, ratchet_threshold)
             .map(|(message, _, _)| (tag_set_id, tag_index, message))
     }
 
@@ -841,6 +848,7 @@ impl<R: Runtime> Session<R> {
         &mut self,
         garlic_tag: u64,
         message: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<(u16, u16, Vec<u8>), SessionError> {
         tracing::trace!(
             target: LOG_TARGET,
@@ -865,19 +873,21 @@ impl<R: Runtime> Session<R> {
             tag_set_id,
         }) = self.tag_set_entries.remove(&garlic_tag)
         else {
-            return self.nsr_context.decrypt(garlic_tag, message).map_err(|error| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    local = %self.local,
-                    remote = %self.remote,
-                    ?garlic_tag,
-                    ?error,
-                    "`TagSetEntry` doesn't exist and failed to handle as NSR",
-                );
+            return self.nsr_context.decrypt(garlic_tag, message, ratchet_threshold).map_err(
+                |error| {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        local = %self.local,
+                        remote = %self.remote,
+                        ?garlic_tag,
+                        ?error,
+                        "`TagSetEntry` doesn't exist and failed to handle as NSR",
+                    );
 
-                debug_assert!(false);
-                SessionError::InvalidState
-            });
+                    debug_assert!(false);
+                    SessionError::InvalidState
+                },
+            );
         };
 
         // generate new tag for the used tag if there are tags left
