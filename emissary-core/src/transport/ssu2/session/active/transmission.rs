@@ -278,7 +278,7 @@ impl<R: Runtime> TransmissionManager<R> {
     /// If `message` fits inside an MTU, the iterator yields one `MessageKind::Unfragmented` and if
     /// `message` doesn't find inside an MTU, the iterator yields one `MessageKind::FirstFragment`
     /// and one or more `MessageKind::FollowOnFragment`s.
-    pub fn segment(&mut self, message: Message) -> impl Iterator<Item = (u32, MessageKind<'_>)> {
+    pub fn segment(&mut self, message: Message) -> Option<Vec<(u32, MessageKind<'_>)>> {
         if message.serialized_len_short() + SSU2_OVERHEAD <= 1200 {
             // no window size left to send more packets
             if !self.has_capacity() {
@@ -286,7 +286,7 @@ impl<R: Runtime> TransmissionManager<R> {
                     message: message.serialize_short(),
                 });
 
-                return vec![].into_iter();
+                return None;
             }
             let pkt_num = self.next_pkt_num();
 
@@ -302,11 +302,10 @@ impl<R: Runtime> TransmissionManager<R> {
             );
 
             // segment must exist since it was just inserted into `segments`
-            return vec![(
+            return Some(vec![(
                 pkt_num,
                 (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
-            )]
-            .into_iter();
+            )]);
         }
 
         let fragments = message.payload.chunks(1200).collect::<Vec<_>>();
@@ -360,7 +359,7 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        packets.into_iter()
+        Some(packets)
     }
 
     /// Register ACK.
@@ -425,7 +424,7 @@ impl<R: Runtime> TransmissionManager<R> {
     }
 
     /// Get pending packets, if any.
-    pub fn pending_packets(&mut self) -> Option<impl Iterator<Item = (u32, MessageKind<'_>)>> {
+    pub fn pending_packets(&mut self) -> Option<Vec<(u32, MessageKind<'_>)>> {
         if self.pending.is_empty() {
             return None;
         }
@@ -460,13 +459,13 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        Some(packets.into_iter())
+        Some(packets)
     }
 
     /// Go through packets and check if any of them need to be resent.
     ///
     /// Returns an iterator of `(packet number, `MessageKind`)` tuples.
-    pub fn resend(&mut self) -> Option<impl Iterator<Item = (u32, MessageKind<'_>)>> {
+    pub fn resend(&mut self) -> Option<Vec<(u32, MessageKind<'_>)>> {
         // TODO: `take_while()` + reverse order
         let expired = self
             .segments
@@ -532,7 +531,7 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        Some(packets.into_iter())
+        Some(packets)
     }
 }
 
@@ -554,7 +553,7 @@ mod tests {
                 payload: vec![1, 2, 3],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 1);
         assert_eq!(mgr.segments.len(), 1);
@@ -575,7 +574,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 3 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 4);
         assert_eq!(mgr.segments.len(), 4);
@@ -597,7 +596,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 3 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 4);
         assert_eq!(mgr.segments.len(), 4);
@@ -619,7 +618,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 3 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 4);
         assert_eq!(mgr.segments.len(), 4);
@@ -642,7 +641,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 10 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 11);
         assert_eq!(mgr.segments.len(), 11);
@@ -665,7 +664,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -691,7 +690,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -713,7 +712,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -736,7 +735,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -759,7 +758,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -780,7 +779,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -801,7 +800,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -823,7 +822,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -844,7 +843,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -865,7 +864,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -886,7 +885,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -904,7 +903,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -913,7 +912,12 @@ mod tests {
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
-        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
         assert!(pkt_nums
             .into_iter()
             .all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
@@ -930,7 +934,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -939,14 +943,24 @@ mod tests {
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
-        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
 
         // ack some of the packets and wait for another timeout
         mgr.register_ack(20, 3, &[(2, 2), (2, 0)]);
         tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
-        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
         assert_eq!(pkt_nums.len(), 4);
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
 
@@ -965,7 +979,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 9 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
@@ -993,7 +1007,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 15 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
@@ -1008,7 +1022,12 @@ mod tests {
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
-        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
         assert_eq!(pkt_nums.len(), 8);
 
@@ -1018,7 +1037,12 @@ mod tests {
         // more packet loss, verify that window size is clamped to minimum
         tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
-        let pkt_nums = mgr.resend().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
         assert_eq!(pkt_nums.len(), 8);
         assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
@@ -1035,7 +1059,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 31 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
@@ -1049,8 +1073,12 @@ mod tests {
         assert!(mgr.has_capacity());
 
         // get pending packets after acking previous packets
-        let pkt_nums =
-            mgr.pending_packets().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .pending_packets()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
 
         assert_eq!(pkt_nums.len(), 16);
         assert_eq!(mgr.segments.len(), 16);
@@ -1069,7 +1097,7 @@ mod tests {
                 payload: vec![0u8; 1200 * 39 + 512],
                 ..Default::default()
             })
-            .collect::<Vec<_>>();
+            .unwrap();
 
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
@@ -1083,8 +1111,12 @@ mod tests {
         assert!(mgr.has_capacity());
 
         // get pending packets after acking previous packets
-        let pkt_nums =
-            mgr.pending_packets().unwrap().map(|(pkt_num, _)| pkt_num).collect::<Vec<_>>();
+        let pkt_nums = mgr
+            .pending_packets()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
 
         assert_eq!(pkt_nums.len(), 12);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE + 6);

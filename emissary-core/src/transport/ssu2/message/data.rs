@@ -91,6 +91,9 @@ pub struct DataMessageBuilder<'a> {
     /// Packet number and [`MessageKind`].
     message: Option<(u32, MessageKind<'a>)>,
 
+    /// Should the immediate ACK bit be set.
+    immediate_ack: bool,
+
     /// Packet number.
     ///
     /// Set only if `message` is `None`.
@@ -110,6 +113,12 @@ impl<'a> DataMessageBuilder<'a> {
     /// Specify key context.
     pub fn with_key_context(mut self, intro_key: [u8; 32], key_ctx: &'a KeyContext) -> Self {
         self.key_context = Some((intro_key, key_ctx));
+        self
+    }
+
+    /// Set immediate ACK in the header.
+    pub fn with_immediate_ack(mut self) -> Self {
+        self.immediate_ack = true;
         self
     }
 
@@ -161,7 +170,11 @@ impl<'a> DataMessageBuilder<'a> {
             out.put_u32(pkt_num);
 
             out.put_u8(*MessageType::Data);
-            out.put_u8(0u8); // immediate ack
+            if self.immediate_ack {
+                out.put_u8(1u8);
+            } else {
+                out.put_u8(0u8);
+            }
             out.put_u16(0u16); // more flags
 
             out
@@ -281,5 +294,60 @@ impl<'a> DataMessageBuilder<'a> {
 
         debug_assert!(out.len() < 1500 - 68);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::runtime::mock::MockRuntime;
+
+    use super::*;
+
+    #[test]
+    fn immediate_ack() {
+        let mut pkt = DataMessageBuilder::default()
+            .with_dst_id(1337u64)
+            .with_pkt_num(0xdeadbeef)
+            .with_key_context(
+                [1u8; 32],
+                &KeyContext {
+                    k_data: [2u8; 32],
+                    k_header_2: [3u8; 32],
+                },
+            )
+            .with_ack(16, 5, None)
+            .with_immediate_ack()
+            .build::<MockRuntime>()
+            .to_vec();
+
+        match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([3u8; 32]).unwrap() {
+            HeaderKind::Data {
+                immediate_ack,
+                pkt_num,
+            } => {
+                assert_eq!(pkt_num, 0xdeadbeef);
+                assert!(immediate_ack);
+            }
+            _ => panic!("invalid type"),
+        }
+
+        let mut pkt = DataMessageBuilder::default()
+            .with_dst_id(1337u64)
+            .with_pkt_num(1)
+            .with_key_context(
+                [1u8; 32],
+                &KeyContext {
+                    k_data: [2u8; 32],
+                    k_header_2: [3u8; 32],
+                },
+            )
+            .with_ack(16, 5, None)
+            .build::<MockRuntime>()
+            .to_vec();
+
+        match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([3u8; 32]).unwrap() {
+            HeaderKind::Data { immediate_ack, .. } => assert!(!immediate_ack),
+            _ => panic!("invalid type"),
+        }
     }
 }

@@ -347,14 +347,20 @@ impl<R: Runtime> Ssu2Session<R> {
                             num_acks,
                             ranges,
                         } = self.remote_ack.ack_info();
+                        let num_pkts = packets.len();
 
-                        for (pkt_num, message_kind) in packets {
-                            let message = DataMessageBuilder::default()
-                                .with_dst_id(self.dst_id)
-                                .with_key_context(self.intro_key, &self.send_key_ctx)
-                                .with_message(pkt_num, message_kind)
-                                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                                .build::<R>();
+                        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
+                            // include immediate ack in the last fragment
+                            let message = if num_pkts > 1 && i == num_pkts - 1 {
+                                DataMessageBuilder::default().with_immediate_ack()
+                            } else {
+                                DataMessageBuilder::default()
+                            }
+                            .with_dst_id(self.dst_id)
+                            .with_key_context(self.intro_key, &self.send_key_ctx)
+                            .with_message(pkt_num, message_kind)
+                            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                            .build::<R>();
 
                             if let Err(error) = self.pkt_tx.try_send(Packet {
                                 pkt: message.to_vec(),
@@ -409,13 +415,23 @@ impl<R: Runtime> Ssu2Session<R> {
             ranges,
         } = self.remote_ack.ack_info();
 
-        for (pkt_num, message_kind) in self.transmission.segment(message) {
-            let message = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_message(pkt_num, message_kind)
-                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                .build::<R>();
+        let Some(packets) = self.transmission.segment(message) else {
+            return;
+        };
+        let num_pkts = packets.len();
+
+        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
+            // include immediate ack in the last fragment
+            let message = if num_pkts > 1 && i == num_pkts - 1 {
+                DataMessageBuilder::default().with_immediate_ack()
+            } else {
+                DataMessageBuilder::default()
+            }
+            .with_dst_id(self.dst_id)
+            .with_key_context(self.intro_key, &self.send_key_ctx)
+            .with_message(pkt_num, message_kind)
+            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+            .build::<R>();
 
             if let Err(error) = self.pkt_tx.try_send(Packet {
                 pkt: message.to_vec(),
@@ -446,28 +462,31 @@ impl<R: Runtime> Ssu2Session<R> {
             ranges,
         } = self.remote_ack.ack_info();
 
-        packets_to_resend.fold(0usize, |mut pkt_count, (pkt_num, message_kind)| {
-            let message = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_message(pkt_num, message_kind)
-                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                .build::<R>();
+        packets_to_resend
+            .into_iter()
+            .fold(0usize, |mut pkt_count, (pkt_num, message_kind)| {
+                let message = DataMessageBuilder::default()
+                    .with_dst_id(self.dst_id)
+                    .with_key_context(self.intro_key, &self.send_key_ctx)
+                    .with_message(pkt_num, message_kind)
+                    .with_immediate_ack()
+                    .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                    .build::<R>();
 
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: message.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    ?error,
-                    "failed to send packet",
-                );
-            }
+                if let Err(error) = self.pkt_tx.try_send(Packet {
+                    pkt: message.to_vec(),
+                    address: self.address,
+                }) {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        ?error,
+                        "failed to send packet",
+                    );
+                }
 
-            pkt_count + 1
-        })
+                pkt_count + 1
+            })
     }
 
     /// Run the event loop of an active SSU2 session.

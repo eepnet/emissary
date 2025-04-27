@@ -125,6 +125,7 @@ impl<R: Runtime> RemoteAckManager<R> {
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
             self.highest_seen = pkt_num;
 
+            // TODO: move this to `Ssu2Session`
             if immediate_ack && self.ack_timer.is_none() {
                 self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
             }
@@ -151,6 +152,7 @@ impl<R: Runtime> RemoteAckManager<R> {
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
         }
 
+        // TODO: move this to `Ssu2Session`
         if immediate_ack && self.ack_timer.is_none() {
             self.ack_timer = Some(R::timer(Duration::from_millis(3))); // TODO: correct timeout
         }
