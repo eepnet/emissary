@@ -293,6 +293,7 @@ impl<R: Runtime> Ssu2Socket<R> {
     pub fn connect(&mut self, router_info: RouterInfo) {
         // must succeed since `TransportManager` has ensured `router_info` contains
         // a valid and reachable ssu2 router address
+        let router_id = router_info.identity.id();
         let intro_key = router_info.ssu2_intro_key().expect("to succeed");
         let static_key = router_info.ssu2_static_key().expect("to succeed");
         let address = router_info
@@ -302,21 +303,19 @@ impl<R: Runtime> Ssu2Socket<R> {
             .socket_address
             .expect("to exist");
 
+        let router_info = self.router_ctx.router_info();
         let state = Sha256::new().update(&self.outbound_state).update(&static_key).finalize();
         let src_id = R::rng().next_u64();
         let dst_id = R::rng().next_u64();
 
         tracing::debug!(
             target: LOG_TARGET,
-            router_id = %router_info.identity.id(),
+            %router_id,
             ?src_id,
             ?dst_id,
             ?address,
             "establish outbound session",
         );
-
-        let router_info = self.router_ctx.router_info();
-        let router_id = self.router_ctx.router_id().clone();
 
         let (tx, rx) = channel(CHANNEL_SIZE);
         self.sessions.insert(src_id, tx);
