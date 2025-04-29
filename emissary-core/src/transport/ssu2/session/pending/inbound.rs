@@ -222,6 +222,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .with_dst_id(src_id)
             .with_token(token)
             .with_address(address)
+            .with_net_id(net_id)
             .build::<R>()
             .to_vec();
 
@@ -307,6 +308,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         .with_dst_id(src_id)
                         .with_token(token)
                         .with_address(self.address)
+                        .with_net_id(self.net_id)
                         .build::<R>()
                         .to_vec();
 
@@ -414,6 +416,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .with_address(self.address)
             .with_dst_id(self.src_id)
             .with_src_id(self.dst_id)
+            .with_net_id(self.net_id)
             .with_ephemeral_key(pk.clone())
             .build::<R>();
 

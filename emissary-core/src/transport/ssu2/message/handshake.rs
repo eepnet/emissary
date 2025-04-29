@@ -31,11 +31,32 @@ use rand_core::RngCore;
 use alloc::{vec, vec::Vec};
 use core::net::SocketAddr;
 
-#[derive(Default)]
+/// Builder for `TokenRequest`.
 pub struct TokenRequestBuilder {
+    /// Destination connection ID.
     dst_id: Option<u64>,
+
+    /// Remote router's intro key.
     intro_key: Option<[u8; 32]>,
+
+    /// Network ID.
+    ///
+    /// Defaults to 2.
+    net_id: u8,
+
+    /// Source connection ID.
     src_id: Option<u64>,
+}
+
+impl Default for TokenRequestBuilder {
+    fn default() -> Self {
+        Self {
+            dst_id: None,
+            intro_key: None,
+            src_id: None,
+            net_id: 2u8,
+        }
+    }
 }
 
 impl TokenRequestBuilder {
@@ -54,6 +75,12 @@ impl TokenRequestBuilder {
     /// Specify remote router's intro key.
     pub fn with_intro_key(mut self, intro_key: [u8; 32]) -> Self {
         self.intro_key = Some(intro_key);
+        self
+    }
+
+    /// Specify network ID.
+    pub fn with_net_id(mut self, net_id: u8) -> Self {
+        self.net_id = net_id;
         self
     }
 
@@ -77,7 +104,7 @@ impl TokenRequestBuilder {
             out.put_u32(pkt_num);
             out.put_u8(*MessageType::TokenRequest);
             out.put_u8(2u8); // version
-            out.put_u8(2u8); // net id TODO: make configurable
+            out.put_u8(self.net_id);
             out.put_u8(0u8); // flag
             out.put_u64_le(self.src_id.take().expect("to exist"));
             out.put_u64(0u64);
@@ -194,7 +221,7 @@ impl SessionRequest {
     }
 }
 
-#[derive(Default)]
+/// Builder for `SessionRequest`.
 pub struct SessionRequestBuilder {
     /// Destination connection ID.
     dst_id: Option<u64>,
@@ -202,11 +229,28 @@ pub struct SessionRequestBuilder {
     /// Local ephemeral public key.
     ephemeral_key: Option<EphemeralPublicKey>,
 
+    /// Network ID.
+    ///
+    /// Defaults to 2.
+    net_id: u8,
+
     /// Source connection ID.
     src_id: Option<u64>,
 
     /// Token.
     token: Option<u64>,
+}
+
+impl Default for SessionRequestBuilder {
+    fn default() -> Self {
+        Self {
+            dst_id: None,
+            ephemeral_key: None,
+            net_id: 2u8,
+            src_id: None,
+            token: None,
+        }
+    }
 }
 
 impl SessionRequestBuilder {
@@ -234,6 +278,12 @@ impl SessionRequestBuilder {
         self
     }
 
+    /// Specify network ID.
+    pub fn with_net_id(mut self, net_id: u8) -> Self {
+        self.net_id = net_id;
+        self
+    }
+
     /// Build [`SessionRequestBuilder`] into [`SessionRequest`].
     pub fn build<R: Runtime>(mut self) -> SessionRequest {
         let mut rng = R::rng();
@@ -251,7 +301,7 @@ impl SessionRequestBuilder {
             out.put_u32(rng.next_u32());
             out.put_u8(*MessageType::SessionRequest);
             out.put_u8(2u8); // version
-            out.put_u8(2u8); // net id TODO: make configurable
+            out.put_u8(self.net_id);
             out.put_u8(0u8); // flag
             out.put_u64_le(self.src_id.take().expect("to exist"));
             out.put_u64_le(self.token.take().expect("to exist"));
@@ -423,7 +473,7 @@ impl SessionConfirmedBuilder {
     }
 }
 
-#[derive(Default)]
+/// Builder for `Retry`.
 pub struct RetryBuilder {
     /// Remote's socket address.
     address: Option<SocketAddr>,
@@ -434,11 +484,29 @@ pub struct RetryBuilder {
     /// Remote's intro key.
     k_header_1: Option<[u8; 32]>,
 
+    /// Network ID.
+    ///
+    /// Defaults to 2.
+    net_id: u8,
+
     /// Source connection ID.
     src_id: Option<u64>,
 
     /// Token.
     token: Option<u64>,
+}
+
+impl Default for RetryBuilder {
+    fn default() -> Self {
+        Self {
+            address: None,
+            dst_id: None,
+            k_header_1: None,
+            net_id: 2u8,
+            src_id: None,
+            token: None,
+        }
+    }
 }
 
 impl RetryBuilder {
@@ -472,6 +540,12 @@ impl RetryBuilder {
         self
     }
 
+    /// Specify network ID.
+    pub fn with_net_id(mut self, net_id: u8) -> Self {
+        self.net_id = net_id;
+        self
+    }
+
     /// Build [`SessionConfirmedBuilder`] into a byte vector.
     pub fn build<R: Runtime>(self) -> BytesMut {
         let (mut header, pkt_num) = {
@@ -482,7 +556,7 @@ impl RetryBuilder {
             out.put_u32(pkt_num);
             out.put_u8(*MessageType::Retry);
             out.put_u8(2u8);
-            out.put_u8(2u8); // TODO: make configurable
+            out.put_u8(self.net_id);
             out.put_u8(0u8);
             out.put_u64_le(self.src_id.expect("to exist"));
             out.put_u64_le(self.token.expect("to exist"));
@@ -614,8 +688,7 @@ impl SessionCreated {
     }
 }
 
-/// `SessionCreated` message builder.
-#[derive(Default)]
+/// Builder for `SessionCreated`.
 pub struct SessionCreatedBuilder {
     /// Remote router's address.
     address: Option<SocketAddr>,
@@ -626,8 +699,25 @@ pub struct SessionCreatedBuilder {
     /// Our ephemeral public key.
     ephemeral_key: Option<EphemeralPublicKey>,
 
+    /// Network ID.
+    ///
+    /// Defaults to 2.
+    net_id: u8,
+
     /// Source connection ID.
     src_id: Option<u64>,
+}
+
+impl Default for SessionCreatedBuilder {
+    fn default() -> Self {
+        Self {
+            address: None,
+            dst_id: None,
+            ephemeral_key: None,
+            net_id: 2u8,
+            src_id: None,
+        }
+    }
 }
 
 impl SessionCreatedBuilder {
@@ -655,6 +745,12 @@ impl SessionCreatedBuilder {
         self
     }
 
+    /// Specify network ID.
+    pub fn with_net_id(mut self, net_id: u8) -> Self {
+        self.net_id = net_id;
+        self
+    }
+
     /// Build [`SessionCreatedBuilder`] into [`SessionCreated`] by creating a long header
     /// and a payload with needed blocks.
     ///
@@ -669,7 +765,7 @@ impl SessionCreatedBuilder {
             out.put_u32(R::rng().next_u32());
             out.put_u8(*MessageType::SessionCreated);
             out.put_u8(2u8);
-            out.put_u8(2u8); // TODO: make configurable
+            out.put_u8(self.net_id);
             out.put_u8(0u8);
             out.put_u64_le(self.src_id.expect("to exist"));
             out.put_u64(0u64);
@@ -703,5 +799,185 @@ impl SessionCreatedBuilder {
         .to_vec();
 
         SessionCreated { header, payload }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{crypto::EphemeralPrivateKey, runtime::mock::MockRuntime};
+
+    #[test]
+    fn token_request_custom_net_id() {
+        // no network id specified
+        {
+            let mut pkt = TokenRequestBuilder::default()
+                .with_dst_id(1337)
+                .with_src_id(1338)
+                .with_intro_key([1u8; 32])
+                .build::<MockRuntime>()
+                .to_vec();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::TokenRequest { net_id, .. } => {
+                    assert_eq!(net_id, 2);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+
+        // custom network id
+        {
+            let mut pkt = TokenRequestBuilder::default()
+                .with_dst_id(1337)
+                .with_src_id(1338)
+                .with_net_id(13)
+                .with_intro_key([1u8; 32])
+                .build::<MockRuntime>()
+                .to_vec();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::TokenRequest { net_id, .. } => {
+                    assert_eq!(net_id, 13);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+    }
+
+    #[test]
+    fn session_request_custom_net_id() {
+        // no network id specified
+        {
+            let mut pkt = {
+                let mut pkt = SessionRequestBuilder::default()
+                    .with_dst_id(1337)
+                    .with_src_id(1338)
+                    .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
+                    .with_token(1339)
+                    .build::<MockRuntime>();
+
+                pkt.encrypt_header([1u8; 32], [1u8; 32]);
+                pkt.build().to_vec()
+            };
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::SessionRequest { net_id, .. } => {
+                    assert_eq!(net_id, 2);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+
+        // custom network id
+        {
+            let mut pkt = {
+                let mut pkt = SessionRequestBuilder::default()
+                    .with_dst_id(1337)
+                    .with_src_id(1338)
+                    .with_net_id(13)
+                    .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
+                    .with_token(1339)
+                    .build::<MockRuntime>();
+
+                pkt.encrypt_header([1u8; 32], [1u8; 32]);
+                pkt.build().to_vec()
+            };
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::SessionRequest { net_id, .. } => {
+                    assert_eq!(net_id, 13);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+    }
+
+    #[test]
+    fn retry_custom_net_id() {
+        // no network id specified
+        {
+            let mut pkt = RetryBuilder::default()
+                .with_k_header_1([1u8; 32])
+                .with_dst_id(1337)
+                .with_src_id(1338)
+                .with_token(1339)
+                .with_address("127.0.0.1:8888".parse().unwrap())
+                .build::<MockRuntime>();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::Retry { net_id, .. } => {
+                    assert_eq!(net_id, 2);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+
+        // custom network id
+        {
+            let mut pkt = RetryBuilder::default()
+                .with_k_header_1([1u8; 32])
+                .with_dst_id(1337)
+                .with_src_id(1338)
+                .with_token(1339)
+                .with_net_id(13)
+                .with_address("127.0.0.1:8888".parse().unwrap())
+                .build::<MockRuntime>();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::Retry { net_id, .. } => {
+                    assert_eq!(net_id, 13);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+    }
+
+    #[test]
+    fn session_created_custom_net_id() {
+        // no network id specified
+        {
+            let mut pkt = {
+                let mut pkt = SessionCreatedBuilder::default()
+                    .with_address("127.0.0.1:8888".parse().unwrap())
+                    .with_dst_id(1337)
+                    .with_src_id(1338)
+                    .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
+                    .build::<MockRuntime>();
+
+                pkt.encrypt_header([1u8; 32], [1u8; 32]);
+                pkt.build().to_vec()
+            };
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::SessionCreated { net_id, .. } => {
+                    assert_eq!(net_id, 2);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
+
+        // custom network id
+        {
+            let mut pkt = {
+                let mut pkt = SessionCreatedBuilder::default()
+                    .with_address("127.0.0.1:8888".parse().unwrap())
+                    .with_dst_id(1337)
+                    .with_src_id(1338)
+                    .with_net_id(13)
+                    .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
+                    .build::<MockRuntime>();
+
+                pkt.encrypt_header([1u8; 32], [1u8; 32]);
+                pkt.build().to_vec()
+            };
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([1u8; 32]).unwrap() {
+                HeaderKind::SessionCreated { net_id, .. } => {
+                    assert_eq!(net_id, 13);
+                }
+                _ => panic!("invalid message"),
+            }
+        }
     }
 }

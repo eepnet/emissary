@@ -214,6 +214,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .with_dst_id(dst_id)
             .with_src_id(src_id)
             .with_intro_key(intro_key)
+            .with_net_id(net_id)
             .build::<R>()
             .to_vec();
 
@@ -314,6 +315,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         let mut message = SessionRequestBuilder::default()
             .with_dst_id(self.dst_id)
             .with_src_id(self.src_id)
+            .with_net_id(self.net_id)
             .with_ephemeral_key(ephemeral_key.public())
             .with_token(token)
             .build::<R>();
