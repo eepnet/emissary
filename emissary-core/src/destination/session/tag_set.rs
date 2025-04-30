@@ -18,7 +18,7 @@
 
 use crate::{
     crypto::{hmac::Hmac, StaticPrivateKey, StaticPublicKey},
-    destination::session::{LOG_TARGET, SESSION_DH_RATCHET_THRESHOLD},
+    destination::session::LOG_TARGET,
     error::SessionError,
     i2np::garlic::{NextKeyBuilder, NextKeyKind},
     runtime::Runtime,
@@ -244,11 +244,21 @@ pub struct TagSet {
 
     /// ID of the tag set.
     tag_set_id: u16,
+
+    /// Number of tag set entries consumed per key before a DH ratchet is performed.
+    ratchet_threshold: u16,
 }
 
 impl TagSet {
     /// Create new [`TagSet`].
-    pub fn new(root_key: impl AsRef<[u8]>, tag_set_key: impl AsRef<[u8]>) -> Self {
+    pub fn new(
+        root_key: impl AsRef<[u8]>,
+        tag_set_key: impl AsRef<[u8]>,
+        ratchet_threshold: u16,
+    ) -> Self {
+        // We check if the tag_index > ratchet_threshold so ratchet_threshold
+        // must be strictly less than u16 max
+        debug_assert!(ratchet_threshold < u16::MAX);
         Self {
             key_state: KeyState::Uninitialized,
             key_context: KeyContext::new(root_key, tag_set_key),
@@ -256,6 +266,7 @@ impl TagSet {
             send_key_id: None,
             tag_set_id: 0u16,
             tag_index: 0u16,
+            ratchet_threshold,
         }
     }
 
@@ -377,7 +388,7 @@ impl TagSet {
         &mut self,
     ) -> Result<Option<NextKeyKind>, SessionError> {
         // more tags can be generated from the current dh ratchet
-        if self.tag_index as usize <= SESSION_DH_RATCHET_THRESHOLD {
+        if self.tag_index <= self.ratchet_threshold {
             return Ok(None);
         }
 
@@ -804,9 +815,11 @@ mod tests {
     use super::*;
     use crate::runtime::mock::MockRuntime;
 
+    const TEST_THRESHOLD: u16 = 10;
+
     #[test]
     fn maximum_tags_generated() {
-        let mut tag_set = TagSet::new([1u8; 32], [2u8; 32]);
+        let mut tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
         let tags = (0..u16::MAX).map(|_| tag_set.next_entry().unwrap()).collect::<Vec<_>>();
 
         assert_eq!(tags.len(), MAX_TAGS);
@@ -814,8 +827,8 @@ mod tests {
 
     #[test]
     fn full_dh_ratchet_cycle() {
-        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
-        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
+        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
+        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
 
         assert_eq!(send_tag_set.tag_index, 0);
         assert_eq!(recv_tag_set.tag_index, 0);
@@ -1100,8 +1113,8 @@ mod tests {
 
     #[test]
     fn duplicate_reverse_key() {
-        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
-        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
+        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
+        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
 
         // generate tags until the first dh ratchet can be done
         loop {
@@ -1258,8 +1271,8 @@ mod tests {
 
     #[test]
     fn duplicate_forward_key() {
-        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
-        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32]);
+        let mut send_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
+        let mut recv_tag_set = TagSet::new([1u8; 32], [2u8; 32], TEST_THRESHOLD);
 
         // generate tags until the first dh ratchet can be done
         let kind = loop {

@@ -71,8 +71,8 @@ const LOG_TARGET: &str = "emissary::destination::session";
 /// Number of garlic tags to generate.
 const NUM_TAGS_TO_GENERATE: usize = 4096;
 
-/// Number of tag set entries consumed per key before a DH ratchet is performed.
-const SESSION_DH_RATCHET_THRESHOLD: usize = 20_000usize;
+/// Default number of tag set entries consumed per key before a DH ratchet is performed.
+const SESSION_DH_RATCHET_THRESHOLD: u16 = 20_000u16;
 
 /// How long is upper-layer protocol data awaited before a [`DatabaseStore`] message is sent to
 /// remote to update remote destination's `NetDb` with our new lease set.
@@ -212,14 +212,33 @@ pub struct SessionManager<R: Runtime> {
 
     /// Waker.
     waker: Option<Waker>,
+
+    /// Number of tag set entries consumed per key before a DH ratchet is performed.
+    ratchet_threshold: u16,
 }
 
 impl<R: Runtime> SessionManager<R> {
-    /// Create new [`SessionManager`].
+    /// Create new [`SessionManager`] with the default ratchet threshold
+    #[inline]
     pub fn new(
         destination_id: DestinationId,
         private_key: StaticPrivateKey,
         lease_set: Bytes,
+    ) -> Self {
+        Self::with_ratchet_threshold(
+            destination_id,
+            private_key,
+            lease_set,
+            SESSION_DH_RATCHET_THRESHOLD,
+        )
+    }
+
+    /// Create new [`SessionManager`].
+    pub fn with_ratchet_threshold(
+        destination_id: DestinationId,
+        private_key: StaticPrivateKey,
+        lease_set: Bytes,
+        ratchet_threshold: u16,
     ) -> Self {
         Self {
             active: HashMap::new(),
@@ -234,6 +253,7 @@ impl<R: Runtime> SessionManager<R> {
             pending: HashMap::new(),
             remote_destinations: HashMap::new(),
             waker: None,
+            ratchet_threshold,
         }
     }
 
@@ -509,7 +529,11 @@ impl<R: Runtime> SessionManager<R> {
             // no active session for `destination_id`, check if pending session exists
             None => match self.pending.get_mut(destination_id) {
                 Some(session) => {
-                    match session.advance_outbound(self.lease_set.clone(), message)? {
+                    match session.advance_outbound(
+                        self.lease_set.clone(),
+                        message,
+                        self.ratchet_threshold,
+                    )? {
                         PendingSessionEvent::SendMessage { message } => Ok({
                             let mut out = BytesMut::with_capacity(message.len() + 4);
 
@@ -579,6 +603,7 @@ impl<R: Runtime> SessionManager<R> {
                             session,
                             Arc::clone(&self.garlic_tags),
                             self.key_context.clone(),
+                            self.ratchet_threshold,
                         ),
                     );
 
@@ -741,7 +766,7 @@ impl<R: Runtime> SessionManager<R> {
             Some(destination_id) => match self.active.get_mut(&destination_id) {
                 Some(session) => session
                     .session
-                    .decrypt(garlic_tag, message.payload)
+                    .decrypt(garlic_tag, message.payload, self.ratchet_threshold)
                     .map(|(tag_set_id, tag_index, message)| {
                         session.last_received = R::now();
 
@@ -755,7 +780,11 @@ impl<R: Runtime> SessionManager<R> {
                         error => error,
                     })?,
                 None => match self.pending.get_mut(&destination_id) {
-                    Some(session) => match session.advance_inbound(garlic_tag, message.payload)? {
+                    Some(session) => match session.advance_inbound(
+                        garlic_tag,
+                        message.payload,
+                        self.ratchet_threshold,
+                    )? {
                         PendingSessionEvent::SendMessage { .. } => unreachable!(),
                         PendingSessionEvent::CreateSession {
                             message,
@@ -1046,6 +1075,8 @@ mod tests {
     };
     use core::time::Duration;
     use rand::thread_rng;
+
+    const TEST_THRESHOLD: u16 = 10;
 
     /// Decrypt `message` using `session` and verify the inbound `Data` message
     /// inside the garlic message matches `diff`
@@ -1968,10 +1999,11 @@ mod tests {
                 inbound_destination_id,
             )
         };
-        let mut inbound_session = SessionManager::<MockRuntime>::new(
+        let mut inbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             inbound_destination_id.clone(),
             inbound_private_key,
             inbound_leaseset,
+            TEST_THRESHOLD,
         );
 
         // create outbound `SessionManager`
@@ -1985,10 +2017,11 @@ mod tests {
                 outbound_destination_id,
             )
         };
-        let mut outbound_session = SessionManager::<MockRuntime>::new(
+        let mut outbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             outbound_destination_id.clone(),
             outbound_private_key,
             outbound_leaseset,
+            TEST_THRESHOLD,
         );
         outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
 
@@ -2057,7 +2090,7 @@ mod tests {
             // and verify that all messages are decrypted correctly
             let mut responded_to_nextkey = false;
 
-            for i in 0..SESSION_DH_RATCHET_THRESHOLD + 5 {
+            for i in 0..TEST_THRESHOLD + 5 {
                 // send `ExistingSession` from inbound session
                 // finalize inbound session by sending an `ExistingSession` message
                 let message =
@@ -2078,7 +2111,7 @@ mod tests {
                 };
                 assert_eq!(message_body[4..], [i as u8; 4]);
 
-                if i > SESSION_DH_RATCHET_THRESHOLD && !responded_to_nextkey {
+                if i > TEST_THRESHOLD && !responded_to_nextkey {
                     let message =
                         outbound_session.encrypt(&inbound_destination_id, vec![4]).unwrap();
 
@@ -3325,10 +3358,11 @@ mod tests {
                 inbound_destination_id,
             )
         };
-        let mut inbound_session = SessionManager::<MockRuntime>::new(
+        let mut inbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             inbound_destination_id.clone(),
             inbound_private_key,
             inbound_leaseset,
+            TEST_THRESHOLD,
         );
 
         // create outbound `SessionManager`
@@ -3350,10 +3384,11 @@ mod tests {
                 signing_key,
             )
         };
-        let mut outbound_session = SessionManager::<MockRuntime>::new(
+        let mut outbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             outbound_destination_id.clone(),
             outbound_private_key.clone(),
             outbound_leaseset,
+            TEST_THRESHOLD,
         );
         outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
 
@@ -3382,7 +3417,7 @@ mod tests {
             .has_pending_next_key());
 
         // Exhaust tag set to force a next key
-        for _ in 0..SESSION_DH_RATCHET_THRESHOLD {
+        for _ in 0..TEST_THRESHOLD {
             let message = outbound_session.encrypt(&inbound_destination_id, vec![7u8; 4]).unwrap();
             decrypt_and_verify!(&mut inbound_session, message, vec![7u8; 4]);
         }
@@ -3452,10 +3487,11 @@ mod tests {
                 inbound_destination_id,
             )
         };
-        let mut inbound_session = SessionManager::<MockRuntime>::new(
+        let mut inbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             inbound_destination_id.clone(),
             inbound_private_key,
             inbound_leaseset,
+            TEST_THRESHOLD,
         );
 
         // create outbound `SessionManager`
@@ -3477,10 +3513,11 @@ mod tests {
                 signing_key,
             )
         };
-        let mut outbound_session = SessionManager::<MockRuntime>::new(
+        let mut outbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             outbound_destination_id.clone(),
             outbound_private_key.clone(),
             outbound_leaseset,
+            TEST_THRESHOLD,
         );
         outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
 
@@ -3509,7 +3546,7 @@ mod tests {
             .has_pending_next_key());
 
         // Exhaust tag set to force a next key
-        for _ in 0..SESSION_DH_RATCHET_THRESHOLD {
+        for _ in 0..TEST_THRESHOLD {
             let message = outbound_session.encrypt(&inbound_destination_id, vec![7u8; 4]).unwrap();
             decrypt_and_verify!(&mut inbound_session, message, vec![7u8; 4]);
         }
@@ -3558,10 +3595,11 @@ mod tests {
                 inbound_destination_id,
             )
         };
-        let mut inbound_session = SessionManager::<MockRuntime>::new(
+        let mut inbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             inbound_destination_id.clone(),
             inbound_private_key,
             inbound_leaseset,
+            TEST_THRESHOLD,
         );
 
         // create outbound `SessionManager`
@@ -3583,10 +3621,11 @@ mod tests {
                 signing_key,
             )
         };
-        let mut outbound_session = SessionManager::<MockRuntime>::new(
+        let mut outbound_session = SessionManager::<MockRuntime>::with_ratchet_threshold(
             outbound_destination_id.clone(),
             outbound_private_key.clone(),
             outbound_leaseset,
+            TEST_THRESHOLD,
         );
         outbound_session.add_remote_destination(inbound_destination_id.clone(), inbound_public_key);
 
@@ -3623,7 +3662,7 @@ mod tests {
             .has_pending_next_key());
 
         // Exhaust tag set to force a next key
-        for _ in 0..SESSION_DH_RATCHET_THRESHOLD {
+        for _ in 0..TEST_THRESHOLD {
             let message = outbound_session.encrypt(&inbound_destination_id, vec![6u8; 4]).unwrap();
             decrypt_and_verify!(&mut inbound_session, message, vec![6u8; 4]);
         }

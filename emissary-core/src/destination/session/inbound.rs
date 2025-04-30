@@ -147,6 +147,7 @@ impl<R: Runtime> InboundSession<R> {
     pub fn create_new_session_reply(
         &mut self,
         mut payload: Vec<u8>,
+        ratchet_threshold: u16,
     ) -> Result<(Vec<u8>, Vec<TagSetEntry>), SessionError> {
         match mem::replace(&mut self.state, InboundSessionState::Poisoned) {
             InboundSessionState::AwaitingNewSessionReplyTransmit {
@@ -179,7 +180,8 @@ impl<R: Runtime> InboundSession<R> {
                     let temp_key = Hmac::new(&ns_chaining_key).update([]).finalize();
                     let tagset_key =
                         Hmac::new(&temp_key).update(b"SessionReplyTags").update([0x01]).finalize();
-                    let mut nsr_tag_set = TagSet::new(&ns_chaining_key, tagset_key);
+                    let mut nsr_tag_set =
+                        TagSet::new(&ns_chaining_key, tagset_key, ratchet_threshold);
 
                     // `next_entry()` must succeed as `nsr_tag_set` is a fresh `TagSet`
                     let garlic_tag = nsr_tag_set.next_entry().expect("to succeed").tag;
@@ -239,8 +241,8 @@ impl<R: Runtime> InboundSession<R> {
                 let send_key = Hmac::new(&temp_key).update(&recv_key).update([0x02]).finalize();
 
                 // initialize send and receive tag sets
-                let send_tag_set = TagSet::new(&chaining_key, &send_key);
-                let mut recv_tag_set = TagSet::new(chaining_key, recv_key);
+                let send_tag_set = TagSet::new(&chaining_key, &send_key, ratchet_threshold);
+                let mut recv_tag_set = TagSet::new(chaining_key, recv_key, ratchet_threshold);
 
                 // decode payload of the `NewSessionReply` message
                 let temp_key = Hmac::new(&send_key).update([]).finalize();
@@ -379,8 +381,8 @@ impl<R: Runtime> InboundSession<R> {
                 let send_key = Hmac::new(&temp_key).update(&recv_key).update([0x02]).finalize();
 
                 // initialize send and receive tag sets
-                let send_tag_set = TagSet::new(&chaining_key, &send_key);
-                let mut recv_tag_set = TagSet::new(chaining_key, recv_key);
+                let send_tag_set = TagSet::new(&chaining_key, &send_key, ratchet_threshold);
+                let mut recv_tag_set = TagSet::new(chaining_key, recv_key, ratchet_threshold);
 
                 // decode payload of the `NewSessionReply` message
                 let temp_key = Hmac::new(&send_key).update([]).finalize();

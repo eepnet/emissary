@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base64_encode, SigningPrivateKey},
+    crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
     error::Error,
     i2cp::I2cpPayload,
     primitives::Destination,
@@ -111,7 +111,10 @@ impl<R: Runtime> DatagramManager<R> {
                     take::<_, _, ()>(destination.verifying_key().signature_len())(rest)
                         .map_err(|_| Error::InvalidData)?;
 
-                destination.verifying_key().verify(rest, signature)?;
+                match destination.verifying_key() {
+                    SigningPublicKey::DsaSha1(_) => return Err(Error::NotSupported),
+                    verifying_key => verifying_key.verify(rest, signature)?,
+                }
 
                 // TODO: ensure there is a listener in `src_port`
                 let port = self.options.get("PORT").ok_or(Error::InvalidState)?;
