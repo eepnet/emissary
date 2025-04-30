@@ -78,6 +78,10 @@ pub struct ReseedOptions {
     /// Forcibly reseed the router even if there are enough routers
     #[arg(long, action = clap::ArgAction::SetTrue)]
     pub force_reseed: Option<bool>,
+
+    /// Disable forcing of IPv4 when connecting to reseed hosts.
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    pub disable_force_ipv4: Option<bool>,
 }
 
 #[derive(Args)]

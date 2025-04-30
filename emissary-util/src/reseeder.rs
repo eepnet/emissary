@@ -65,11 +65,18 @@ pub struct Reseeder;
 
 impl Reseeder {
     /// Attempt to reseed from `hosts` and parse response into a vector of serialized router infos.
-    async fn reseed_inner(hosts: &[&str]) -> anyhow::Result<Vec<ReseedRouterInfo>> {
-        let client = ClientBuilder::new()
-            .timeout(Duration::from_secs(15))
-            .local_address("0.0.0.0:0".parse().ok())
-            .build()?;
+    async fn reseed_inner(
+        hosts: &[&str],
+        force_ipv4: bool,
+    ) -> anyhow::Result<Vec<ReseedRouterInfo>> {
+        let client = if force_ipv4 {
+            ClientBuilder::new().local_address("0.0.0.0:0".parse().ok())
+        } else {
+            ClientBuilder::new()
+        }
+        .timeout(Duration::from_secs(15))
+        .build()?;
+
         let headers = HeaderMap::from_iter([
             (USER_AGENT, HeaderValue::from_static("Wget/1.11.4")),
             (CONNECTION, HeaderValue::from_static("close")),
@@ -158,11 +165,18 @@ impl Reseeder {
     }
 
     /// Reseed from `hosts` or from `RESEED_SERVERS` if `hosts` are not specified.
-    pub async fn reseed(hosts: Option<Vec<String>>) -> anyhow::Result<Vec<ReseedRouterInfo>> {
+    pub async fn reseed(
+        hosts: Option<Vec<String>>,
+        force_ipv4: bool,
+    ) -> anyhow::Result<Vec<ReseedRouterInfo>> {
         match hosts {
-            None => Self::reseed_inner(RESEED_SERVERS).await,
+            None => Self::reseed_inner(RESEED_SERVERS, force_ipv4).await,
             Some(hosts) =>
-                Self::reseed_inner(&hosts.iter().map(AsRef::as_ref).collect::<Vec<_>>()).await,
+                Self::reseed_inner(
+                    &hosts.iter().map(AsRef::as_ref).collect::<Vec<_>>(),
+                    force_ipv4,
+                )
+                .await,
         }
     }
 }

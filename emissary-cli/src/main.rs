@@ -118,10 +118,15 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
             target: LOG_TARGET,
             num_routers = ?config.routers.len(),
             forced_reseed = ?arguments.reseed.force_reseed.unwrap_or(false),
+            force_ipv4 = ?(!arguments.reseed.disable_force_ipv4.unwrap_or(false)),
             "reseed router"
         );
 
-        match Reseeder::reseed(config.reseed.as_ref().and_then(|config| config.hosts.clone())).await
+        match Reseeder::reseed(
+            config.reseed.as_ref().and_then(|config| config.hosts.clone()),
+            !arguments.reseed.disable_force_ipv4.unwrap_or(false),
+        )
+        .await
         {
             Ok(routers) => {
                 tracing::info!(
