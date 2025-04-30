@@ -113,6 +113,18 @@ pub static PUBLIC_KEYS: LazyLock<HashMap<&'static str, RsaPublicKey>> = LazyLock
             let cert = pem::parse(value).ok()?.into_contents();
             let (_, cert) = x509_parser::parse_x509_certificate(&cert).ok()?;
 
+            if !cert.tbs_certificate.validity.is_valid() {
+                tracing::warn!(
+                    target: "emissary-util::certificate",
+                    %key,
+                    not_before = ?cert.tbs_certificate.validity.not_before,
+                    not_after = ?cert.tbs_certificate.validity.not_after,
+                    "self-signed certificate is no longer valid",
+                );
+
+                return None;
+            }
+
             match cert.public_key().parsed().ok()? {
                 PublicKey::RSA(public_key) => {
                     let modulus = BigUint::from_bytes_be(public_key.modulus);
