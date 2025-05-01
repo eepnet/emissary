@@ -31,7 +31,7 @@ use crate::{
         handle::{CommandRecycle, TunnelManagerCommand},
         metrics::*,
         pool::{ClientSelector, ExploratorySelector, TunnelPool, TunnelPoolBuildParameters},
-        routing_table::{RoutingKind, RoutingKindRecycle, RoutingTable},
+        routing_table::RoutingKind,
         transit::TransitTunnelManager,
     },
 };
@@ -68,6 +68,7 @@ pub use garlic::{DeliveryInstructions, GarlicHandler};
 pub use handle::TunnelManagerHandle;
 pub use noise::NoiseContext;
 pub use pool::{TunnelMessageSender, TunnelPoolConfig, TunnelPoolEvent, TunnelPoolHandle};
+pub use routing_table::{RoutingKindRecycle, RoutingTable};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::tunnel";
@@ -146,6 +147,7 @@ impl<R: Runtime> TunnelManager<R> {
         Self,
         TunnelManagerHandle,
         TunnelPoolHandle,
+        RoutingTable,
         Receiver<Message>,
     ) {
         tracing::info!(
@@ -216,11 +218,12 @@ impl<R: Runtime> TunnelManager<R> {
                 netdb_tx,
                 router_ctx,
                 routers: HashMap::new(),
-                routing_table,
+                routing_table: routing_table.clone(),
                 service,
             },
             manager_handle,
             pool_handle,
+            routing_table,
             netdb_rx,
         )
     }

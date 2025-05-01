@@ -291,22 +291,32 @@ impl<R: Runtime> Router<R> {
         // initialize and start tunnel manager
         //
         // acquire handle to exploratory tunnel pool which is given to `NetDb`
-        let (tunnel_manager_handle, exploratory_pool_handle, netdb_msg_rx) = {
+        let (tunnel_manager_handle, exploratory_pool_handle, routing_table, netdb_msg_rx) = {
             let transport_service =
                 transport_manager_builder.register_subsystem(SubsystemKind::Tunnel);
-            let (tunnel_manager, tunnel_manager_handle, tunnel_pool_handle, netdb_msg_rx) =
-                TunnelManager::<R>::new(
-                    transport_service,
-                    router_ctx.clone(),
-                    exploratory.into(),
-                    insecure_tunnels,
-                    transit,
-                    transit_shutdown_handle,
-                );
+            let (
+                tunnel_manager,
+                tunnel_manager_handle,
+                tunnel_pool_handle,
+                routing_table,
+                netdb_msg_rx,
+            ) = TunnelManager::<R>::new(
+                transport_service,
+                router_ctx.clone(),
+                exploratory.into(),
+                insecure_tunnels,
+                transit,
+                transit_shutdown_handle,
+            );
 
             R::spawn(tunnel_manager);
 
-            (tunnel_manager_handle, tunnel_pool_handle, netdb_msg_rx)
+            (
+                tunnel_manager_handle,
+                tunnel_pool_handle,
+                routing_table,
+                netdb_msg_rx,
+            )
         };
 
         // initialize and start netdb
@@ -318,6 +328,7 @@ impl<R: Runtime> Router<R> {
                 floodfill,
                 transport_service,
                 exploratory_pool_handle,
+                routing_table,
                 netdb_msg_rx,
             );
 

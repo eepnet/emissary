@@ -41,7 +41,7 @@ use alloc::{sync::Arc, vec::Vec};
 const LOG_TARGET: &str = "emissary::tunnel::routing-table";
 
 #[derive(Debug, Default, Clone)]
-pub(super) struct RoutingKindRecycle(());
+pub struct RoutingKindRecycle(());
 
 impl thingbuf::Recycle<RoutingKind> for RoutingKindRecycle {
     fn new_element(&self) -> RoutingKind {
