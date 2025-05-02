@@ -49,7 +49,7 @@ use thingbuf::mpsc::{channel, Receiver, Sender};
 
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
-    mem,
+    fmt, mem,
     net::SocketAddr,
     pin::Pin,
     task::{Context, Poll, Waker},
@@ -73,6 +73,59 @@ const CHANNEL_SIZE: usize = 256usize;
 ///
 /// Used to receive datagrams from active sessions.
 const PKT_CHANNEL_SIZE: usize = 8192usize;
+
+/// Pending session kind.
+enum PendingSessionKind {
+    /// Pending inbound session.
+    Inbound {
+        /// Initial `Data` packet that ACKs `SessionConfirmed`.
+        pkt: BytesMut,
+
+        /// Socket address of the remote router.
+        address: SocketAddr,
+
+        /// Session context.
+        context: Ssu2SessionContext,
+
+        /// Destination connection ID.
+        ///
+        /// This is the destination ID selected by the remote router and is used to remove pending
+        /// session context in case it's rejected by the `TransportManager`.
+        dst_id: u64,
+    },
+
+    /// Pending outbound session.
+    Outbound {
+        // Socket address of the remote router.
+        address: SocketAddr,
+
+        /// Session context.
+        context: Ssu2SessionContext,
+    },
+}
+
+impl fmt::Debug for PendingSessionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PendingSessionKind::Inbound {
+                address,
+                context,
+                dst_id,
+                ..
+            } => f
+                .debug_struct("PendingSessionKind::Inbound")
+                .field("address", &address)
+                .field("dst_id", &dst_id)
+                .field("connection_id", &context.dst_id)
+                .finish_non_exhaustive(),
+            PendingSessionKind::Outbound { address, context } => f
+                .debug_struct("PendingSessionKind::Outbound")
+                .field("address", &address)
+                .field("connection_id", &context.dst_id)
+                .finish_non_exhaustive(),
+        }
+    }
+}
 
 /// Write state.
 enum WriteState {
@@ -150,7 +203,7 @@ pub struct Ssu2Socket<R: Runtime> {
     terminating_session: R::JoinSet<(RouterId, u64)>,
 
     /// Unvalidated sessions.
-    unvalidated_sessions: HashMap<RouterId, Ssu2SessionContext>,
+    unvalidated_sessions: HashMap<RouterId, PendingSessionKind>,
 
     /// Waker.
     waker: Option<Waker>,
@@ -225,11 +278,20 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         match reader.parse(self.intro_key) {
             Ok(HeaderKind::TokenRequest {
-                net_id: _,
+                net_id,
                 pkt_num,
                 src_id,
             }) => {
-                // TODO: validate net id
+                if net_id != self.router_ctx.net_id() {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        our_net_id = ?self.router_ctx.net_id(),
+                        their_net_id = ?net_id,
+                        "network id mismatch",
+                    );
+                    return Err(Ssu2Error::NetworkMismatch);
+                }
+
                 let (tx, rx) = channel(CHANNEL_SIZE);
                 let session = InboundSsu2Session::<R>::new(InboundSsu2Context {
                     address,
@@ -251,15 +313,7 @@ impl<R: Runtime> Ssu2Socket<R> {
 
                 Ok(())
             }
-            Ok(kind) => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?kind,
-                    "unable to handle message",
-                );
-                Ok(())
-            }
-            Err(_) => match self.pending_outbound.get(&address) {
+            _ => match self.pending_outbound.get(&address) {
                 Some(intro_key) =>
                     match self.sessions.get_mut(&reader.reset_key(*intro_key).dst_id()) {
                         Some(tx) => tx
@@ -269,12 +323,11 @@ impl<R: Runtime> Ssu2Socket<R> {
                             })
                             .map_err(From::from),
                         None => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 target: LOG_TARGET,
                                 ?address,
                                 "pending connection found but no associated session",
                             );
-                            debug_assert!(false);
                             Ok(())
                         }
                     },
@@ -319,8 +372,8 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         let (tx, rx) = channel(CHANNEL_SIZE);
         self.sessions.insert(src_id, tx);
-
         self.pending_outbound.insert(address, intro_key);
+
         self.pending_sessions.push(OutboundSsu2Session::<R>::new(OutboundSsu2Context {
             address,
             chaining_key: self.chaining_key.clone(),
@@ -342,8 +395,13 @@ impl<R: Runtime> Ssu2Socket<R> {
         }
     }
 
+    /// Accept inbound/outbound connection to `router_id`.
+    ///
+    /// Remove any state associated with a pending connection and spawn the event loop of the
+    /// connection in a separate task. The channel that was used during negotiation is kept in
+    /// `self.sessions` and removed only when the session is destroyed.
     pub fn accept(&mut self, router_id: &RouterId) {
-        let Some(context) = self.unvalidated_sessions.remove(router_id) else {
+        let Some(kind) = self.unvalidated_sessions.remove(router_id) else {
             tracing::warn!(
                 target: LOG_TARGET,
                 %router_id,
@@ -353,11 +411,36 @@ impl<R: Runtime> Ssu2Socket<R> {
             return;
         };
 
-        tracing::trace!(
-            target: LOG_TARGET,
-            %router_id,
-            "session accepted",
-        );
+        let context = match kind {
+            PendingSessionKind::Inbound {
+                pkt,
+                address,
+                context,
+                ..
+            } => {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    %router_id,
+                    connection_id = ?context.dst_id,
+                    "inbound session accepted",
+                );
+
+                // TODO: retransmissiosn?
+                self.pending_pkts.push_back((pkt, address));
+                context
+            }
+            PendingSessionKind::Outbound { address, context } => {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    %router_id,
+                    connection_id = ?context.dst_id,
+                    "outbound session accepted",
+                );
+
+                self.pending_outbound.remove(&address);
+                context
+            }
+        };
 
         self.active_sessions.push(
             Ssu2Session::<R>::new(context, self.pkt_tx.clone(), self.subsystem_handle.clone())
@@ -369,25 +452,45 @@ impl<R: Runtime> Ssu2Socket<R> {
         }
     }
 
+    /// Reject inbound/outbound connection to `router_id`.
     pub fn reject(&mut self, router_id: &RouterId) {
-        match self.unvalidated_sessions.remove(router_id) {
-            None => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    %router_id,
-                    "non-existent unvalidated session rejected",
-                );
-                debug_assert!(false);
-            }
-            Some(_) => {
+        let Some(kind) = self.unvalidated_sessions.remove(router_id) else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                %router_id,
+                "non-existent unvalidated session rejected",
+            );
+            debug_assert!(false);
+            return;
+        };
+
+        match kind {
+            PendingSessionKind::Inbound {
+                context, dst_id, ..
+            } => {
                 tracing::debug!(
                     target: LOG_TARGET,
                     %router_id,
-                    "session rejected",
+                    connection_id = ?context.dst_id,
+                    "inbound session rejected",
                 );
-                // TODO: send termination
+
+                self.sessions.remove(&dst_id);
+            }
+            PendingSessionKind::Outbound { address, context } => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    %router_id,
+                    connection_id = ?context.dst_id,
+                    "outbound session rejected",
+                );
+
+                self.pending_outbound.remove(&address);
+                self.sessions.remove(&context.dst_id);
             }
         }
+
+        // TODO: send termination?
     }
 }
 
@@ -425,11 +528,33 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(None),
                 Poll::Ready(Some(termination_ctx)) => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        router_id = %termination_ctx.router_id,
+                        connection_id = %termination_ctx.dst_id,
+                        "terminate active ssu2 session",
+                    );
+
                     this.terminating_session
                         .push(TerminatingSsu2Session::<R>::new(termination_ctx));
-                    // // TODO: remove channel
-                    // return Poll::Ready(Some(TransportEvent::ConnectionClosed { router_id, reason
-                    // }));
+                }
+            }
+        }
+
+        loop {
+            match this.terminating_session.poll_next_unpin(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some((router_id, connection_id))) => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        %router_id,
+                        %connection_id,
+                        "active ssu2 session terminated",
+                    );
+
+                    // TODO: correct connection id for inbound?
+                    this.sessions.remove(&connection_id);
                 }
             }
         }
@@ -442,22 +567,42 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     context,
                     pkt,
                     target,
+                    dst_id,
                 })) => {
                     let router_id = context.router_id.clone();
 
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        %router_id,
-                        "inbound session negotiated",
-                    );
+                    match this.unvalidated_sessions.get(&router_id) {
+                        None => {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                %router_id,
+                                connection_id = ?context.dst_id,
+                                "inbound session negotiated",
+                            );
 
-                    this.pending_pkts.push_back((pkt, target));
-                    this.unvalidated_sessions.insert(router_id.clone(), context);
+                            this.unvalidated_sessions.insert(
+                                router_id.clone(),
+                                PendingSessionKind::Inbound {
+                                    pkt,
+                                    address: target,
+                                    context,
+                                    dst_id,
+                                },
+                            );
 
-                    return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
-                        direction: Direction::Inbound,
-                        router_id,
-                    }));
+                            return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
+                                direction: Direction::Inbound,
+                                router_id,
+                            }));
+                        }
+                        Some(kind) => tracing::warn!(
+                            target: LOG_TARGET,
+                            %router_id,
+                            connection_id = ?context.dst_id,
+                            ?kind,
+                            "inbound session negotiated but already pending, rejecting",
+                        ),
+                    }
                 }
                 Poll::Ready(Some(PendingSsu2SessionStatus::NewOutboundSession { context })) => {
                     let router_id = context.router_id.clone();
@@ -465,10 +610,25 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     tracing::trace!(
                         target: LOG_TARGET,
                         %router_id,
+                        connection_id = ?context.dst_id,
                         "outbound session negotiated",
                     );
 
-                    this.unvalidated_sessions.insert(router_id.clone(), context);
+                    if let Some(kind) = this.unvalidated_sessions.insert(
+                        router_id.clone(),
+                        PendingSessionKind::Outbound {
+                            address: context.address,
+                            context,
+                        },
+                    ) {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            %router_id,
+                            ?kind,
+                            "unvalidated session already exists",
+                        );
+                        debug_assert!(false);
+                    }
 
                     return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
                         direction: Direction::Outbound,
@@ -480,19 +640,21 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     router_id,
                 })) => match router_id {
                     None => {
-                        tracing::debug!(
+                        tracing::warn!(
                             target: LOG_TARGET,
                             ?connection_id,
                             "pending inbound session terminated",
                         );
+                        debug_assert!(false);
                     }
                     Some(router_id) => {
-                        tracing::debug!(
+                        tracing::warn!(
                             target: LOG_TARGET,
                             %router_id,
                             ?connection_id,
                             "pending outbound session terminated",
                         );
+                        debug_assert!(false);
                         return Poll::Ready(Some(TransportEvent::ConnectionFailure { router_id }));
                     }
                 },

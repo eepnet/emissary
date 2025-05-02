@@ -613,6 +613,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             },
             pkt,
             target: self.address,
+            dst_id: self.dst_id,
         }))
     }
 

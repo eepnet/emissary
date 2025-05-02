@@ -50,6 +50,9 @@ pub enum PendingSsu2SessionStatus {
 
         /// Socket address of the remote router.
         target: SocketAddr,
+
+        /// Destination connection ID.
+        dst_id: u64,
     },
 
     /// New outbound session.
