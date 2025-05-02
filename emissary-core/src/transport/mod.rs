@@ -713,6 +713,12 @@ impl<R: Runtime> TransportManager<R> {
     /// If `router_id` is not found in local storage, send [`RouterInfo`] query for `router_id` to
     /// [`NetDb`] and if the [`RouterInfo`] is found, attempt to dial it.
     fn on_dial_router(&mut self, router_id: RouterId) {
+        if &router_id == self.router_ctx.router_id() {
+            tracing::error!(target: LOG_TARGET, "tried to dial self");
+            debug_assert!(false);
+            return;
+        }
+
         match self.router_ctx.profile_storage().get(&router_id) {
             Some(router_info) => {
                 // even though `TransportService` prevents dialing the same router from the same
