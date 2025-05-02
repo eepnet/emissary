@@ -44,6 +44,12 @@ const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
 /// Short header + block type + Poly1305 authentication tag.
 const SSU2_OVERHEAD: usize = 16usize + 1usize + 16usize;
 
+/// Resend termination threshold.
+///
+/// How many times is a packet resent before the remote router is considered unresponsive
+/// and the session is terminated.
+const RESEND_TERMINATION_THRESHOLD: usize = 7usize;
+
 /// Initial RTO.
 const INITIAL_RTO: Duration = Duration::from_millis(540);
 
@@ -474,7 +480,7 @@ impl<R: Runtime> TransmissionManager<R> {
     /// Go through packets and check if any of them need to be resent.
     ///
     /// Returns an iterator of `(packet number, `MessageKind`)` tuples.
-    pub fn resend(&mut self) -> Option<Vec<(u32, MessageKind<'_>)>> {
+    pub fn resend(&mut self) -> Result<Option<Vec<(u32, MessageKind<'_>)>>, ()> {
         // TODO: `take_while()` + reverse order
         let expired = self
             .segments
@@ -485,7 +491,7 @@ impl<R: Runtime> TransmissionManager<R> {
             .collect::<Vec<_>>();
 
         if expired.is_empty() {
-            return None;
+            return Ok(None);
         }
 
         // reassign packet number for each segment and reinsert it into `self.segments`
@@ -498,6 +504,20 @@ impl<R: Runtime> TransmissionManager<R> {
                     segment,
                     sent,
                 } = self.segments.remove(&pkt_num).expect("to exist");
+
+                if num_sent + 1 > RESEND_TERMINATION_THRESHOLD {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        ?pkt_num,
+                        "packet has been resent over {} times, terminating session",
+                        RESEND_TERMINATION_THRESHOLD,
+                    );
+                    return Err(());
+                }
+
+                // each packet is assigned a new packet number so the ciphertext of the packet
+                // will be different
                 let pkt_num = self.next_pkt_num();
 
                 self.segments.insert(
@@ -509,9 +529,9 @@ impl<R: Runtime> TransmissionManager<R> {
                     },
                 );
 
-                pkt_num
+                Ok(pkt_num)
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, _>>()?;
 
         // halve window size because of packet loss
         {
@@ -540,7 +560,7 @@ impl<R: Runtime> TransmissionManager<R> {
             ));
         }
 
-        Some(packets)
+        Ok(Some(packets))
     }
 }
 
@@ -896,7 +916,7 @@ mod tests {
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -914,13 +934,14 @@ mod tests {
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
 
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
             .resend()
+            .unwrap()
             .unwrap()
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
@@ -945,13 +966,14 @@ mod tests {
 
         assert_eq!(pkts.len(), 10);
         assert_eq!(mgr.segments.len(), 10);
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
 
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
             .resend()
+            .unwrap()
             .unwrap()
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
@@ -964,6 +986,7 @@ mod tests {
 
         let pkt_nums = mgr
             .resend()
+            .unwrap()
             .unwrap()
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
@@ -1019,7 +1042,7 @@ mod tests {
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
         assert!(mgr.pending.is_empty());
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
 
         mgr.register_ack(8, 7, &[]);
         assert_eq!(mgr.segments.len(), 8);
@@ -1031,6 +1054,7 @@ mod tests {
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
             .resend()
+            .unwrap()
             .unwrap()
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
@@ -1046,6 +1070,7 @@ mod tests {
 
         let pkt_nums = mgr
             .resend()
+            .unwrap()
             .unwrap()
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
@@ -1071,7 +1096,7 @@ mod tests {
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.pending.len(), MIN_WINDOW_SIZE);
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
         assert!(!mgr.has_capacity());
 
         mgr.register_ack(16, 15, &[]);
@@ -1109,7 +1134,7 @@ mod tests {
         assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.pending.len(), 40 - MIN_WINDOW_SIZE);
-        assert!(mgr.resend().is_none());
+        assert!(mgr.resend().unwrap().is_none());
         assert!(!mgr.has_capacity());
 
         mgr.register_ack(16, 5, &[]);
@@ -1129,5 +1154,30 @@ mod tests {
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE + 6);
         assert!(!mgr.pending.is_empty());
         assert!(!mgr.has_capacity());
+    }
+
+    #[tokio::test]
+    async fn packet_resent_too_many_times() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            RouterId::random(),
+            Arc::new(AtomicU32::new(1u32)),
+        );
+        let _ = mgr
+            .segment(Message {
+                payload: vec![0u8; 1200 * 5],
+                ..Default::default()
+            })
+            .unwrap();
+
+        let future = async move {
+            while let Ok(_) = mgr.resend() {
+                tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(15), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(_) => {}
+        }
     }
 }

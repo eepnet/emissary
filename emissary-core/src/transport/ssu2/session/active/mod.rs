@@ -280,6 +280,13 @@ impl<R: Runtime> Ssu2Session<R> {
         ChaChaPoly::with_nonce(&self.recv_key_ctx.k_data, pkt_num as u64)
             .decrypt_with_ad(&pkt[..16], &mut payload)?;
 
+        if immediate_ack {
+            self.ack_timer = Some(R::timer(min(
+                self.transmission.round_trip_time() / 16,
+                MAX_IMMEDIATE_ACK_TIMEOUT,
+            )));
+        }
+
         for block in Block::parse(&payload).ok_or(Ssu2Error::Malformed)? {
             match block {
                 Block::Termination {
@@ -303,6 +310,13 @@ impl<R: Runtime> Ssu2Session<R> {
                 Block::I2Np { message } => {
                     self.handle_message(message);
                     self.remote_ack.register_pkt(pkt_num);
+
+                    if self.ack_timer.is_none() {
+                        self.ack_timer = Some(R::timer(min(
+                            self.transmission.round_trip_time() / 6,
+                            MAX_ACK_TIMEOUT,
+                        )));
+                    }
                 }
                 Block::FirstFragment {
                     message_type,
@@ -320,6 +334,13 @@ impl<R: Runtime> Ssu2Session<R> {
                     ) {
                         self.handle_message(message);
                     }
+
+                    if self.ack_timer.is_none() {
+                        self.ack_timer = Some(R::timer(min(
+                            self.transmission.round_trip_time() / 6,
+                            MAX_ACK_TIMEOUT,
+                        )));
+                    }
                 }
                 Block::FollowOnFragment {
                     last,
@@ -336,6 +357,13 @@ impl<R: Runtime> Ssu2Session<R> {
                         fragment,
                     ) {
                         self.handle_message(message);
+                    }
+
+                    if self.ack_timer.is_none() {
+                        self.ack_timer = Some(R::timer(min(
+                            self.transmission.round_trip_time() / 6,
+                            MAX_ACK_TIMEOUT,
+                        )));
                     }
                 }
                 Block::Ack {
@@ -401,18 +429,6 @@ impl<R: Runtime> Ssu2Session<R> {
             }
         }
 
-        if immediate_ack {
-            self.ack_timer = Some(R::timer(min(
-                self.transmission.round_trip_time() / 16,
-                MAX_IMMEDIATE_ACK_TIMEOUT,
-            )));
-        } else if self.ack_timer.is_none() {
-            self.ack_timer = Some(R::timer(min(
-                self.transmission.round_trip_time() / 6,
-                MAX_ACK_TIMEOUT,
-            )));
-        }
-
         Ok(())
     }
 
@@ -469,9 +485,9 @@ impl<R: Runtime> Ssu2Session<R> {
         }
     }
 
-    fn resend(&mut self) -> usize {
-        let Some(packets_to_resend) = self.transmission.resend() else {
-            return 0;
+    fn resend(&mut self) -> Result<usize, ()> {
+        let Some(packets_to_resend) = self.transmission.resend()? else {
+            return Ok(0);
         };
 
         let AckInfo {
@@ -480,7 +496,7 @@ impl<R: Runtime> Ssu2Session<R> {
             ranges,
         } = self.remote_ack.ack_info();
 
-        packets_to_resend
+        Ok(packets_to_resend
             .into_iter()
             .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
                 let message = DataMessageBuilder::default()
@@ -504,7 +520,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 }
 
                 pkt_count + 1
-            })
+            }))
     }
 
     /// Run the event loop of an active SSU2 session.
@@ -572,7 +588,7 @@ impl<R: Runtime> Future for Ssu2Session<R> {
         while self.transmission.has_capacity() {
             match self.cmd_rx.poll_recv(cx) {
                 Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
                 Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
                     self.send_message(message),
                 Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
@@ -584,20 +600,21 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                 None => break,
                 Some(timer) => match timer.poll_unpin(cx) {
                     Poll::Pending => break,
-                    Poll::Ready(_) => {
-                        let num_resent = self.resend();
+                    Poll::Ready(_) => match self.resend() {
+                        Err(()) => return Poll::Ready(TerminationReason::Timeout),
+                        Ok(num_resent) => {
+                            if num_resent > 0 {
+                                tracing::trace!(
+                                    target: LOG_TARGET,
+                                    router_id = %self.router_id,
+                                    ?num_resent,
+                                    "packet resent",
+                                );
+                            }
 
-                        if num_resent > 0 {
-                            tracing::trace!(
-                                target: LOG_TARGET,
-                                router_id = %self.router_id,
-                                ?num_resent,
-                                "packet resent",
-                            );
+                            self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
                         }
-
-                        self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
-                    }
+                    },
                 },
             }
         }
@@ -639,6 +656,8 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                         "failed to send explicit ack packet",
                     );
                 }
+
+                self.ack_timer = None;
             }
         }
 
@@ -809,5 +828,78 @@ mod tests {
         };
 
         let _ = tokio::time::timeout(Duration::from_secs(5), future).await.expect("no timeout");
+    }
+
+    #[tokio::test]
+    async fn session_terminated_after_too_many_resends() {
+        let (_from_socket_tx, from_socket_rx) = channel(128);
+        let (to_socket_tx, to_socket_rx) = channel(128);
+
+        let ctx = Ssu2SessionContext {
+            address: "127.0.0.1:8888".parse().unwrap(),
+            dst_id: 1337u64,
+            intro_key: [1u8; 32],
+            pkt_rx: from_socket_rx,
+            recv_key_ctx: KeyContext {
+                k_data: [2u8; 32],
+                k_header_2: [3u8; 32],
+            },
+            router_id: RouterId::random(),
+            send_key_ctx: KeyContext {
+                k_data: [3u8; 32],
+                k_header_2: [2u8; 32],
+            },
+        };
+
+        let (cmd_tx, handle) = {
+            // register one subsystem, start active session andn poll command handle
+            let (handle, cmd_rx) = {
+                let (cmd_tx, cmd_rx) = channel(16);
+                let mut handle = SubsystemHandle::new();
+                handle.register_subsystem(cmd_tx);
+
+                (handle, cmd_rx)
+            };
+
+            let handle =
+                tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
+
+            match cmd_rx.recv().await.unwrap() {
+                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } =>
+                    (tx, handle),
+                _ => panic!("invalid event"),
+            }
+        };
+
+        // send maximum amount of messages to the channel
+        for _ in 0..CMD_CHANNEL_SIZE {
+            cmd_tx
+                .try_send(SubsystemCommand::SendMessage {
+                    message: Message {
+                        message_type: MessageType::Data,
+                        message_id: *MessageId::random(),
+                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                        payload: vec![1, 2, 3, 4],
+                    }
+                    .serialize_short(),
+                })
+                .unwrap();
+        }
+
+        // read and parse all packets
+        for _ in 0..16 {
+            let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
+                HeaderKind::Data { .. } => {}
+                _ => panic!("invalid packet"),
+            }
+        }
+
+        match tokio::time::timeout(Duration::from_secs(15), handle).await {
+            Ok(Ok(context)) => assert!(std::matches!(context.reason, TerminationReason::Timeout)),
+            Ok(Err(_)) => panic!("session panicked"),
+            Err(_) => panic!("timeout"),
+        }
     }
 }
