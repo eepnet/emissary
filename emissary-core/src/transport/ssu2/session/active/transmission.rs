@@ -488,6 +488,7 @@ impl<R: Runtime> TransmissionManager<R> {
             .filter_map(|(pkt_num, segment)| {
                 (segment.sent.elapsed() > (*self.rto * segment.num_sent as u32)).then_some(*pkt_num)
             })
+            .take(self.window_size.saturating_sub(self.segments.len()))
             .collect::<Vec<_>>();
 
         if expired.is_empty() {
