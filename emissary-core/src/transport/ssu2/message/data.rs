@@ -34,6 +34,9 @@ use alloc::{vec, vec::Vec};
 /// Minimum size for an ACK block.
 const ACK_BLOCK_MIN_SIZE: usize = 8usize;
 
+/// Termination block minimum size.
+const TERMINATION_BLOCK_MIN_SIZE: usize = 12usize;
+
 /// Minimum size for `Data` packet.
 const DATA_PKT_MIN_SIZE: usize = 24usize;
 
@@ -182,7 +185,11 @@ impl<'a> DataMessageBuilder<'a> {
 
         // build payload
         let mut payload = {
-            let mut bytes_left = 1300; // TODO: not correct
+            let mut bytes_left = if self.termination_reason.is_some() {
+                1300 - TERMINATION_BLOCK_MIN_SIZE // TODO: not correct
+            } else {
+                1300 // TODO: not correct
+            };
             let mut out = BytesMut::with_capacity(bytes_left);
 
             match message {
@@ -243,6 +250,21 @@ impl<'a> DataMessageBuilder<'a> {
                                 out.put_u8(ack);
                             });
                     },
+            }
+
+            if let Some(_reason) = self.termination_reason {
+                if bytes_left < TERMINATION_BLOCK_MIN_SIZE {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        "packet doesn't have enough space for termination block",
+                    );
+                    debug_assert!(false);
+                }
+
+                out.put_u8(BlockType::Termination.as_u8());
+                out.put_u16(9u16);
+                out.put_u64(pkt_num as u64); // TODO: not correct
+                out.put_u8(2u8);
             }
 
             if out.len() < DATA_PKT_MIN_SIZE {

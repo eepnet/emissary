@@ -64,7 +64,7 @@ mod transmission;
 // TODO: move code from `TransmissionManager` into here?
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::active";
+const LOG_TARGET: &str = "emissary::ssu2::active";
 
 /// Command channel size.
 const CMD_CHANNEL_SIZE: usize = 512;
@@ -77,6 +77,75 @@ const MAX_IMMEDIATE_ACK_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// Maximum timeout for ACK.
 const MAX_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Immediate ACK interval.
+///
+/// How often should an immediate ACK be bundled in a message.
+const IMMEDIATE_ACK_INTERVAL: u32 = 10u32;
+
+/// ACK timer.
+///
+/// Keeps track and allows scheduling both while respecting the priority of an immediate ACK.
+struct AckTimer<R: Runtime> {
+    /// Immediate ACK timer, if set.
+    immediate: Option<R::Timer>,
+
+    /// Normal ACK timer, if set.
+    normal: Option<R::Timer>,
+}
+
+impl<R: Runtime> AckTimer<R> {
+    fn new() -> Self {
+        Self {
+            immediate: None,
+            normal: None,
+        }
+    }
+
+    /// Schedule immediate ACK.
+    ///
+    /// It's only scheduled if there is no immediate ACK pending
+    fn schedule_immediate_ack(&mut self, rtt: Duration) {
+        if self.immediate.is_none() {
+            self.immediate = Some(R::timer(min(rtt / 16, MAX_IMMEDIATE_ACK_TIMEOUT)));
+        }
+    }
+
+    /// Schedule normal ACK.
+    ///
+    /// It's only scheduled if there is no previous ACK, neither immediate nor regular, pending.
+    fn schedule_ack(&mut self, rtt: Duration) {
+        if self.immediate.is_none() && self.normal.is_none() {
+            self.normal = Some(R::timer(min(rtt / 6, MAX_ACK_TIMEOUT)));
+        }
+    }
+}
+
+impl<R: Runtime> Future for AckTimer<R> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(timer) = &mut self.immediate {
+            if timer.poll_unpin(cx).is_ready() {
+                self.immediate = None;
+                self.normal = None;
+
+                return Poll::Ready(());
+            }
+        }
+
+        if let Some(timer) = &mut self.normal {
+            if timer.poll_unpin(cx).is_ready() {
+                self.immediate = None;
+                self.normal = None;
+
+                return Poll::Ready(());
+            }
+        }
+
+        Poll::Pending
+    }
+}
 
 /// SSU2 active session context.
 pub struct Ssu2SessionContext {
@@ -106,8 +175,8 @@ pub struct Ssu2SessionContext {
 
 /// Active SSU2 session.
 pub struct Ssu2Session<R: Runtime> {
-    /// Immediate ACK timer.
-    ack_timer: Option<R::Timer>,
+    /// ACK timer.
+    ack_timer: AckTimer<R>,
 
     /// Socket address of the remote router.
     address: SocketAddr,
@@ -131,6 +200,9 @@ pub struct Ssu2Session<R: Runtime> {
     ///
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
+
+    /// Packet number of the packet that last requested an immediate ACK.
+    last_immediate_ack: u32,
 
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
@@ -183,7 +255,7 @@ impl<R: Runtime> Ssu2Session<R> {
         );
 
         Self {
-            ack_timer: None,
+            ack_timer: AckTimer::<R>::new(),
             address: context.address,
             cmd_rx,
             cmd_tx,
@@ -191,6 +263,7 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(),
             intro_key: context.intro_key,
+            last_immediate_ack: 0u32,
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             pkt_tx,
@@ -281,10 +354,7 @@ impl<R: Runtime> Ssu2Session<R> {
             .decrypt_with_ad(&pkt[..16], &mut payload)?;
 
         if immediate_ack {
-            self.ack_timer = Some(R::timer(min(
-                self.transmission.round_trip_time() / 16,
-                MAX_IMMEDIATE_ACK_TIMEOUT,
-            )));
+            self.ack_timer.schedule_immediate_ack(self.transmission.round_trip_time());
         }
 
         for block in Block::parse(&payload).ok_or(Ssu2Error::Malformed)? {
@@ -310,13 +380,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 Block::I2Np { message } => {
                     self.handle_message(message);
                     self.remote_ack.register_pkt(pkt_num);
-
-                    if self.ack_timer.is_none() {
-                        self.ack_timer = Some(R::timer(min(
-                            self.transmission.round_trip_time() / 6,
-                            MAX_ACK_TIMEOUT,
-                        )));
-                    }
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
                 }
                 Block::FirstFragment {
                     message_type,
@@ -325,6 +389,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment,
                 } => {
                     self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.first_fragment(
                         message_type,
@@ -334,13 +399,6 @@ impl<R: Runtime> Ssu2Session<R> {
                     ) {
                         self.handle_message(message);
                     }
-
-                    if self.ack_timer.is_none() {
-                        self.ack_timer = Some(R::timer(min(
-                            self.transmission.round_trip_time() / 6,
-                            MAX_ACK_TIMEOUT,
-                        )));
-                    }
                 }
                 Block::FollowOnFragment {
                     last,
@@ -349,6 +407,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment,
                 } => {
                     self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.follow_on_fragment(
                         message_id,
@@ -357,13 +416,6 @@ impl<R: Runtime> Ssu2Session<R> {
                         fragment,
                     ) {
                         self.handle_message(message);
-                    }
-
-                    if self.ack_timer.is_none() {
-                        self.ack_timer = Some(R::timer(min(
-                            self.transmission.round_trip_time() / 6,
-                            MAX_ACK_TIMEOUT,
-                        )));
                     }
                 }
                 Block::Ack {
@@ -386,6 +438,8 @@ impl<R: Runtime> Ssu2Session<R> {
                         for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
                             // include immediate ack in the last fragment
                             let message = if num_pkts > 1 && i == num_pkts - 1 {
+                                self.last_immediate_ack = pkt_num;
+
                                 DataMessageBuilder::default().with_immediate_ack()
                             } else {
                                 DataMessageBuilder::default()
@@ -434,13 +488,6 @@ impl<R: Runtime> Ssu2Session<R> {
 
     /// Send `message` to remote router.
     fn send_message(&mut self, message: Vec<u8>) {
-        tracing::trace!(
-            target: LOG_TARGET,
-            router_id = %self.router_id,
-            message_len = ?message.len(),
-            "send i2np message",
-        );
-
         // TODO: this makes no sense, get unserialized message from subsystem
         let message = Message::parse_short(&message).unwrap();
         let AckInfo {
@@ -448,6 +495,7 @@ impl<R: Runtime> Ssu2Session<R> {
             num_acks,
             ranges,
         } = self.remote_ack.ack_info();
+        let pkt_len = message.payload.len();
 
         let Some(packets) = self.transmission.segment(message) else {
             return;
@@ -455,8 +503,16 @@ impl<R: Runtime> Ssu2Session<R> {
         let num_pkts = packets.len();
 
         for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
-            // include immediate ack in the last fragment
-            let message = if num_pkts > 1 && i == num_pkts - 1 {
+            // include immediate ack flag if:
+            //  1) this is the last in a burst of messages
+            //  2) immediate ack has not been sent in the last `IMMEDIATE_ACK_INTERVAL` packets
+            let last_in_burst = num_pkts > 1 && i == num_pkts - 1;
+            let immediate_ack_threshold =
+                pkt_num.saturating_sub(self.last_immediate_ack) > IMMEDIATE_ACK_INTERVAL;
+
+            let message = if last_in_burst || immediate_ack_threshold {
+                self.last_immediate_ack = pkt_num;
+
                 DataMessageBuilder::default().with_immediate_ack()
             } else {
                 DataMessageBuilder::default()
@@ -466,6 +522,14 @@ impl<R: Runtime> Ssu2Session<R> {
             .with_message(pkt_num, message_kind)
             .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
             .build::<R>();
+
+            tracing::trace!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?pkt_num,
+                ?pkt_len,
+                "send i2np message",
+            );
 
             if let Err(error) = self.pkt_tx.try_send(Packet {
                 pkt: message.to_vec(),
@@ -499,6 +563,8 @@ impl<R: Runtime> Ssu2Session<R> {
         Ok(packets_to_resend
             .into_iter()
             .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
+                self.last_immediate_ack = pkt_num;
+
                 let message = DataMessageBuilder::default()
                     .with_dst_id(self.dst_id)
                     .with_key_context(self.intro_key, &self.send_key_ctx)
@@ -619,45 +685,41 @@ impl<R: Runtime> Future for Ssu2Session<R> {
             }
         }
 
-        if let Some(timer) = &mut self.ack_timer {
-            if timer.poll_unpin(cx).is_ready() {
-                let AckInfo {
-                    highest_seen,
-                    num_acks,
-                    ranges,
-                } = self.remote_ack.ack_info();
+        if self.ack_timer.poll_unpin(cx).is_ready() {
+            let AckInfo {
+                highest_seen,
+                num_acks,
+                ranges,
+            } = self.remote_ack.ack_info();
 
-                tracing::trace!(
+            tracing::trace!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?highest_seen,
+                ?num_acks,
+                ?ranges,
+                "send explicit ack",
+            );
+
+            let message = DataMessageBuilder::default()
+                .with_dst_id(self.dst_id)
+                .with_key_context(self.intro_key, &self.send_key_ctx)
+                .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
+                .with_ack(highest_seen, num_acks, ranges)
+                .build::<R>();
+
+            // TODO: report `pkt_num` to `RemoteAckManager`?
+
+            if let Err(error) = self.pkt_tx.try_send(Packet {
+                pkt: message.to_vec(),
+                address: self.address,
+            }) {
+                tracing::warn!(
                     target: LOG_TARGET,
                     router_id = %self.router_id,
-                    ?highest_seen,
-                    ?num_acks,
-                    ?ranges,
-                    "send explicit ack",
+                    ?error,
+                    "failed to send explicit ack packet",
                 );
-
-                let message = DataMessageBuilder::default()
-                    .with_dst_id(self.dst_id)
-                    .with_key_context(self.intro_key, &self.send_key_ctx)
-                    .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
-                    .with_ack(highest_seen, num_acks, ranges)
-                    .build::<R>();
-
-                // TODO: report `pkt_num` to `RemoteAckManager`?
-
-                if let Err(error) = self.pkt_tx.try_send(Packet {
-                    pkt: message.to_vec(),
-                    address: self.address,
-                }) {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        router_id = %self.router_id,
-                        ?error,
-                        "failed to send explicit ack packet",
-                    );
-                }
-
-                self.ack_timer = None;
             }
         }
 

@@ -56,7 +56,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::inbound";
+const LOG_TARGET: &str = "emissary::ssu2::pending::inbound";
 
 /// Timeout for receicing [`SessionRequest`] from Bob.
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);

@@ -55,7 +55,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::outbound";
+const LOG_TARGET: &str = "emissary::ssu2::pending::outbound";
 
 /// Outbound SSU2 session context.
 pub struct OutboundSsu2Context {

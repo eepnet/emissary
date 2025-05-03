@@ -37,7 +37,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::active::transmission";
+const LOG_TARGET: &str = "emissary::ssu2::active::transmission";
 
 /// SSU2 overheader
 ///
@@ -389,11 +389,11 @@ impl<R: Runtime> TransmissionManager<R> {
     pub fn register_ack(&mut self, ack_through: u32, num_acks: u8, ranges: &[(u8, u8)]) {
         tracing::trace!(
             target: LOG_TARGET,
+            router_id = %self.router_id,
             ?ack_through,
             ?num_acks,
             ?ranges,
             num_segments = ?self.segments.len(),
-            router_id = %self.router_id,
             "handle ack",
         );
 
@@ -498,28 +498,34 @@ impl<R: Runtime> TransmissionManager<R> {
         // reassign packet number for each segment and reinsert it into `self.segments`
         let pkts_to_resend = expired
             .into_iter()
-            .map(|pkt_num| {
+            .map(|old_pkt_num| {
                 // the segment must exist since it was just found in `self.segments`
                 let Segment {
                     num_sent,
                     segment,
                     sent,
-                } = self.segments.remove(&pkt_num).expect("to exist");
+                } = self.segments.remove(&old_pkt_num).expect("to exist");
 
                 if num_sent + 1 > RESEND_TERMINATION_THRESHOLD {
                     tracing::debug!(
                         target: LOG_TARGET,
                         router_id = %self.router_id,
-                        ?pkt_num,
+                        pkt_num = ?old_pkt_num,
                         "packet has been resent over {} times, terminating session",
                         RESEND_TERMINATION_THRESHOLD,
                     );
                     return Err(());
                 }
 
-                // each packet is assigned a new packet number so the ciphertext of the packet
-                // will be different
                 let pkt_num = self.next_pkt_num();
+
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?old_pkt_num,
+                    new_pkt_num = ?pkt_num,
+                    "resend packet",
+                );
 
                 self.segments.insert(
                     pkt_num,
@@ -547,6 +553,7 @@ impl<R: Runtime> TransmissionManager<R> {
             target: LOG_TARGET,
             router_id = %self.router_id,
             num_pkts = ?pkts_to_resend.len(),
+            pkts = ?pkts_to_resend,
             window = ?self.window_size,
             "resend packets",
         );
