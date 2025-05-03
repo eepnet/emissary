@@ -299,9 +299,8 @@ impl<'a> DataMessageBuilder<'a> {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::mock::MockRuntime;
-
     use super::*;
+    use crate::runtime::mock::MockRuntime;
 
     #[test]
     fn immediate_ack() {

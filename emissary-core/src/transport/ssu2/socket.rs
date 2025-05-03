@@ -358,6 +358,7 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         let router_info = self.router_ctx.router_info();
         let state = Sha256::new().update(&self.outbound_state).update(&static_key).finalize();
+        let subsystem_handle = self.subsystem_handle.clone();
         let src_id = R::rng().next_u64();
         let dst_id = R::rng().next_u64();
 
@@ -374,21 +375,25 @@ impl<R: Runtime> Ssu2Socket<R> {
         self.sessions.insert(src_id, tx);
         self.pending_outbound.insert(address, intro_key);
 
-        self.pending_sessions.push(OutboundSsu2Session::<R>::new(OutboundSsu2Context {
-            address,
-            chaining_key: self.chaining_key.clone(),
-            dst_id,
-            intro_key,
-            local_static_key: self.static_key.clone(),
-            net_id: self.router_ctx.net_id(),
-            pkt_tx: self.pkt_tx.clone(),
-            router_id,
-            router_info,
-            rx,
-            src_id,
-            state,
-            static_key,
-        }));
+        self.pending_sessions.push(
+            OutboundSsu2Session::<R>::new(OutboundSsu2Context {
+                address,
+                chaining_key: self.chaining_key.clone(),
+                dst_id,
+                intro_key,
+                local_static_key: self.static_key.clone(),
+                net_id: self.router_ctx.net_id(),
+                pkt_tx: self.pkt_tx.clone(),
+                router_id,
+                router_info,
+                rx,
+                src_id,
+                state,
+                static_key,
+                subsystem_handle,
+            })
+            .run(),
+        );
 
         if let Some(waker) = self.waker.take() {
             waker.wake_by_ref();

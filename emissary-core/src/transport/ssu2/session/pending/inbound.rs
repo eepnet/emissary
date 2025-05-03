@@ -722,6 +722,7 @@ mod tests {
         crypto::sha256::Sha256,
         primitives::RouterInfoBuilder,
         runtime::mock::MockRuntime,
+        subsystem::SubsystemHandle,
         transport::ssu2::session::pending::outbound::{OutboundSsu2Context, OutboundSsu2Session},
     };
     use std::net::{IpAddr, Ipv4Addr};
@@ -798,6 +799,7 @@ mod tests {
             src_id,
             state: inbound_state.clone(),
             static_key: inbound_static_key.public(),
+            subsystem_handle: SubsystemHandle::new(),
         });
 
         let (pkt, pkt_num, dst_id, src_id) = {
