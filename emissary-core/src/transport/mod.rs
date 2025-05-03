@@ -819,13 +819,13 @@ impl<R: Runtime> Future for TransportManager<R> {
                         direction,
                         router_id,
                     })) => match direction {
+                        // TODO: cancel outbound?
                         Direction::Outbound if !self.pending_connections.contains(&router_id) => {
-                            tracing::warn!(
+                            tracing::debug!(
                                 target: LOG_TARGET,
                                 %router_id,
                                 "pending connection doesn't exist for router, rejecting connection",
                             );
-                            debug_assert!(false);
                             self.transports[index].reject(&router_id);
                         }
                         // direction might be either inbound or outbound because connections
