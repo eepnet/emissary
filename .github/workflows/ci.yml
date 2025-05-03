@@ -48,8 +48,23 @@ jobs:
       working-directory: emissary-util
       run: cargo clippy --all-features -- -D warnings
 
+  check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+    - name: cargo-check emissary-core no-std
+      working-directory: emissary-core
+      run: cargo check --no-default-features --features no_std
+
+    - name: cargo-check emissary-cli web-ui
+      working-directory: emissary-cli
+      run: cargo check --no-default-features --features web-ui
+
   test:
     runs-on: ubuntu-latest
+    needs: [fmt, clippy, check]
     steps:
     - uses: actions/checkout@v4
     - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -65,18 +80,3 @@ jobs:
     - name: cargo-test emissary-util
       working-directory: emissary-util
       run: cargo test
-
-  check:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-    - name: cargo-check emissary-core no-std
-      working-directory: emissary-core
-      run: cargo check --no-default-features --features no_std
-
-    - name: cargo-check emissary-cli web-ui
-      working-directory: emissary-cli
-      run: cargo check --no-default-features --features web-ui
-
