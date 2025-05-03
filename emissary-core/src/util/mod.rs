@@ -179,6 +179,10 @@ pub fn shuffle<T>(array: &mut [T], rng: &mut impl RngCore) {
 #[cfg(test)]
 #[allow(unused)]
 pub fn init_logger() {
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "trace");
+    }
+
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();

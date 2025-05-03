@@ -819,14 +819,6 @@ impl<R: Runtime> Future for TransportManager<R> {
                         direction,
                         router_id,
                     })) => match direction {
-                        Direction::Inbound if self.pending_connections.contains(&router_id) => {
-                            tracing::debug!(
-                                target: LOG_TARGET,
-                                %router_id,
-                                "outbound connection pending, rejecting inbound connection",
-                            );
-                            self.transports[index].reject(&router_id);
-                        }
                         Direction::Outbound if !self.pending_connections.contains(&router_id) => {
                             tracing::warn!(
                                 target: LOG_TARGET,
@@ -836,6 +828,12 @@ impl<R: Runtime> Future for TransportManager<R> {
                             debug_assert!(false);
                             self.transports[index].reject(&router_id);
                         }
+                        // direction might be either inbound or outbound because connections
+                        // are allowed to race
+                        //
+                        // in other words, if the local establishes an outbound connections and
+                        // while it's being negotiated, an inbound connection has been negotiated,
+                        // the inbound connection is selected as the active connection
                         direction => match self.routers.insert(router_id.clone()) {
                             true => {
                                 tracing::trace!(
@@ -917,10 +915,15 @@ impl<R: Runtime> Future for TransportManager<R> {
                         %router_id,
                         "router info query succeeded, dial pending router",
                     );
-
                     self.pending_queries.remove(&router_id);
-                    self.pending_connections.remove(&router_id);
-                    self.on_dial_router(router_id);
+
+                    // dial router only if there is a pending connection to it
+                    //
+                    // pending connection might not exist if an inbound connection was established
+                    // while the router info query was in progress
+                    if self.pending_connections.remove(&router_id) {
+                        self.on_dial_router(router_id);
+                    }
                 }
                 Poll::Ready(Some((router_id, Err(error)))) => {
                     tracing::debug!(
@@ -929,15 +932,20 @@ impl<R: Runtime> Future for TransportManager<R> {
                         ?error,
                         "router info query failed",
                     );
-                    self.pending_connections.remove(&router_id);
                     self.pending_queries.remove(&router_id);
 
-                    // report connection failure to subsystems
-                    let mut handle = self.subsystem_handle.clone();
+                    // report dial failure only if there is a pending connection
+                    //
+                    // pending connection might not exist if an inbound connection was established
+                    // while the router info query was in progress
+                    if self.pending_connections.remove(&router_id) {
+                        // report connection failure to subsystems
+                        let mut handle = self.subsystem_handle.clone();
 
-                    R::spawn(async move {
-                        handle.report_connection_failure(router_id).await;
-                    });
+                        R::spawn(async move {
+                            handle.report_connection_failure(router_id).await;
+                        });
+                    }
                 }
             }
         }
@@ -1558,7 +1566,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbound_connection_rejected_outbound_pending() {
+    async fn inbound_connection_replaces_pending_outbound_connection() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1655,18 +1663,11 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            Command::Reject(rid) => {
+            Command::Accept(rid) => {
                 assert_eq!(rid, router_id);
             }
             _ => panic!("invalid command"),
         }
-
-        event_tx
-            .send(TransportEvent::ConnectionFailure {
-                router_id: router_id.clone(),
-            })
-            .await
-            .unwrap();
 
         event_tx
             .send(TransportEvent::ConnectionEstablished {
@@ -1681,7 +1682,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            Command::Accept(rid) => {
+            Command::Reject(rid) => {
                 assert_eq!(rid, router_id);
             }
             _ => panic!("invalid command"),
@@ -1689,7 +1690,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbound_connection_rejected_while_netdb_lookup_pending() {
+    async fn inbound_connection_received_while_netdb_lookup_pending() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1715,6 +1716,7 @@ mod tests {
         #[derive(Clone, Default)]
         enum Command {
             Accept(RouterId),
+            #[allow(unused)]
             Reject(RouterId),
             #[default]
             Dummy,
@@ -1785,35 +1787,116 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            Command::Reject(rid) => {
+            Command::Accept(rid) => {
                 assert_eq!(rid, router_id);
             }
             _ => panic!("invalid command"),
         }
 
-        // RI not found
+        // RI not found, verify that nothing is reported
         query_result_tx.send(Err(QueryError::ValueNotFound)).unwrap();
 
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(tokio::time::timeout(Duration::from_secs(5), handle.next()).await.is_err());
+    }
 
-        // add new inbound connection from the same node that was previously rejected
-        event_tx
-            .send(TransportEvent::ConnectionEstablished {
-                router_id: router_id.clone(),
-                direction: Direction::Inbound,
-            })
-            .await
-            .unwrap();
+    #[tokio::test]
+    async fn router_info_query_fails() {
+        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
+        let serialized = Bytes::from(router_info.serialize(&signing_key));
+        let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (handle, netdb_rx) = NetDbHandle::create();
+        let ctx = RouterContext::new(
+            MockRuntime::register_metrics(vec![], None),
+            storage.clone(),
+            router_info.identity.id(),
+            serialized.clone(),
+            static_key,
+            signing_key,
+            2u8,
+            event_handle.clone(),
+        );
+        let router_id = RouterId::random();
 
-        match tokio::time::timeout(Duration::from_secs(5), rx.recv())
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        builder.register_netdb_handle(handle);
+        let mut handle = builder.register_subsystem(SubsystemKind::NetDb);
+        let mut manager = builder.build();
+
+        #[derive(Clone, Default)]
+        enum Command {
+            #[allow(unused)]
+            Accept(RouterId),
+            #[allow(unused)]
+            Reject(RouterId),
+            #[default]
+            Dummy,
+        }
+
+        pub struct MockTransport {
+            tx: mpsc::Sender<Command>,
+            event_rx: mpsc::Receiver<TransportEvent>,
+        }
+
+        impl Transport for MockTransport {
+            fn connect(&mut self, _: RouterInfo) {
+                todo!();
+            }
+
+            fn accept(&mut self, router_id: &RouterId) {
+                self.tx.try_send(Command::Accept(router_id.clone())).unwrap();
+            }
+
+            fn reject(&mut self, router_id: &RouterId) {
+                self.tx.try_send(Command::Reject(router_id.clone())).unwrap();
+            }
+        }
+
+        impl Stream for MockTransport {
+            type Item = TransportEvent;
+
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                self.event_rx.poll_recv(cx)
+            }
+        }
+
+        let (tx, _rx) = mpsc::channel(64);
+        let (_event_tx, event_rx) = mpsc::channel(64);
+
+        manager.transports.push(Box::new(MockTransport { event_rx, tx }));
+        tokio::spawn(manager);
+
+        handle.connect(&router_id).unwrap();
+
+        // since RI for `router_id` doesn't exist, it's looked up from netdb
+        let query_result_tx = match tokio::time::timeout(Duration::from_secs(5), netdb_rx.recv())
             .await
             .expect("no timeout")
             .expect("to succeed")
         {
-            Command::Accept(rid) => {
+            NetDbAction::QueryRouterInfo { router_id: rid, tx } => {
                 assert_eq!(rid, router_id);
+                tx
             }
             _ => panic!("invalid command"),
+        };
+
+        // RI not found, verify that nothing is reported
+        query_result_tx.send(Err(QueryError::ValueNotFound)).unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        match tokio::time::timeout(Duration::from_secs(5), handle.next())
+            .await
+            .expect("no timeout")
+            .expect("to succeed")
+        {
+            SubsystemEvent::ConnectionFailure { router } => assert_eq!(router, router_id),
+            _ => panic!("invalid event"),
         }
     }
 
