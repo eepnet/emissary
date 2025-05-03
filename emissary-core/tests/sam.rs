@@ -16,9 +16,11 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+#![allow(unused)]
+
 use emissary_core::{
     events::EventSubscriber, router::Router, runtime::AddressBook, Config, Ntcp2Config, SamConfig,
-    TransitConfig,
+    Ssu2Config, TransitConfig,
 };
 use emissary_util::runtime::tokio::Runtime;
 use rand::{thread_rng, RngCore};
@@ -35,32 +37,66 @@ use yosemite::{
 
 use std::{fs::File, future::Future, io::Read, pin::Pin, sync::Arc, time::Duration};
 
+#[derive(Clone, Copy)]
+enum TransportKind {
+    Ntcp2,
+    Ssu2,
+}
+
 async fn make_router(
     floodfill: bool,
     net_id: u8,
     routers: Vec<Vec<u8>>,
+    kind: TransportKind,
 ) -> (Router<Runtime>, EventSubscriber, Vec<u8>) {
+    let (ntcp2, ssu2) = match kind {
+        TransportKind::Ntcp2 => (
+            Some(Ntcp2Config {
+                port: 0u16,
+                iv: {
+                    let mut iv = [0u8; 16];
+                    thread_rng().fill_bytes(&mut iv);
+                    iv
+                },
+                key: {
+                    let mut key = [0u8; 32];
+                    thread_rng().fill_bytes(&mut key);
+                    key
+                },
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+            }),
+            None,
+        ),
+        TransportKind::Ssu2 => (
+            None,
+            Some(Ssu2Config {
+                port: 0u16,
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+
+                static_key: {
+                    let mut iv = [0u8; 32];
+                    thread_rng().fill_bytes(&mut iv);
+                    iv
+                },
+                intro_key: {
+                    let mut key = [0u8; 32];
+                    thread_rng().fill_bytes(&mut key);
+                    key
+                },
+            }),
+        ),
+    };
+
     let config = Config {
         net_id: Some(net_id),
         floodfill,
         insecure_tunnels: true,
         allow_local: true,
         metrics: None,
-        ntcp2: Some(Ntcp2Config {
-            port: 0u16,
-            iv: {
-                let mut iv = [0u8; 16];
-                thread_rng().fill_bytes(&mut iv);
-                iv
-            },
-            key: {
-                let mut key = [0u8; 32];
-                thread_rng().fill_bytes(&mut key);
-                key
-            },
-            host: Some("127.0.0.1".parse().unwrap()),
-            publish: true,
-        }),
+        ntcp2,
+        ssu2,
         routers,
         samv3_config: Some(SamConfig {
             tcp_port: 0u16,
@@ -77,7 +113,16 @@ async fn make_router(
 }
 
 #[tokio::test]
-async fn generate_destination() {
+async fn generate_destination_ntcp2() {
+    generate_destination(TransportKind::Ntcp2).await;
+}
+
+#[tokio::test]
+async fn generate_destination_ssu2() {
+    generate_destination(TransportKind::Ssu2).await;
+}
+
+async fn generate_destination(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -86,14 +131,15 @@ async fn generate_destination() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -123,7 +169,16 @@ async fn generate_destination() {
 }
 
 #[tokio::test]
-async fn streaming_works() {
+async fn streaming_works_ntcp2() {
+    streaming_works(TransportKind::Ntcp2).await;
+}
+
+#[tokio::test]
+async fn streaming_works_ssu2() {
+    streaming_works(TransportKind::Ssu2).await;
+}
+
+async fn streaming_works(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -132,7 +187,8 @@ async fn streaming_works() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -142,7 +198,7 @@ async fn streaming_works() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -208,7 +264,16 @@ async fn streaming_works() {
 }
 
 #[tokio::test]
-async fn repliable_datagrams_work() {
+async fn repliable_datagrams_work_ntcp2() {
+    repliable_datagrams_work(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn repliable_datagrams_work_ssu2() {
+    repliable_datagrams_work(TransportKind::Ssu2).await
+}
+
+async fn repliable_datagrams_work(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -217,7 +282,8 @@ async fn repliable_datagrams_work() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _event, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _event, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -227,7 +293,7 @@ async fn repliable_datagrams_work() {
     let mut ports = Vec::<(u16, u16)>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
         let addr_info = router.protocol_address_info();
 
         ports.push((
@@ -296,7 +362,16 @@ async fn repliable_datagrams_work() {
 }
 
 #[tokio::test]
-async fn anonymous_datagrams_work() {
+async fn anonymous_datagrams_work_ntcp2() {
+    anonymous_datagrams_work(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn anonymous_datagrams_work_ssu2() {
+    anonymous_datagrams_work(TransportKind::Ssu2).await
+}
+
+async fn anonymous_datagrams_work(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -305,7 +380,8 @@ async fn anonymous_datagrams_work() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -315,7 +391,7 @@ async fn anonymous_datagrams_work() {
     let mut ports = Vec::<(u16, u16)>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
         let addr_info = router.protocol_address_info();
 
         ports.push((
@@ -383,7 +459,16 @@ async fn anonymous_datagrams_work() {
 }
 
 #[tokio::test]
-async fn open_stream_to_self() {
+async fn open_stream_to_self_ntcp2() {
+    open_stream_to_self(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn open_stream_to_self_ssu2() {
+    open_stream_to_self(TransportKind::Ssu2).await
+}
+
+async fn open_stream_to_self(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -392,14 +477,15 @@ async fn open_stream_to_self() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -428,7 +514,16 @@ async fn open_stream_to_self() {
 }
 
 #[tokio::test]
-async fn create_same_session_twice_transient() {
+async fn create_same_session_twice_transient_ntcp2() {
+    create_same_session_twice_transient(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn create_same_session_twice_transient_ssu2() {
+    create_same_session_twice_transient(TransportKind::Ssu2).await
+}
+
+async fn create_same_session_twice_transient(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -437,14 +532,15 @@ async fn create_same_session_twice_transient() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -480,7 +576,16 @@ async fn create_same_session_twice_transient() {
 }
 
 #[tokio::test]
-async fn create_same_session_twice_persistent() {
+async fn create_same_session_twice_persistent_ntcp2() {
+    create_same_session_twice_persistent(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn create_same_session_twice_persistent_ssu2() {
+    create_same_session_twice_persistent(TransportKind::Ssu2).await
+}
+
+async fn create_same_session_twice_persistent(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -489,14 +594,15 @@ async fn create_same_session_twice_persistent() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -543,7 +649,16 @@ async fn create_same_session_twice_persistent() {
 }
 
 #[tokio::test]
-async fn duplicate_session_id() {
+async fn duplicate_session_id_ntcp2() {
+    duplicate_session_id(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn duplicate_session_id_ssu2() {
+    duplicate_session_id(TransportKind::Ssu2).await
+}
+
+async fn duplicate_session_id(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -552,14 +667,15 @@ async fn duplicate_session_id() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -595,7 +711,21 @@ async fn duplicate_session_id() {
 }
 
 #[tokio::test]
-async fn stream_lots_of_data() {
+async fn stream_lots_of_data_ntcp2() {
+    stream_lots_of_data(TransportKind::Ntcp2).await
+}
+
+// two worker threads are needed because the test transfer a lot of data and it consist of running
+// 6 routers without optimizations in a single thread which the executor doesn't like, causing
+// immediate ACKs to be delayed up to 100ms.
+//
+// TODO: run all tests with `--profile testnet`?
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stream_lots_of_data_ssu2() {
+    stream_lots_of_data(TransportKind::Ssu2).await
+}
+
+async fn stream_lots_of_data(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -604,7 +734,8 @@ async fn stream_lots_of_data() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -614,7 +745,7 @@ async fn stream_lots_of_data() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -673,7 +804,10 @@ async fn stream_lots_of_data() {
         .expect("to succeed");
 
     let mut buffer = vec![0u8; 256 * 1024];
-    stream.read_exact(&mut buffer).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(120), stream.read_exact(&mut buffer))
+        .await
+        .expect("no timeout")
+        .expect("to succeed");
 
     let mut hasher = Sha256::new();
     hasher.update(&buffer);
@@ -683,7 +817,16 @@ async fn stream_lots_of_data() {
 }
 
 #[tokio::test]
-async fn forward_stream() {
+async fn forward_stream_ntcp2() {
+    forward_stream(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn forward_stream_ssu2() {
+    forward_stream(TransportKind::Ssu2).await
+}
+
+async fn forward_stream(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -692,7 +835,8 @@ async fn forward_stream() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -702,7 +846,7 @@ async fn forward_stream() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -768,7 +912,16 @@ async fn forward_stream() {
 }
 
 #[tokio::test]
-async fn connect_to_inactive_destination() {
+async fn connect_to_inactive_destination_ntcp2() {
+    connect_to_inactive_destination(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn connect_to_inactive_destination_ssu2() {
+    connect_to_inactive_destination(TransportKind::Ssu2).await
+}
+
+async fn connect_to_inactive_destination(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -777,14 +930,15 @@ async fn connect_to_inactive_destination() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create the sam router and fetch the random sam tcp port from the router
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
 
     // spawn the router inte background and wait a moment for the network to boot
@@ -821,7 +975,16 @@ async fn connect_to_inactive_destination() {
 }
 
 #[tokio::test]
-async fn closed_stream_detected() {
+async fn closed_stream_detected_ntcp2() {
+    closed_stream_detected(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn closed_stream_detected_ssu2() {
+    closed_stream_detected(TransportKind::Ssu2).await
+}
+
+async fn closed_stream_detected(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -830,7 +993,8 @@ async fn closed_stream_detected() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -840,7 +1004,7 @@ async fn closed_stream_detected() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -915,7 +1079,16 @@ async fn closed_stream_detected() {
 }
 
 #[tokio::test]
-async fn close_and_reconnect() {
+async fn close_and_reconnect_ntcp2() {
+    close_and_reconnect(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn close_and_reconnect_ssu2() {
+    close_and_reconnect(TransportKind::Ssu2).await
+}
+
+async fn close_and_reconnect(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -924,7 +1097,8 @@ async fn close_and_reconnect() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -934,7 +1108,7 @@ async fn close_and_reconnect() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -1013,7 +1187,16 @@ async fn close_and_reconnect() {
 }
 
 #[tokio::test]
-async fn create_multiple_sessions() {
+async fn create_multiple_sessions_ntcp2() {
+    create_multiple_sessions(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn create_multiple_sessions_ssu2() {
+    create_multiple_sessions(TransportKind::Ssu2).await
+}
+
+async fn create_multiple_sessions(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1022,13 +1205,14 @@ async fn create_multiple_sessions() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..6 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let port = router.protocol_address_info().sam_tcp.unwrap().port();
     tokio::spawn(router);
 
@@ -1075,7 +1259,16 @@ async fn create_multiple_sessions() {
 }
 
 #[tokio::test]
-async fn send_data_to_destroyed_session() {
+async fn send_data_to_destroyed_session_ntcp2() {
+    send_data_to_destroyed_session(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn send_data_to_destroyed_session_ssu2() {
+    send_data_to_destroyed_session(TransportKind::Ssu2).await
+}
+
+async fn send_data_to_destroyed_session(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1084,7 +1277,8 @@ async fn send_data_to_destroyed_session() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -1094,7 +1288,7 @@ async fn send_data_to_destroyed_session() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -1167,7 +1361,16 @@ async fn send_data_to_destroyed_session() {
 }
 
 #[tokio::test]
-async fn connect_using_b32_i2p() {
+async fn connect_using_b32_i2p_ntcp2() {
+    connect_using_b32_i2p(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn connect_using_b32_i2p_ssu2() {
+    connect_using_b32_i2p(TransportKind::Ssu2).await
+}
+
+async fn connect_using_b32_i2p(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1176,7 +1379,8 @@ async fn connect_using_b32_i2p() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -1186,7 +1390,7 @@ async fn connect_using_b32_i2p() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -1264,7 +1468,16 @@ async fn connect_using_b32_i2p() {
 }
 
 #[tokio::test]
-async fn unpublished_destination() {
+async fn unpublished_destination_ntcp2() {
+    unpublished_destination(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn unpublished_destination_ssu2() {
+    unpublished_destination(TransportKind::Ssu2).await
+}
+
+async fn unpublished_destination(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1273,7 +1486,8 @@ async fn unpublished_destination() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -1283,7 +1497,7 @@ async fn unpublished_destination() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
@@ -1335,7 +1549,16 @@ async fn unpublished_destination() {
 }
 
 #[tokio::test]
-async fn host_lookup() {
+async fn host_lookup_ntcp2() {
+    host_lookup(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn host_lookup_ssu2() {
+    host_lookup(TransportKind::Ssu2).await
+}
+
+async fn host_lookup(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1344,14 +1567,15 @@ async fn host_lookup() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..6 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
     }
 
     // create router for the sam server
-    let router = make_router(false, net_id, router_infos.clone()).await.0;
+    let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
     let sam_port = router.protocol_address_info().sam_tcp.unwrap().port();
     tokio::spawn(router);
 
@@ -1388,27 +1612,54 @@ async fn host_lookup() {
         tokio::time::sleep(Duration::from_secs(5)).await;
     });
 
+    let (ntcp2, ssu2) = match kind {
+        TransportKind::Ntcp2 => (
+            Some(Ntcp2Config {
+                port: 0u16,
+                iv: {
+                    let mut iv = [0u8; 16];
+                    thread_rng().fill_bytes(&mut iv);
+                    iv
+                },
+                key: {
+                    let mut key = [0u8; 32];
+                    thread_rng().fill_bytes(&mut key);
+                    key
+                },
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+            }),
+            None,
+        ),
+        TransportKind::Ssu2 => (
+            None,
+            Some(Ssu2Config {
+                port: 0u16,
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+
+                static_key: {
+                    let mut iv = [0u8; 32];
+                    thread_rng().fill_bytes(&mut iv);
+                    iv
+                },
+                intro_key: {
+                    let mut key = [0u8; 32];
+                    thread_rng().fill_bytes(&mut key);
+                    key
+                },
+            }),
+        ),
+    };
+
     let config = Config {
         net_id: Some(net_id),
         floodfill: false,
         insecure_tunnels: true,
         allow_local: true,
         metrics: None,
-        ntcp2: Some(Ntcp2Config {
-            port: 0u16,
-            iv: {
-                let mut iv = [0u8; 16];
-                thread_rng().fill_bytes(&mut iv);
-                iv
-            },
-            key: {
-                let mut key = [0u8; 32];
-                thread_rng().fill_bytes(&mut key);
-                key
-            },
-            host: Some("127.0.0.1".parse().unwrap()),
-            publish: true,
-        }),
+        ntcp2,
+        ssu2,
         routers: router_infos.clone(),
         samv3_config: Some(SamConfig {
             tcp_port: 0u16,
@@ -1465,7 +1716,16 @@ async fn host_lookup() {
 }
 
 #[tokio::test]
-async fn open_parallel_streams() {
+async fn open_parallel_streams_ntcp2() {
+    open_parallel_streams(TransportKind::Ntcp2).await
+}
+
+#[tokio::test]
+async fn open_parallel_streams_ssu2() {
+    open_parallel_streams(TransportKind::Ssu2).await
+}
+
+async fn open_parallel_streams(kind: TransportKind) {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .try_init();
@@ -1474,7 +1734,8 @@ async fn open_parallel_streams() {
     let net_id = (thread_rng().next_u32() % 255) as u8;
 
     for i in 0..4 {
-        let (router, _events, router_info) = make_router(i < 2, net_id, router_infos.clone()).await;
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), kind).await;
 
         router_infos.push(router_info);
         tokio::spawn(router);
@@ -1484,7 +1745,7 @@ async fn open_parallel_streams() {
     let mut ports = Vec::<u16>::new();
 
     for _ in 0..2 {
-        let router = make_router(false, net_id, router_infos.clone()).await.0;
+        let router = make_router(false, net_id, router_infos.clone(), kind).await.0;
 
         ports.push(router.protocol_address_info().sam_tcp.unwrap().port());
         tokio::spawn(router);
