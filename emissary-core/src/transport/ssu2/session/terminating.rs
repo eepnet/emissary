@@ -44,7 +44,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::terminating";
+const LOG_TARGET: &str = "emissary::ssu2::terminating";
 
 /// Termination timeout.
 ///

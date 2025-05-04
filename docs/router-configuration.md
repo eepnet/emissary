@@ -193,14 +193,14 @@ emissary-cli -lsam
   * `emissary::sam::socket`
 * `emissary::server-tunnel`
 * `emissary::ssu2`
+  * `emissary::ssu2::active`
+  * `emissary::ssu2::active::duplicate-filter`
+  * `emissary::ssu2::active::transmission`
   * `emissary::ssu2::message`
-  * `emissary::ssu2::session::active`
-  * `emissary::ssu2::session::active::duplicate-filter`
-  * `emissary::ssu2::session::active::transmission`
-  * `emissary::ssu2::session::inbound`
-  * `emissary::ssu2::session::outbound`
-  * `emissary::ssu2::session::terminating`
+  * `emissary::ssu2::pending::inbound`
+  * `emissary::ssu2::pending::outbound`
   * `emissary::ssu2::socket`
+  * `emissary::ssu2::terminating`
 * `emissary::streaming`
   * `emissary::streaming::active`
   * `emissary::streaming::listener`

@@ -20,7 +20,7 @@ export default defineConfig({
           { text: "Router configuration", link: "/router-configuration.md" },
           { text: "Eepsites", link: "/eepsite.md" },
           { text: "Torrents", link: "/torrents.md" },
-          { text: "IRC and email", link: "/irc-email.md" },
+          { text: "IRC and Email", link: "/irc-email.md" },
         ]
       },
     ],
