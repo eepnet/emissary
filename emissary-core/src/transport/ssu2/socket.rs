@@ -18,7 +18,7 @@
 
 use crate::{
     crypto::{sha256::Sha256, StaticPrivateKey},
-    error::Ssu2Error,
+    error::{ChannelError, Ssu2Error},
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
     runtime::{JoinSet, Runtime, UdpSocket},
@@ -45,7 +45,7 @@ use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use hashbrown::HashMap;
 use rand_core::RngCore;
-use thingbuf::mpsc::{channel, Receiver, Sender};
+use thingbuf::mpsc::{channel, errors::TrySendError, Receiver, Sender};
 
 use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
@@ -89,7 +89,7 @@ enum PendingSessionKind {
 
         /// Destination connection ID.
         ///
-        /// This is the destination ID selected by the remote router and is used to remove pending
+        /// This is the connection ID selected by the remote router and is used to remove pending
         /// session context in case it's rejected by the `TransportManager`.
         dst_id: u64,
     },
@@ -101,6 +101,13 @@ enum PendingSessionKind {
 
         /// Session context.
         context: Ssu2SessionContext,
+
+        /// Source connection ID.
+        ///
+        /// This is the connection ID selected by us which the remote router uses to send us
+        /// messages and it will be used to remove the session context in case the connection
+        /// is rejected.
+        src_id: u64,
     },
 }
 
@@ -116,12 +123,17 @@ impl fmt::Debug for PendingSessionKind {
                 .debug_struct("PendingSessionKind::Inbound")
                 .field("address", &address)
                 .field("dst_id", &dst_id)
-                .field("connection_id", &context.dst_id)
+                .field("src_id", &context.dst_id)
                 .finish_non_exhaustive(),
-            PendingSessionKind::Outbound { address, context } => f
+            PendingSessionKind::Outbound {
+                address,
+                context,
+                src_id,
+            } => f
                 .debug_struct("PendingSessionKind::Outbound")
                 .field("address", &address)
-                .field("connection_id", &context.dst_id)
+                .field("dst_id", &context.dst_id)
+                .field("src_id", &src_id)
                 .finish_non_exhaustive(),
         }
     }
@@ -268,12 +280,24 @@ impl<R: Runtime> Ssu2Socket<R> {
         let connection_id = reader.dst_id();
 
         if let Some(tx) = self.sessions.get_mut(&connection_id) {
-            return tx
-                .try_send(Packet {
-                    pkt: self.buffer[..nread].to_vec(),
-                    address,
-                })
-                .map_err(From::from);
+            match tx.try_send(Packet {
+                pkt: self.buffer[..nread].to_vec(),
+                address,
+            }) {
+                Ok(()) => return Ok(()),
+                Err(TrySendError::Closed(_)) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        ?connection_id,
+                        ?address,
+                        "session did not exit cleanly",
+                    );
+                    debug_assert!(false);
+
+                    return Err(Ssu2Error::Channel(ChannelError::Closed));
+                }
+                Err(_) => return Err(Ssu2Error::Channel(ChannelError::Full)),
+            }
         }
 
         match reader.parse(self.intro_key) {
@@ -434,7 +458,9 @@ impl<R: Runtime> Ssu2Socket<R> {
                 self.pending_pkts.push_back((pkt, address));
                 context
             }
-            PendingSessionKind::Outbound { address, context } => {
+            PendingSessionKind::Outbound {
+                address, context, ..
+            } => {
                 tracing::trace!(
                     target: LOG_TARGET,
                     %router_id,
@@ -482,7 +508,11 @@ impl<R: Runtime> Ssu2Socket<R> {
 
                 self.sessions.remove(&dst_id);
             }
-            PendingSessionKind::Outbound { address, context } => {
+            PendingSessionKind::Outbound {
+                address,
+                context,
+                src_id,
+            } => {
                 tracing::debug!(
                     target: LOG_TARGET,
                     %router_id,
@@ -491,7 +521,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 );
 
                 self.pending_outbound.remove(&address);
-                self.sessions.remove(&context.dst_id);
+                self.sessions.remove(&src_id);
             }
         }
 
@@ -609,7 +639,10 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                         ),
                     }
                 }
-                Poll::Ready(Some(PendingSsu2SessionStatus::NewOutboundSession { context })) => {
+                Poll::Ready(Some(PendingSsu2SessionStatus::NewOutboundSession {
+                    context,
+                    src_id,
+                })) => {
                     let router_id = context.router_id.clone();
 
                     tracing::trace!(
@@ -624,6 +657,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                         PendingSessionKind::Outbound {
                             address: context.address,
                             context,
+                            src_id,
                         },
                     ) {
                         tracing::warn!(

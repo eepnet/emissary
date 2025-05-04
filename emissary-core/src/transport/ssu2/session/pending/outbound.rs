@@ -560,6 +560,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 router_id: self.router_id.clone(),
                 pkt_rx: self.rx.take().expect("to exist"),
             },
+            src_id: self.src_id,
         }))
     }
 

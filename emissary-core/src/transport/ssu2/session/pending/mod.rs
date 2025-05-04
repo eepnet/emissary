@@ -59,6 +59,9 @@ pub enum PendingSsu2SessionStatus {
     NewOutboundSession {
         /// Context for the active session.
         context: Ssu2SessionContext,
+
+        /// Source connection ID.
+        src_id: u64,
     },
 
     /// Pending session terminated due to fatal error, e.g., decryption error.
