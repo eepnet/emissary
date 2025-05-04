@@ -16,8 +16,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#![allow(unused)]
-
 use emissary_core::{
     events::EventSubscriber, router::Router, runtime::AddressBook, Config, Ntcp2Config, SamConfig,
     Ssu2Config, TransitConfig,

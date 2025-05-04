@@ -362,14 +362,16 @@ impl<R: Runtime> InboundContext<R> {
     }
 
     // TODO: so ugly
-    fn handle_packet(&mut self, seq_nro: u32, payload: Vec<u8>) -> Result<(), StreamingError> {
+    fn handle_packet(&mut self, seq_nro: u32, payload: &[u8]) -> Result<(), StreamingError> {
         // packet received in order
         if seq_nro == self.seq_nro + 1 {
             self.missing.remove(&seq_nro);
             if self.missing.is_empty() {
-                self.ready.push_back(payload);
-            } else {
-                self.pending.insert(seq_nro, payload);
+                if !payload.is_empty() {
+                    self.ready.push_back(payload.to_vec());
+                }
+            } else if !payload.is_empty() {
+                self.pending.insert(seq_nro, payload.to_vec());
             }
             self.seq_nro = seq_nro;
 
@@ -411,7 +413,9 @@ impl<R: Runtime> InboundContext<R> {
                 }
             });
 
-            self.pending.insert(seq_nro, payload);
+            if !payload.is_empty() {
+                self.pending.insert(seq_nro, payload.to_vec());
+            }
             self.missing.remove(&seq_nro);
             self.seq_nro = seq_nro;
 
@@ -419,7 +423,9 @@ impl<R: Runtime> InboundContext<R> {
                 self.ack_timer = Some(R::timer(self.rtt));
             }
         } else if self.missing.first() == Some(&seq_nro) {
-            self.ready.push_back(payload);
+            if !payload.is_empty() {
+                self.ready.push_back(payload.to_vec());
+            }
             self.missing.remove(&seq_nro);
 
             let mut next_seq = seq_nro + 1;
@@ -434,7 +440,9 @@ impl<R: Runtime> InboundContext<R> {
             }
         } else {
             self.missing.remove(&seq_nro);
-            self.pending.insert(seq_nro, payload);
+            if !payload.is_empty() {
+                self.pending.insert(seq_nro, payload.to_vec());
+            }
 
             if self.ack_timer.is_none() {
                 self.ack_timer = Some(R::timer(self.rtt));
@@ -830,6 +838,8 @@ impl<R: Runtime> Stream<R> {
                 remote = %self.remote,
                 recv_id = ?self.recv_stream_id,
                 send_id = ?self.send_stream_id,
+                ?seq_nro,
+                highest_seen = ?self.inbound_context.seq_nro,
                 payload_len = ?payload.len(),
                 "remote sent `CLOSE`",
             );
@@ -843,8 +853,16 @@ impl<R: Runtime> Stream<R> {
             self.handle_acks(ack_through, &nacks);
         }
 
-        if !payload.is_empty() {
-            self.inbound_context.handle_packet(seq_nro, payload.to_vec())?;
+        // handle packet
+        //
+        // packet is handled even if it's payload is empty as it may contain, e.g., `CLOSE` with a
+        // higher sequence number than the currently received highest which must postpone closing
+        // the connection
+        //
+        // if the sequnce number is zero and `SYN` is not set, the packet is a plain ack which can
+        // be ignored
+        if !(seq_nro == PLAIN_ACK && !flags.synchronize()) {
+            self.inbound_context.handle_packet(seq_nro, payload)?;
         }
 
         if self.close_requested && self.unacked.is_empty() && self.pending.is_empty() {
@@ -1379,6 +1397,19 @@ impl<R: Runtime> Future for Stream<R> {
             let nacks =
                 this.inbound_context.missing.iter().copied().take(MAX_NACKS).collect::<Vec<_>>();
 
+            tracing::trace!(
+                target: LOG_TARGET,
+                local = %this.local,
+                remote = %this.remote,
+                recv_id = ?this.recv_stream_id,
+                send_id = ?this.send_stream_id,
+                num_unacked = ?this.unacked.len(),
+                num_pending = ?this.pending.len(),
+                ?ack_through,
+                ?nacks,
+                "send plain ack",
+            );
+
             let mut builder = PacketBuilder::new(this.send_stream_id)
                 .with_send_stream_id(this.recv_stream_id)
                 .with_ack_through(ack_through)
@@ -1437,6 +1468,7 @@ impl<R: Runtime> Future for Stream<R> {
 mod tests {
     use super::*;
     use crate::{
+        crypto::sha256::Sha256,
         destination::routing_path::RoutingPathManager,
         primitives::{Lease, TunnelId},
         runtime::{
@@ -1462,7 +1494,7 @@ mod tests {
     }
 
     impl StreamBuilder {
-        pub async fn build_stream() -> (Stream<MockRuntime>, Self) {
+        async fn build_stream() -> (Stream<MockRuntime>, Self) {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let signing_key = SigningPrivateKey::random(MockRuntime::rng());
             let destination = Destination::new::<MockRuntime>(signing_key.public());
@@ -1510,6 +1542,134 @@ mod tests {
                     _outbound: outbound,
                     _inbound: inbound,
                 },
+            )
+        }
+
+        async fn build_connected_streams(
+        ) -> ((Stream<MockRuntime>, Self), (Stream<MockRuntime>, Self)) {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+
+            // destination for the stream receiver
+            let inbound_signing_key = SigningPrivateKey::random(MockRuntime::rng());
+            let inbound_destination = Destination::new::<MockRuntime>(inbound_signing_key.public());
+            let inbound_destination_id = inbound_destination.id();
+
+            // destination for the stream initiator
+            let outbound_signing_key = SigningPrivateKey::random(MockRuntime::rng());
+            let outbound_destination =
+                Destination::new::<MockRuntime>(outbound_signing_key.public());
+            let outbound_destination_id = outbound_destination.id();
+
+            // server stream is given to `Stream` and client stream is the client's stream,
+            // for example, an application
+            let (inbound_client_stream, inbound_server_stream) = {
+                let (server_stream, client_stream) =
+                    tokio::join!(listener.accept(), MockTcpStream::connect(address));
+                let (server_stream, _) = server_stream.unwrap();
+
+                (server_stream, client_stream)
+            };
+            let (outbound_client_stream, outbound_server_stream) = {
+                let (server_stream, client_stream) =
+                    tokio::join!(listener.accept(), MockTcpStream::connect(address));
+                let (server_stream, _) = server_stream.unwrap();
+
+                (server_stream, client_stream)
+            };
+
+            let (inbound_event_tx, inbound_event_rx) = channel(1024);
+            let (inbound_cmd_tx, inbound_cmd_rx) = channel(1024);
+
+            let (outbound_event_tx, outbound_event_rx) = channel(1024);
+            let (outbound_cmd_tx, outbound_cmd_rx) = channel(1024);
+
+            // create routing path for inbound/outbound streams
+            let (inbound_path_handle, ib_outbound_tunnel, ib_inbound_tunnel) = {
+                let outbound = TunnelId::random();
+                let inbound = Lease::random();
+                let mut path_manager = RoutingPathManager::<MockRuntime>::new(
+                    inbound_destination_id.clone(),
+                    vec![outbound],
+                );
+                path_manager.register_leases(&outbound_destination_id, Ok(vec![inbound.clone()]));
+                let handle = path_manager.handle(outbound_destination_id.clone());
+
+                tokio::spawn(async move { while let Some(_) = path_manager.next().await {} });
+
+                (handle, outbound, inbound)
+            };
+            let (outbound_path_handle, ob_outbound_tunnel, ob_inbound_tunnel) = {
+                let outbound = TunnelId::random();
+                let inbound = Lease::random();
+                let mut path_manager = RoutingPathManager::<MockRuntime>::new(
+                    outbound_destination_id.clone(),
+                    vec![outbound],
+                );
+                path_manager.register_leases(&inbound_destination_id, Ok(vec![inbound.clone()]));
+                let handle = path_manager.handle(inbound_destination_id.clone());
+
+                tokio::spawn(async move { while let Some(_) = path_manager.next().await {} });
+
+                (handle, outbound, inbound)
+            };
+
+            (
+                (
+                    Stream::new(
+                        outbound_server_stream.unwrap(),
+                        None,
+                        StreamContext {
+                            destination: outbound_destination,
+                            cmd_rx: outbound_cmd_rx,
+                            event_tx: outbound_event_tx,
+                            local: outbound_destination_id.clone(),
+                            recv_stream_id: 1337u32,
+                            remote: inbound_destination_id.clone(),
+                            signing_key: outbound_signing_key,
+                        },
+                        Default::default(),
+                        StreamKind::Outbound {
+                            dst_port: 0,
+                            payload: Vec::new(),
+                            send_stream_id: 1338u32,
+                            src_port: 0u16,
+                        },
+                        outbound_path_handle,
+                    ),
+                    Self {
+                        cmd_tx: outbound_cmd_tx,
+                        event_rx: outbound_event_rx,
+                        stream: outbound_client_stream,
+                        _outbound: ob_outbound_tunnel,
+                        _inbound: ob_inbound_tunnel,
+                    },
+                ),
+                (
+                    Stream::new(
+                        inbound_server_stream.unwrap(),
+                        None,
+                        StreamContext {
+                            destination: inbound_destination,
+                            cmd_rx: inbound_cmd_rx,
+                            event_tx: inbound_event_tx,
+                            local: inbound_destination_id,
+                            recv_stream_id: 1338u32,
+                            remote: outbound_destination_id,
+                            signing_key: inbound_signing_key,
+                        },
+                        Default::default(),
+                        StreamKind::Inbound { payload: vec![] },
+                        inbound_path_handle,
+                    ),
+                    Self {
+                        cmd_tx: inbound_cmd_tx,
+                        event_rx: inbound_event_rx,
+                        stream: inbound_client_stream,
+                        _outbound: ib_outbound_tunnel,
+                        _inbound: ib_inbound_tunnel,
+                    },
+                ),
             )
         }
     }
@@ -3333,5 +3493,267 @@ mod tests {
             .await
             .expect("no timeout")
             .expect("to succeed");
+    }
+
+    #[tokio::test]
+    async fn client_socket_closed_with_pending_data() {
+        let (
+            (
+                outbound_stream,
+                StreamBuilder {
+                    cmd_tx: outbound_cmd_tx,
+                    event_rx: outbound_event_rx,
+                    stream: mut outbound_client_stream,
+                    ..
+                },
+            ),
+            (
+                inbound_stream,
+                StreamBuilder {
+                    cmd_tx: inbound_cmd_tx,
+                    event_rx: inbound_event_rx,
+                    stream: mut inbound_client_stream,
+                    ..
+                },
+            ),
+        ) = StreamBuilder::build_connected_streams().await;
+
+        // ignore syn
+        let _ = inbound_event_rx.recv().await.unwrap();
+
+        // stream 256kb worth of data, shut down the stream and return the checksum of the data
+        let outbound_handle = tokio::spawn(async move {
+            let mut data = vec![0u8; 256 * 1024];
+            MockRuntime::rng().fill_bytes(&mut data);
+
+            outbound_client_stream.write_all(&data).await.unwrap();
+            outbound_client_stream.shutdown().await.unwrap();
+            drop(outbound_client_stream);
+
+            Sha256::new().update(&data).finalize()
+        });
+
+        // read the data in the background and return the checksum of the data
+        let inbound_handle = tokio::spawn(async move {
+            let mut data = vec![0u8; 256 * 1024];
+            inbound_client_stream.read_exact(&mut data).await.unwrap();
+
+            Sha256::new().update(&data).finalize()
+        });
+
+        tokio::spawn(outbound_stream);
+        tokio::spawn(inbound_stream);
+
+        loop {
+            tokio::select! {
+                event = outbound_event_rx.recv() => match event {
+                    None => break,
+                    Some((_, packet, _, _)) => {
+                        inbound_cmd_tx.send(StreamEvent::Packet { packet }).await.unwrap();
+                    }
+                },
+                event = inbound_event_rx.recv() => match event {
+                    None => break,
+                    Some((_, packet, _, _)) => {
+                        outbound_cmd_tx.send(StreamEvent::Packet { packet }).await.unwrap();
+                    }
+                },
+            }
+        }
+        let outbound_checksum = tokio::time::timeout(Duration::from_secs(5), outbound_handle)
+            .await
+            .expect("no timeout")
+            .expect("to succeed");
+        let inbound_checksum = tokio::time::timeout(Duration::from_secs(5), inbound_handle)
+            .await
+            .expect("no timeout")
+            .expect("to succeed");
+
+        assert_eq!(outbound_checksum, inbound_checksum);
+    }
+
+    #[tokio::test]
+    async fn client_socket_closed_with_pending_data_with_packet_loss() {
+        let (
+            (
+                outbound_stream,
+                StreamBuilder {
+                    cmd_tx: outbound_cmd_tx,
+                    event_rx: outbound_event_rx,
+                    stream: mut outbound_client_stream,
+                    ..
+                },
+            ),
+            (
+                inbound_stream,
+                StreamBuilder {
+                    cmd_tx: inbound_cmd_tx,
+                    event_rx: inbound_event_rx,
+                    stream: mut inbound_client_stream,
+                    ..
+                },
+            ),
+        ) = StreamBuilder::build_connected_streams().await;
+
+        // ignore syn
+        let _ = inbound_event_rx.recv().await.unwrap();
+
+        // stream 256kb worth of data, shut down the stream and return the checksum of the data
+        let outbound_handle = tokio::spawn(async move {
+            let mut data = vec![0u8; 256 * 1024];
+            MockRuntime::rng().fill_bytes(&mut data);
+
+            outbound_client_stream.write_all(&data).await.unwrap();
+            outbound_client_stream.shutdown().await.unwrap();
+            drop(outbound_client_stream);
+
+            Sha256::new().update(&data).finalize()
+        });
+
+        // read the data in the background and return the checksum of the data
+        let inbound_handle = tokio::spawn(async move {
+            let mut data = vec![0u8; 256 * 1024];
+            inbound_client_stream.read_exact(&mut data).await.unwrap();
+
+            Sha256::new().update(&data).finalize()
+        });
+
+        tokio::spawn(outbound_stream);
+        tokio::spawn(inbound_stream);
+
+        let mut outbound_counter = 0;
+        let mut inbound_counter = 0;
+
+        loop {
+            tokio::select! {
+                event = outbound_event_rx.recv() => match event {
+                    None => break,
+                    Some((_, packet, _, _)) => {
+                        if outbound_counter % 3 != 0 || outbound_counter == 0 {
+                            inbound_cmd_tx.send(StreamEvent::Packet { packet }).await.unwrap();
+                        }
+                        outbound_counter += 1;
+                    }
+                },
+                event = inbound_event_rx.recv() => match event {
+                    None => break,
+                    Some((_, packet, _, _)) => {
+                        if inbound_counter % 3 != 0 || inbound_counter == 0 {
+                            outbound_cmd_tx.send(StreamEvent::Packet { packet }).await.unwrap();
+                        }
+                        inbound_counter += 1;
+                    }
+                },
+            }
+        }
+        let outbound_checksum = tokio::time::timeout(Duration::from_secs(5), outbound_handle)
+            .await
+            .expect("no timeout")
+            .expect("to succeed");
+        let inbound_checksum = tokio::time::timeout(Duration::from_secs(5), inbound_handle)
+            .await
+            .expect("no timeout")
+            .expect("to succeed");
+
+        assert_eq!(outbound_checksum, inbound_checksum);
+    }
+
+    #[tokio::test]
+    async fn postpone_close_until_all_data_is_received() {
+        let (
+            stream,
+            StreamBuilder {
+                cmd_tx,
+                stream: client,
+                event_rx: _event_rx,
+                ..
+            },
+        ) = StreamBuilder::build_stream().await;
+
+        tokio::spawn(stream);
+
+        let messages1 = vec![
+            (1u32, b"hello1".to_vec()),
+            (2u32, b"world1\n".to_vec()),
+            (4u32, b"world2\n".to_vec()),
+            (3u32, b"goodbye2".to_vec()),
+        ];
+        let messages2 = vec![
+            (6u32, b"test2\n".to_vec()),
+            (4u32, b"world3\n".to_vec()),
+            (5u32, b"test1".to_vec()),
+        ];
+
+        for (i, message) in messages1.iter() {
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(*i)
+                        .with_payload(message)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let mut reader = BufReader::new(client);
+        let mut response = String::new();
+
+        // 1st and 2nd messages are received normally
+        {
+            reader.read_line(&mut response).await.unwrap();
+            assert_eq!("hello1world1\n", response);
+            response.clear();
+        }
+
+        // 4th is send before 3rd but 3rd is ready normally
+        {
+            // concatenated 3rd and 4th message
+            reader.read_line(&mut response).await.unwrap();
+            assert_eq!("goodbye2world2\n", response);
+            response.clear();
+        }
+
+        // send shutdown signal with an empty payload
+        //
+        // verify that rest of the packets are received normally
+        cmd_tx
+            .send(StreamEvent::Packet {
+                packet: PacketBuilder::new(1338u32)
+                    .with_send_stream_id(1337u32)
+                    .with_seq_nro(7u32)
+                    .with_close()
+                    .build()
+                    .to_vec(),
+            })
+            .await
+            .unwrap();
+
+        // give the plain ack timer some time to kick in
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        for (i, message) in messages2.iter() {
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(*i)
+                        .with_payload(message)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // 5th and 6th are received out of order and the duplicate 4th is ignored
+        {
+            // concatenated 5th and 6th message
+            reader.read_line(&mut response).await.unwrap();
+            assert_eq!("test1test2\n", response);
+            response.clear();
+        }
     }
 }
