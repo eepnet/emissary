@@ -34,7 +34,7 @@ use crate::{
 };
 
 use futures::{Stream, StreamExt};
-use hashbrown::HashMap;
+use hashbrown::{hash_map::Entry, HashMap};
 
 use alloc::{format, vec::Vec};
 use core::{
@@ -282,24 +282,26 @@ impl<R: Runtime> Stream for Ntcp2Transport<R> {
                 return Poll::Ready(Some(TransportEvent::ConnectionClosed { router_id, reason })),
         }
 
-        match self.listener.poll_next_unpin(cx) {
-            Poll::Pending => {}
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some(stream)) => {
-                tracing::trace!(
-                    target: LOG_TARGET,
-                    "inbound tcp connection, accept session",
-                );
+        loop {
+            match self.listener.poll_next_unpin(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(None),
+                Poll::Ready(Some(stream)) => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        "inbound tcp connection, accept session",
+                    );
 
-                let future = self.session_manager.accept_session(stream);
-                self.pending_handshakes.push(future);
-                self.router_ctx.metrics_handle().counter(NUM_INBOUND).increment(1);
+                    let future = self.session_manager.accept_session(stream);
+                    self.pending_handshakes.push(future);
+                    self.router_ctx.metrics_handle().counter(NUM_INBOUND).increment(1);
+                }
             }
         }
 
-        if !self.pending_handshakes.is_empty() {
+        loop {
             match self.pending_handshakes.poll_next_unpin(cx) {
-                Poll::Pending => {}
+                Poll::Pending => break,
                 Poll::Ready(Some(Ok(session))) => {
                     tracing::debug!(
                         target: LOG_TARGET,
@@ -317,7 +319,23 @@ impl<R: Runtime> Stream for Ntcp2Transport<R> {
                     let router_id = router_info.identity.id();
                     let direction = session.direction();
 
-                    self.pending_connections.insert(router_id.clone(), session);
+                    // multiple connections raced and got negotiated at the same time
+                    //
+                    // reject any connection to/from the same router if a connection is already
+                    // under validation in `TransportManager`
+                    match self.pending_connections.entry(router_id.clone()) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(session);
+                        }
+                        Entry::Occupied(_) => {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                %router_id,
+                                "pending connection already exist, rejecting new connection",
+                            );
+                            continue;
+                        }
+                    }
 
                     return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
                         direction,
