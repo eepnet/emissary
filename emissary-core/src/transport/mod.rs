@@ -739,6 +739,24 @@ impl<R: Runtime> TransportManager<R> {
                     return;
                 }
 
+                // TODO: ssu2 support
+                if self.ntcp2_config.is_some() && !router_info.is_reachable_ntcp2() {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        %router_id,
+                        caps = %router_info.capabilities,
+                        "cannot dial router, ntcp2 address is not reachable",
+                    );
+
+                    // report connection failure to subsystems
+                    let mut handle = self.subsystem_handle.clone();
+                    R::spawn(async move {
+                        handle.report_connection_failure(router_id).await;
+                    });
+
+                    return;
+                }
+
                 tracing::trace!(
                     target: LOG_TARGET,
                     %router_id,
