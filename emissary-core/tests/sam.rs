@@ -713,12 +713,10 @@ async fn stream_lots_of_data_ntcp2() {
     stream_lots_of_data(TransportKind::Ntcp2).await
 }
 
-// two worker threads are needed because the test transfer a lot of data and it consist of running
+// more worker threads are needed because the test transfer a lot of data and it consist of running
 // 6 routers without optimizations in a single thread which the executor doesn't like, causing
 // immediate ACKs to be delayed up to 100ms.
-//
-// TODO: run all tests with `--profile testnet`?
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stream_lots_of_data_ssu2() {
     stream_lots_of_data(TransportKind::Ssu2).await
 }
@@ -763,6 +761,9 @@ async fn stream_lots_of_data(kind: TransportKind) {
     .expect("no timeout")
     .expect("to succeed");
     let dest = session1.destination().to_owned();
+
+    // give the session some time to build rest of its inbound tunnels
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     let (data, digest) = {
         let mut data = vec![0u8; 256 * 1024];

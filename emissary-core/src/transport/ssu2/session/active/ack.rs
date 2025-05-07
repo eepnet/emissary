@@ -22,6 +22,9 @@ use core::{
     ops::Deref,
 };
 
+/// Maximum ACK difference.
+const MAX_ACK_DIFF: u32 = 255u32;
+
 /// Packet type.
 #[derive(Debug)]
 enum Packet {
@@ -112,6 +115,10 @@ impl RemoteAckManager {
         // packet with a number higher than expected has been received, meaning one or more packets
         // were dropped between the last highest packet and current highest packet
         if self.highest_seen + 1 < pkt_num {
+            if self.highest_seen.saturating_add(MAX_ACK_DIFF) < pkt_num {
+                return;
+            }
+
             (self.highest_seen + 1..pkt_num).for_each(|pkt| {
                 if !self.packets.contains(&Reverse(Packet::Received(pkt))) {
                     self.packets.insert(Reverse(Packet::Missing(pkt)));
@@ -147,10 +154,8 @@ impl RemoteAckManager {
     }
 
     /// Get ACK information added to an outbound message.
-    //
-    // TODO: take pkt number as parameter
-    // TODO: when ack block is received
     pub fn ack_info(&mut self) -> AckInfo {
+        // the first packet in `packets` is always `Packet::Received`
         let num_acks = min(
             self.packets
                 .iter()
@@ -168,6 +173,10 @@ impl RemoteAckManager {
         let mut iter = self.packets.iter();
 
         if !iter.any(|pkt| core::matches!(pkt.0, Packet::Missing(_))) {
+            while self.packets.len() > MAX_ACK_DIFF as usize {
+                self.packets.pop_last();
+            }
+
             return AckInfo {
                 highest_seen: self.highest_seen,
                 num_acks,
@@ -216,6 +225,10 @@ impl RemoteAckManager {
             .chunks(2)
             .map(|chunk| (min(chunk[0], 255) as u8, min(chunk[1], 255) as u8))
             .collect::<Vec<(_, _)>>();
+
+        while self.packets.len() > MAX_ACK_DIFF as usize {
+            self.packets.pop_last();
+        }
 
         AckInfo {
             highest_seen: self.highest_seen,
@@ -306,8 +319,8 @@ mod tests {
     async fn next_pkt_missing() {
         let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(300);
-        assert_eq!(manager.highest_seen, 300);
+        manager.register_pkt(250);
+        assert_eq!(manager.highest_seen, 250);
         assert_eq!(
             manager
                 .packets
@@ -322,20 +335,20 @@ mod tests {
                 .iter()
                 .filter(|packet| core::matches!(packet.0, Packet::Missing(_)))
                 .count(),
-            299
+            249
         );
 
-        // pkt 299 missing, no acks below 300
-        for i in 1..=298 {
+        // pkt 249 missing, no acks below 250
+        for i in 1..=248 {
             manager.register_pkt(i);
-            assert_eq!(manager.highest_seen, 300);
+            assert_eq!(manager.highest_seen, 250);
             assert_eq!(
                 manager
                     .packets
                     .iter()
                     .filter(|packet| core::matches!(packet.0, Packet::Missing(_)))
                     .count(),
-                299 - i as usize
+                249 - i as usize
             );
             assert_eq!(
                 manager
@@ -350,9 +363,9 @@ mod tests {
         assert_eq!(
             manager.ack_info(),
             AckInfo {
-                highest_seen: 300,
+                highest_seen: 250,
                 num_acks: 0,
-                ranges: Some(vec![(1, 255)])
+                ranges: Some(vec![(1, 249)])
             }
         );
     }

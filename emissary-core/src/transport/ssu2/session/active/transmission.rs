@@ -488,7 +488,6 @@ impl<R: Runtime> TransmissionManager<R> {
             .filter_map(|(pkt_num, segment)| {
                 (segment.sent.elapsed() > (*self.rto * segment.num_sent as u32)).then_some(*pkt_num)
             })
-            .take(self.window_size.saturating_sub(self.segments.len()))
             .collect::<Vec<_>>();
 
         if expired.is_empty() {
@@ -511,7 +510,7 @@ impl<R: Runtime> TransmissionManager<R> {
                         target: LOG_TARGET,
                         router_id = %self.router_id,
                         pkt_num = ?old_pkt_num,
-                        "packet has been resent over {} times, terminating session",
+                        "packet has been sent over {} times, terminating session",
                         RESEND_TERMINATION_THRESHOLD,
                     );
                     return Err(());
@@ -539,6 +538,21 @@ impl<R: Runtime> TransmissionManager<R> {
                 Ok(pkt_num)
             })
             .collect::<Result<Vec<_>, _>>()?;
+
+        // send only as many packets as the current window can take
+        let pkts_to_resend = pkts_to_resend
+            .into_iter()
+            .take(self.window_size.saturating_sub(self.segments.len()))
+            .collect::<Vec<_>>();
+
+        if pkts_to_resend.is_empty() {
+            tracing::trace!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                "one or more packets need to be resent but no window",
+            );
+            return Ok(None);
+        }
 
         // halve window size because of packet loss
         {
@@ -967,13 +981,13 @@ mod tests {
         );
         let pkts = mgr
             .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
+                payload: vec![0u8; 1200 * 8],
                 ..Default::default()
             })
             .unwrap();
 
-        assert_eq!(pkts.len(), 10);
-        assert_eq!(mgr.segments.len(), 10);
+        assert_eq!(pkts.len(), 8);
+        assert_eq!(mgr.segments.len(), 8);
         assert!(mgr.resend().unwrap().is_none());
 
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
@@ -986,6 +1000,7 @@ mod tests {
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
             .collect::<Vec<_>>();
+        assert_eq!(pkt_nums.len(), 8);
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
 
         // ack some of the packets and wait for another timeout
@@ -999,10 +1014,21 @@ mod tests {
             .into_iter()
             .map(|(pkt_num, _)| pkt_num)
             .collect::<Vec<_>>();
-        assert_eq!(pkt_nums.len(), 4);
+        assert_eq!(pkt_nums.len(), 6);
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
 
         mgr.register_ack(24, 3, &[]);
+        tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
+
+        let pkt_nums = mgr
+            .resend()
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .map(|(pkt_num, _)| pkt_num)
+            .collect::<Vec<_>>();
+        assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 4));
+        mgr.register_ack(26, 4, &[]);
         assert!(mgr.segments.is_empty());
     }
 

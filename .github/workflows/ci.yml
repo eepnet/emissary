@@ -76,12 +76,12 @@ jobs:
 
     - name: cargo-test emissary-cli
       working-directory: emissary-cli
-      run: cargo test
+      run: cargo test --profile testnet
 
     - name: cargo-test emissary-util
       working-directory: emissary-util
-      run: cargo test
+      run: cargo test --profile testnet
 
     - name: cargo-test emissary-core
       working-directory: emissary-core
-      run: cargo test
+      run: cargo test --profile testnet
