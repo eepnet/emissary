@@ -140,7 +140,7 @@ impl Deref for RetransmissionTimeout {
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Unsampled => &INITIAL_RTO,
-            Self::Sampled { rto, .. } => &rto,
+            Self::Sampled { rto, .. } => rto,
         }
     }
 }
@@ -360,7 +360,7 @@ impl<R: Runtime> TransmissionManager<R> {
                     },
                 );
 
-                return Some(pkt_num);
+                Some(pkt_num)
             })
             .collect::<Vec<_>>();
 

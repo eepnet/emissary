@@ -861,7 +861,7 @@ impl<R: Runtime> Stream<R> {
         //
         // if the sequnce number is zero and `SYN` is not set, the packet is a plain ack which can
         // be ignored
-        if !(seq_nro == PLAIN_ACK && !flags.synchronize()) {
+        if seq_nro != PLAIN_ACK || flags.synchronize() {
             self.inbound_context.handle_packet(seq_nro, payload)?;
         }
 
