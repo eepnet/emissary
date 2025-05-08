@@ -288,7 +288,7 @@ impl SessionRequestBuilder {
     pub fn build<R: Runtime>(mut self) -> SessionRequest {
         let mut rng = R::rng();
         let padding = {
-            let padding_len = rng.next_u32() % MAX_PADDING as u32 + 1;
+            let padding_len = rng.next_u32() % MAX_PADDING as u32 + 16;
             let mut padding = vec![0u8; padding_len as usize];
             rng.fill_bytes(&mut padding);
 
