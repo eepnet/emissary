@@ -16,13 +16,16 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::su3::{ReseedRouterInfo, Su3};
+use crate::{
+    certificates::{CREATIVECOWPAT_SSL, CUBICCHAOS_SSL},
+    su3::{ReseedRouterInfo, Su3},
+};
 
 use anyhow::anyhow;
 use rand::{thread_rng, Rng};
 use reqwest::{
     header::{HeaderMap, HeaderValue, CONNECTION, USER_AGENT},
-    ClientBuilder,
+    Certificate, ClientBuilder,
 };
 
 use std::{
@@ -53,11 +56,8 @@ const RESEED_SERVERS: &[&str] = &[
     "https://i2p.novg.net/",
     "https://reseed.onion.im/",
     "https://reseed.memcpy.io/",
-    //
-    // self-signed reseed hosts do not work with rustls
-    // TODO: switch to openssl?
-    // "https://i2pseed.creativecowpat.net:8443/",
-    // "https://cubicchaos.net:8443/"
+    "https://i2pseed.creativecowpat.net:8443/",
+    "https://cubicchaos.net:8443/",
 ];
 
 /// HTTPS reseeder.
@@ -74,6 +74,18 @@ impl Reseeder {
         } else {
             ClientBuilder::new()
         }
+        .add_root_certificate(
+            Certificate::from_pem_bundle(CREATIVECOWPAT_SSL.as_bytes())
+                .expect("to succeed")
+                .pop()
+                .expect("to exist"),
+        )
+        .add_root_certificate(
+            Certificate::from_pem_bundle(CUBICCHAOS_SSL.as_bytes())
+                .expect("to succeed")
+                .pop()
+                .expect("to exist"),
+        )
         .timeout(Duration::from_secs(15))
         .build()?;
 
@@ -111,7 +123,7 @@ impl Reseeder {
                     tracing::warn!(
                         target: LOG_TARGET,
                         server = ?hosts[server],
-                        %error,
+                        ?error,
                         "failed to reseed"
                     );
                     continue;

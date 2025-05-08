@@ -77,15 +77,19 @@ const R4SAS_RESEED: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/certificates/r4sas-reseed_at_mail.i2p.crt"
 ));
+const CUBIC_CHAOS: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/certificates/unixeno_at_cubicchaos.net"
+));
 
-// pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(
-//     env!("CARGO_MANIFEST_DIR"),
-//     "/assets/certificates/i2pseed.creativecowpat.net.crt"
-// ));
-// pub const CUBICCHAOS_SSL: &str = include_str!(concat!(
-//     env!("CARGO_MANIFEST_DIR"),
-//     "/assets/certificates/cubicchaos.net.crt"
-// ));
+pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/certificates/i2pseed.creativecowpat.net.crt"
+));
+pub const CUBICCHAOS_SSL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/certificates/cubicchaos.net.crt"
+));
 
 /// Certificates of the reseed bundle signers.
 pub const CERTIFICATES: &[(&str, &str); 14] = &[
@@ -103,6 +107,7 @@ pub const CERTIFICATES: &[(&str, &str); 14] = &[
     ("hankhill19580@gmail.com", HANKHILL19580),
     ("igor@novg.net", IGOR),
     ("r4sas-reseed@mail.i2p", R4SAS_RESEED),
+    ("unixeno@cubicchaos.net", CUBIC_CHAOS),
 ];
 
 /// Public keys of the reseed bundle signers.
