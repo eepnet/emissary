@@ -2447,12 +2447,12 @@ mod tests {
             let lease1 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(20),
             };
             let lease2 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(20),
             };
 
             (
@@ -2483,12 +2483,12 @@ mod tests {
             let lease1 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(10),
             };
             let lease2 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(10),
             };
 
             (
@@ -2698,9 +2698,16 @@ mod tests {
         }
 
         // poll netdb until it does its maintenance
-        tokio::time::timeout(Duration::from_secs(35), &mut netdb).await.unwrap_err();
+        netdb.maintenance_timer = MockRuntime::timer(Duration::from_secs(6));
+        tokio::time::timeout(Duration::from_secs(7), &mut netdb).await.unwrap_err();
 
-        // verify two of the lease sets are pruned
+        // verify that one lease set is pruned
+        assert_eq!(netdb.lease_sets.len(), 2);
+
+        netdb.maintenance_timer = MockRuntime::timer(Duration::from_secs(6));
+        tokio::time::timeout(Duration::from_secs(7), &mut netdb).await.unwrap_err();
+
+        // verify that second lease set is pruned
         assert_eq!(netdb.lease_sets.len(), 1);
     }
 

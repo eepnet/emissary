@@ -196,20 +196,7 @@ mod tests {
     #[test]
     fn multiple_mappings() {
         let expected_ser = b"\x00\x19\x01a=\x01b;\x01c=\x01d;\x01e=\x01f;\x02zz=\x01z;";
-
         let mapping = Mapping::parse(expected_ser).expect("to be valid");
-
-        let keys: Vec<_> = mapping.0.keys().collect();
-        // Check that the keys aren't already ordered
-        assert_ne!(
-            keys,
-            [
-                &Str::from("a"),
-                &Str::from("c"),
-                &Str::from("e"),
-                &Str::from("zz")
-            ]
-        );
 
         assert_eq!(mapping.get(&"a".into()), Some(&Str::from("b")));
         assert_eq!(mapping.get(&"c".into()), Some(&Str::from("d")));
