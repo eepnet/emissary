@@ -79,7 +79,7 @@ const R4SAS_RESEED: &str = include_str!(concat!(
 ));
 const CUBIC_CHAOS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/certificates/unixeno_at_cubicchaos.net"
+    "/assets/certificates/cubicchaos.net.crt"
 ));
 
 pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(
@@ -92,7 +92,7 @@ pub const CUBICCHAOS_SSL: &str = include_str!(concat!(
 ));
 
 /// Certificates of the reseed bundle signers.
-pub const CERTIFICATES: &[(&str, &str); 14] = &[
+pub const CERTIFICATES: &[(&str, &str); 15] = &[
     ("acetone@mail.i2p", ACETONE),
     ("creativecowpat@mail.i2p", CREATIVECOWPAT),
     ("hottuna@mail.i2p", HOTTUNA),

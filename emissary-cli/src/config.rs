@@ -1223,6 +1223,7 @@ mod tests {
                 disable_reseed: None,
                 force_reseed: None,
                 reseed_threshold: None,
+                disable_force_ipv4: None,
             },
             metrics: MetricsOptions {
                 metrics_server_port: None,
