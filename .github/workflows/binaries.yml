@@ -1,16 +1,9 @@
 name: Binaries
 
-# on:
-#   push:
-#     tags:
-#       - "v*.*.*"
 on:
   push:
-    branches:
-      - master
-  pull_request:
-    branches:
-      - master
+    tags:
+      - "v*.*.*"
 
 jobs:
   build-and-release:
@@ -30,17 +23,11 @@ jobs:
       - name: Build emissary-cli
         run: cargo build --release --no-default-features --features web-ui
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload release to GitHub
+        uses: softprops/action-gh-release@v2
         with:
-          name: emissary-cli
-          path: target/x86_64-pc-windows-gnu/release/emissary-cli.exe
-
-      # - name: Upload release to GitHub
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     files: target/release/emissary-cli.exe
-      #     draft: true
-      #     prerelease: false
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: target/release/emissary-cli.exe
+          draft: true
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
