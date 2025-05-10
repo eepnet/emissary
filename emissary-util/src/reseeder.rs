@@ -144,6 +144,13 @@ impl Reseeder {
                 Ok(bytes) => match Su3::parse_reseed(&bytes, true) {
                     None => continue,
                     Some(downloaded) => {
+                        tracing::info!(
+                            target: LOG_TARGET,
+                            server = ?hosts[server],
+                            num_routers = ?downloaded.len(),
+                            "reseed succeeded"
+                        );
+
                         routers
                             .extend(downloaded.into_iter().map(|info| (info.name.clone(), info)));
 

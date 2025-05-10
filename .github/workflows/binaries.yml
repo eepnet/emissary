@@ -1,9 +1,16 @@
 name: Binaries
 
+# on:
+#   push:
+#     tags:
+#       - "v*.*.*"
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
 
 jobs:
   build-and-release:
@@ -12,7 +19,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - uses: ilammy/setup-nasm@v1
       - name: Set up Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -23,11 +29,17 @@ jobs:
       - name: Build emissary-cli
         run: cargo build --release --no-default-features --features web-ui
 
-      - name: Upload release to GitHub
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: target/release/emissary-cli.exe
-          draft: true
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: emissary-cli
+          path: target/x86_64-pc-windows-gnu/release/emissary-cli.exe
+
+      # - name: Upload release to GitHub
+      #   uses: softprops/action-gh-release@v2
+      #   with:
+      #     files: target/release/emissary-cli.exe
+      #     draft: true
+      #     prerelease: false
+      #   env:
+      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

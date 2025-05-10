@@ -79,7 +79,7 @@ const R4SAS_RESEED: &str = include_str!(concat!(
 ));
 const CUBIC_CHAOS: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/certificates/cubicchaos.net.crt"
+    "/assets/certificates/unixeno_at_cubicchaos.net.crt"
 ));
 
 pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(

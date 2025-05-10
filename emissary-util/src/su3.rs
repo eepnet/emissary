@@ -62,9 +62,9 @@ pub enum SignatureKind {
     EcDsaSha256P256,
     EcDsaSha384P384,
     EcDsaSha512P521,
-    RsaSha256_2048,
-    RsaSha384_3072,
-    RsaSha512_4096,
+    Rsa2048Sha256,
+    Rsa3072Sha384,
+    Rsa4096Sha512,
     EdDsaSha512Ed25519ph,
 }
 
@@ -77,9 +77,9 @@ impl TryFrom<u16> for SignatureKind {
             0x0001 => Ok(Self::EcDsaSha256P256),
             0x0002 => Ok(Self::EcDsaSha384P384),
             0x0003 => Ok(Self::EcDsaSha512P521),
-            0x0004 => Ok(Self::RsaSha256_2048),
-            0x0005 => Ok(Self::RsaSha384_3072),
-            0x0006 => Ok(Self::RsaSha512_4096),
+            0x0004 => Ok(Self::Rsa2048Sha256),
+            0x0005 => Ok(Self::Rsa3072Sha384),
+            0x0006 => Ok(Self::Rsa4096Sha512),
             0x0008 => Ok(Self::EdDsaSha512Ed25519ph),
             _ => Err(()),
         }
@@ -238,6 +238,16 @@ impl<'a> Su3<'a> {
                 tracing::warn!(
                     target: LOG_TARGET,
                     "invalid signer id",
+                );
+                return None;
+            };
+
+            let SignatureKind::Rsa4096Sha512 = su3.signature_kind else {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    %signer_id,
+                    kind = ?su3.signature_kind,
+                    "signature kind not supported",
                 );
                 return None;
             };
