@@ -23,7 +23,7 @@ use crate::{
     runtime::Runtime,
     transport::{
         ssu2::{
-            message::{Block, DataMessageBuilder, HeaderKind, HeaderReader},
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             session::KeyContext,
             Packet,
         },
@@ -44,7 +44,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::terminating";
+const LOG_TARGET: &str = "emissary::ssu2::terminating";
 
 /// Termination timeout.
 ///
@@ -126,7 +126,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             .with_pkt_num(ctx.next_pkt_num)
             .with_key_context(ctx.intro_key, &ctx.send_key_ctx)
             .with_termination(ctx.reason)
-            .build()
+            .build::<R>()
             .to_vec();
 
         // send `TerminationReceived` if the reason was anything but `TerminationReceived`
@@ -166,7 +166,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
         let pkt_num = match HeaderReader::new(self.intro_key, &mut pkt)?
             .parse(self.recv_key_ctx.k_header_2)?
         {
-            HeaderKind::Data { pkt_num } => pkt_num,
+            HeaderKind::Data { pkt_num, .. } => pkt_num,
             kind => {
                 tracing::trace!(
                     target: LOG_TARGET,

@@ -24,10 +24,11 @@ use crate::{
     error::Ssu2Error,
     primitives::RouterId,
     runtime::Runtime,
+    subsystem::SubsystemHandle,
     transport::ssu2::{
         message::{
-            HeaderKind, HeaderReader, SessionConfirmedBuilder, SessionRequestBuilder,
-            TokenRequestBuilder,
+            handshake::{SessionConfirmedBuilder, SessionRequestBuilder, TokenRequestBuilder},
+            HeaderKind, HeaderReader,
         },
         session::{
             active::Ssu2SessionContext,
@@ -54,7 +55,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::outbound";
+const LOG_TARGET: &str = "emissary::ssu2::pending::outbound";
 
 /// Outbound SSU2 session context.
 pub struct OutboundSsu2Context {
@@ -96,6 +97,9 @@ pub struct OutboundSsu2Context {
 
     /// Remote router's static key.
     pub static_key: StaticPublicKey,
+
+    /// Subsystem handle.
+    pub subsystem_handle: SubsystemHandle,
 }
 
 /// State for a pending outbound SSU2 session.
@@ -181,6 +185,9 @@ pub struct OutboundSsu2Session<R: Runtime> {
 
     /// Pending session state.
     state: PendingSessionState,
+
+    /// Subsystem handle.
+    subsystem_handle: SubsystemHandle,
 }
 
 impl<R: Runtime> OutboundSsu2Session<R> {
@@ -200,6 +207,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             src_id,
             state,
             static_key,
+            subsystem_handle,
         } = context;
 
         tracing::trace!(
@@ -214,6 +222,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .with_dst_id(dst_id)
             .with_src_id(src_id)
             .with_intro_key(intro_key)
+            .with_net_id(net_id)
             .build::<R>()
             .to_vec();
 
@@ -248,6 +257,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 router_info,
                 static_key,
             },
+            subsystem_handle,
         }
     }
 
@@ -314,6 +324,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         let mut message = SessionRequestBuilder::default()
             .with_dst_id(self.dst_id)
             .with_src_id(self.src_id)
+            .with_net_id(self.net_id)
             .with_ephemeral_key(ephemeral_key.public())
             .with_token(token)
             .build::<R>();
@@ -549,6 +560,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 router_id: self.router_id.clone(),
                 pkt_rx: self.rx.take().expect("to exist"),
             },
+            src_id: self.src_id,
         }))
     }
 
@@ -589,6 +601,26 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 }))
             }
         }
+    }
+
+    /// Run the event loop of [`OutboundSsu2Session`].
+    ///
+    /// Convenient function for calling `OutboundSsu2Session::poll()` which, if an error occurred
+    /// during negotiation, reports a connection failure to installed subsystems and returns the
+    /// session status.
+    pub async fn run(mut self) -> PendingSsu2SessionStatus {
+        let status = (&mut self).await;
+
+        if core::matches!(
+            status,
+            PendingSsu2SessionStatus::SessionTermianted { .. }
+                | PendingSsu2SessionStatus::Timeout { .. }
+                | PendingSsu2SessionStatus::SocketClosed
+        ) {
+            self.subsystem_handle.report_connection_failure(self.router_id.clone()).await;
+        }
+
+        status
     }
 }
 
@@ -669,6 +701,7 @@ mod tests {
         crypto::sha256::Sha256,
         primitives::RouterInfoBuilder,
         runtime::mock::MockRuntime,
+        subsystem::InnerSubsystemEvent,
         transport::ssu2::session::pending::inbound::{InboundSsu2Context, InboundSsu2Session},
     };
     use rand_core::RngCore;
@@ -685,6 +718,7 @@ mod tests {
     }
 
     struct OutboundContext {
+        event_rx: Receiver<InnerSubsystemEvent>,
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
@@ -718,6 +752,13 @@ mod tests {
         let (inbound_session_tx, inbound_session_rx) = channel(128);
         let (outbound_socket_tx, outbound_socket_rx) = channel(128);
         let (outbound_session_tx, outbound_session_rx) = channel(128);
+        let (event_rx, subsystem_handle) = {
+            let (event_tx, event_rx) = channel(128);
+            let mut handle = SubsystemHandle::new();
+            handle.register_subsystem(event_tx);
+
+            (event_rx, handle)
+        };
 
         let (router_info, _, signing_key) = RouterInfoBuilder::default()
             .with_ssu2(crate::Ssu2Config {
@@ -749,6 +790,7 @@ mod tests {
             src_id,
             state: inbound_state.clone(),
             static_key: inbound_static_key.public(),
+            subsystem_handle,
         });
 
         let (pkt, pkt_num, dst_id, src_id) = {
@@ -787,9 +829,10 @@ mod tests {
                 inbound_session: inbound,
             },
             OutboundContext {
-                outbound_socket_rx,
-                outbound_session_tx,
+                event_rx,
                 outbound_session: outbound,
+                outbound_session_tx,
+                outbound_socket_rx,
             },
         )
     }
@@ -799,12 +842,14 @@ mod tests {
         let (
             InboundContext { .. },
             OutboundContext {
+                event_rx,
                 outbound_session,
                 outbound_session_tx: _ob_sess_tx,
                 outbound_socket_rx,
             },
         ) = create_session();
-        let outbound_session = tokio::spawn(outbound_session);
+        let router_id = outbound_session.router_id.clone();
+        let outbound_session = tokio::spawn(outbound_session.run());
 
         for _ in 0..2 {
             match tokio::time::timeout(Duration::from_secs(10), outbound_socket_rx.recv()).await {
@@ -820,6 +865,15 @@ mod tests {
             Ok(Ok(PendingSsu2SessionStatus::Timeout { .. })) => {}
             _ => panic!("invalid result"),
         }
+
+        match tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("no timeout")
+            .expect("to succeed")
+        {
+            InnerSubsystemEvent::ConnectionFailure { router } => assert_eq!(router, router_id),
+            _ => panic!("invalid event"),
+        }
     }
 
     #[tokio::test]
@@ -831,6 +885,7 @@ mod tests {
                 inbound_session_tx: _ib_sess_tx,
             },
             OutboundContext {
+                event_rx,
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
@@ -838,7 +893,8 @@ mod tests {
         ) = create_session();
 
         let intro_key = outbound_session.intro_key;
-        let outbound_session = tokio::spawn(outbound_session);
+        let router_id = outbound_session.router_id.clone();
+        let outbound_session = tokio::spawn(outbound_session.run());
 
         // send retry message to outbound session
         {
@@ -863,6 +919,15 @@ mod tests {
             Ok(Ok(PendingSsu2SessionStatus::Timeout { .. })) => {}
             _ => panic!("invalid result"),
         }
+
+        match tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("no timeout")
+            .expect("to succeed")
+        {
+            InnerSubsystemEvent::ConnectionFailure { router } => assert_eq!(router, router_id),
+            _ => panic!("invalid event"),
+        }
     }
 
     #[tokio::test]
@@ -874,6 +939,7 @@ mod tests {
                 inbound_session_tx: ib_sess_tx,
             },
             OutboundContext {
+                event_rx,
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
@@ -881,7 +947,8 @@ mod tests {
         ) = create_session();
 
         let intro_key = outbound_session.intro_key;
-        let outbound_session = tokio::spawn(outbound_session);
+        let router_id = outbound_session.router_id.clone();
+        let outbound_session = tokio::spawn(outbound_session.run());
         let _inbound_session = tokio::spawn(inbound_session);
 
         // send retry message to outbound session
@@ -924,6 +991,15 @@ mod tests {
             Ok(Ok(PendingSsu2SessionStatus::Timeout { .. })) => {}
             _ => panic!("invalid result"),
         }
+
+        match tokio::time::timeout(Duration::from_secs(5), event_rx.recv())
+            .await
+            .expect("no timeout")
+            .expect("to succeed")
+        {
+            InnerSubsystemEvent::ConnectionFailure { router } => assert_eq!(router, router_id),
+            _ => panic!("invalid event"),
+        }
     }
 
     #[tokio::test]
@@ -935,6 +1011,7 @@ mod tests {
                 inbound_session_tx: ib_sess_tx,
             },
             OutboundContext {
+                event_rx: _event_rx,
                 mut outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,

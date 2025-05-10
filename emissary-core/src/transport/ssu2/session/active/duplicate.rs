@@ -29,7 +29,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::active::duplicate-filter";
+const LOG_TARGET: &str = "emissary::ssu2::active::duplicate-filter";
 
 /// Duplicate filter decay interval.
 const DUPLICATE_FILTER_DECAY_INTERVAL: Duration = Duration::from_secs(60);

@@ -22,20 +22,8 @@ members = ["."]
 debug = 1
 
 [[bin]]
-name = "variable_tunnel_build"
-path = "fuzz_targets/variable_tunnel_build.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "short_tunnel_build_builder"
 path = "fuzz_targets/short_tunnel_build_builder.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "short_tunnel_build"
-path = "fuzz_targets/short_tunnel_build.rs"
 test = false
 doc = false
 
@@ -46,98 +34,19 @@ test = false
 doc = false
 
 [[bin]]
-name = "i2np_message"
-path = "fuzz_targets/i2np_message.rs"
-test = false
-doc = false
-
-[[bin]]
 name = "tunnel_data_builder"
 path = "fuzz_targets/tunnel_data_builder.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "tunnel_data"
-path = "fuzz_targets/tunnel_data.rs"
+name = "i2np"
+path = "fuzz_targets/i2np.rs"
 test = false
 doc = false
 
 [[bin]]
-name = "tunnel_gateway"
-path = "fuzz_targets/tunnel_gateway.rs"
+name = "primitives"
+path = "fuzz_targets/primitives.rs"
 test = false
 doc = false
-
-[[bin]]
-name = "garlic"
-path = "fuzz_targets/garlic.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "lease_set"
-path = "fuzz_targets/lease_set.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "database_lookup"
-path = "fuzz_targets/database_lookup.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "database_store"
-path = "fuzz_targets/database_store.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "database_search_reply"
-path = "fuzz_targets/database_search_reply.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "date"
-path = "fuzz_targets/date.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "router_info"
-path = "fuzz_targets/router_info.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "router_identity"
-path = "fuzz_targets/router_identity.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "destination"
-path = "fuzz_targets/destination.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "mapping"
-path = "fuzz_targets/mapping.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "router_address"
-path = "fuzz_targets/router_address.rs"
-test = false
-doc = false
-
-[[bin]]
-name = "string"
-path = "fuzz_targets/string.rs"
-test = false
-doc = false
-

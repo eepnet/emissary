@@ -25,8 +25,9 @@ use crate::{
     runtime::Runtime,
     transport::ssu2::{
         message::{
-            Block, DataMessageBuilder, HeaderKind, HeaderReader, RetryBuilder,
-            SessionCreatedBuilder,
+            data::DataMessageBuilder,
+            handshake::{RetryBuilder, SessionCreatedBuilder},
+            Block, HeaderKind, HeaderReader,
         },
         session::{
             active::Ssu2SessionContext,
@@ -55,7 +56,7 @@ use core::{
 };
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::inbound";
+const LOG_TARGET: &str = "emissary::ssu2::pending::inbound";
 
 /// Timeout for receicing [`SessionRequest`] from Bob.
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
@@ -221,6 +222,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .with_dst_id(src_id)
             .with_token(token)
             .with_address(address)
+            .with_net_id(net_id)
             .build::<R>()
             .to_vec();
 
@@ -306,6 +308,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         .with_dst_id(src_id)
                         .with_token(token)
                         .with_address(self.address)
+                        .with_net_id(self.net_id)
                         .build::<R>()
                         .to_vec();
 
@@ -413,6 +416,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .with_address(self.address)
             .with_dst_id(self.src_id)
             .with_src_id(self.dst_id)
+            .with_net_id(self.net_id)
             .with_ephemeral_key(pk.clone())
             .build::<R>();
 
@@ -595,7 +599,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 },
             )
             .with_ack(0u32, 0u8, None)
-            .build();
+            .build::<R>();
 
         Ok(Some(PendingSsu2SessionStatus::NewInboundSession {
             context: Ssu2SessionContext {
@@ -609,6 +613,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             },
             pkt,
             target: self.address,
+            dst_id: self.dst_id,
         }))
     }
 
@@ -717,6 +722,7 @@ mod tests {
         crypto::sha256::Sha256,
         primitives::RouterInfoBuilder,
         runtime::mock::MockRuntime,
+        subsystem::SubsystemHandle,
         transport::ssu2::session::pending::outbound::{OutboundSsu2Context, OutboundSsu2Session},
     };
     use std::net::{IpAddr, Ipv4Addr};
@@ -793,6 +799,7 @@ mod tests {
             src_id,
             state: inbound_state.clone(),
             static_key: inbound_static_key.public(),
+            subsystem_handle: SubsystemHandle::new(),
         });
 
         let (pkt, pkt_num, dst_id, src_id) = {

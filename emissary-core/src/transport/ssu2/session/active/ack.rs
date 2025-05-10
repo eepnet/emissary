@@ -22,15 +22,8 @@ use core::{
     ops::Deref,
 };
 
-/// Local ACK manager.
-pub struct LocalAckManager {}
-
-impl LocalAckManager {
-    /// Create new [`LocalAckManager`].
-    pub fn new() -> Self {
-        Self {}
-    }
-}
+/// Maximum ACK difference.
+const MAX_ACK_DIFF: u32 = 255u32;
 
 /// Packet type.
 #[derive(Debug)]
@@ -73,6 +66,23 @@ impl PartialEq for Packet {
     }
 }
 
+/// ACK info.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AckInfo {
+    /// Highest seen packet number.
+    pub highest_seen: u32,
+
+    /// Number of ACKs below `ack_through`.
+    pub num_acks: u8,
+
+    /// NACK/ACK ranges.
+    ///
+    /// First element of the tuple is NACKs, second is ACKs.
+    ///
+    /// `None` if there were no ranges.
+    pub ranges: Option<Vec<(u8, u8)>>,
+}
+
 /// Remote ACK manager.
 pub struct RemoteAckManager {
     /// Highest seen packet number.
@@ -92,20 +102,23 @@ impl RemoteAckManager {
     }
 
     /// Register ACK-eliciting packet.
-    //
-    // TODO: return true/false if immediate ack should be sent?
     pub fn register_pkt(&mut self, pkt_num: u32) {
         // next expected packet number
         if self.highest_seen + 1 == pkt_num {
             self.packets.insert(Reverse(Packet::Received(self.highest_seen)));
             self.packets.insert(Reverse(Packet::Received(pkt_num)));
             self.highest_seen = pkt_num;
+
             return;
         }
 
         // packet with a number higher than expected has been received, meaning one or more packets
         // were dropped between the last highest packet and current highest packet
         if self.highest_seen + 1 < pkt_num {
+            if self.highest_seen.saturating_add(MAX_ACK_DIFF) < pkt_num {
+                return;
+            }
+
             (self.highest_seen + 1..pkt_num).for_each(|pkt| {
                 if !self.packets.contains(&Reverse(Packet::Received(pkt))) {
                     self.packets.insert(Reverse(Packet::Missing(pkt)));
@@ -128,8 +141,21 @@ impl RemoteAckManager {
         self.register_pkt(pkt_num);
     }
 
+    /// Register ACK.
+    ///
+    /// - `ack_through` marks the highest packet that was ACKed.
+    /// - `num_acks` marks the number of ACKs below `ack_through`
+    /// - `range` contains a `(# of NACK, # of ACK)` tuples
+    ///
+    /// [`RemoteAckManager`] checks if any of the received ACKs are related to sent ACK packets,
+    /// allowing it to stop tracking those packets.
+    pub fn register_ack(&mut self, _ack_through: u32, _num_acks: u8, _ranges: &[(u8, u8)]) {
+        // TODO: print something if this acked our ack
+    }
+
     /// Get ACK information added to an outbound message.
-    pub fn ack_info(&mut self) -> (u32, u8, Option<Vec<(u8, u8)>>) {
+    pub fn ack_info(&mut self) -> AckInfo {
+        // the first packet in `packets` is always `Packet::Received`
         let num_acks = min(
             self.packets
                 .iter()
@@ -147,7 +173,15 @@ impl RemoteAckManager {
         let mut iter = self.packets.iter();
 
         if !iter.any(|pkt| core::matches!(pkt.0, Packet::Missing(_))) {
-            return (self.highest_seen, num_acks, None);
+            while self.packets.len() > MAX_ACK_DIFF as usize {
+                self.packets.pop_last();
+            }
+
+            return AckInfo {
+                highest_seen: self.highest_seen,
+                num_acks,
+                ranges: None,
+            };
         }
 
         // if `packets` contained any missing packets, go through all of them until the end and
@@ -192,7 +226,15 @@ impl RemoteAckManager {
             .map(|chunk| (min(chunk[0], 255) as u8, min(chunk[1], 255) as u8))
             .collect::<Vec<(_, _)>>();
 
-        (self.highest_seen, num_acks, Some(ranges))
+        while self.packets.len() > MAX_ACK_DIFF as usize {
+            self.packets.pop_last();
+        }
+
+        AckInfo {
+            highest_seen: self.highest_seen,
+            num_acks,
+            ranges: Some(ranges),
+        }
     }
 }
 
@@ -200,16 +242,23 @@ impl RemoteAckManager {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ack_one_packet() {
+    #[tokio::test]
+    async fn ack_one_packet() {
         let mut manager = RemoteAckManager::new();
         manager.register_pkt(1);
 
-        assert_eq!(manager.ack_info(), (1, 1, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 1,
+                num_acks: 1,
+                ranges: None
+            }
+        );
     }
 
-    #[test]
-    fn ack_multiple_packets() {
+    #[tokio::test]
+    async fn ack_multiple_packets() {
         let mut manager = RemoteAckManager::new();
 
         for i in 1..=3 {
@@ -218,11 +267,18 @@ mod tests {
         }
 
         // 3 is highest seen and 2 packets below 3 are also acked
-        assert_eq!(manager.ack_info(), (3, 3, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 3,
+                num_acks: 3,
+                ranges: None
+            }
+        );
     }
 
-    #[test]
-    fn too_many_unacked_packets() {
+    #[tokio::test]
+    async fn too_many_unacked_packets() {
         let mut manager = RemoteAckManager::new();
 
         for i in 1..=300 {
@@ -230,11 +286,18 @@ mod tests {
             assert_eq!(manager.highest_seen, i);
         }
 
-        assert_eq!(manager.ack_info(), (300, 255, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 300,
+                num_acks: 255,
+                ranges: None
+            }
+        );
     }
 
-    #[test]
-    fn max_acks() {
+    #[tokio::test]
+    async fn max_acks() {
         let mut manager = RemoteAckManager::new();
 
         for i in 1..=256 {
@@ -242,15 +305,22 @@ mod tests {
             assert_eq!(manager.highest_seen, i);
         }
 
-        assert_eq!(manager.ack_info(), (256, 255, None));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 256,
+                num_acks: 255,
+                ranges: None
+            }
+        );
     }
 
-    #[test]
-    fn next_pkt_missing() {
+    #[tokio::test]
+    async fn next_pkt_missing() {
         let mut manager = RemoteAckManager::new();
 
-        manager.register_pkt(300);
-        assert_eq!(manager.highest_seen, 300);
+        manager.register_pkt(250);
+        assert_eq!(manager.highest_seen, 250);
         assert_eq!(
             manager
                 .packets
@@ -265,20 +335,20 @@ mod tests {
                 .iter()
                 .filter(|packet| core::matches!(packet.0, Packet::Missing(_)))
                 .count(),
-            299
+            249
         );
 
-        // pkt 299 missing, no acks below 300
-        for i in 1..=298 {
+        // pkt 249 missing, no acks below 250
+        for i in 1..=248 {
             manager.register_pkt(i);
-            assert_eq!(manager.highest_seen, 300);
+            assert_eq!(manager.highest_seen, 250);
             assert_eq!(
                 manager
                     .packets
                     .iter()
                     .filter(|packet| core::matches!(packet.0, Packet::Missing(_)))
                     .count(),
-                299 - i as usize
+                249 - i as usize
             );
             assert_eq!(
                 manager
@@ -290,11 +360,18 @@ mod tests {
             );
         }
 
-        assert_eq!(manager.ack_info(), (300, 0, Some(vec![(1, 255)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 250,
+                num_acks: 0,
+                ranges: Some(vec![(1, 249)])
+            }
+        );
     }
 
-    #[test]
-    fn packet_dropped() {
+    #[tokio::test]
+    async fn packet_dropped() {
         let mut manager = RemoteAckManager::new();
 
         manager.register_pkt(10);
@@ -305,11 +382,18 @@ mod tests {
         manager.register_pkt(2);
         manager.register_pkt(1);
 
-        assert_eq!(manager.ack_info(), (10, 2, Some(vec![(1, 2), (2, 3)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 2,
+                ranges: Some(vec![(1, 2), (2, 3)])
+            }
+        );
     }
 
-    #[test]
-    fn packet_dropped_2() {
+    #[tokio::test]
+    async fn packet_dropped_2() {
         let mut manager = RemoteAckManager::new();
 
         manager.register_pkt(10);
@@ -320,27 +404,45 @@ mod tests {
 
         assert_eq!(
             manager.ack_info(),
-            (10, 0, Some(vec![(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)]))
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 0,
+                ranges: Some(vec![(1, 1), (1, 1), (1, 1), (1, 1), (1, 1)])
+            }
         );
     }
 
-    #[test]
-    fn packet_dropped_3() {
+    #[tokio::test]
+    async fn packet_dropped_3() {
         let mut manager = RemoteAckManager::new();
 
         for i in 2..=10 {
             manager.register_pkt(i);
         }
 
-        assert_eq!(manager.ack_info(), (10, 8, Some(vec![(1, 1)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 8,
+                ranges: Some(vec![(1, 1)])
+            }
+        );
     }
 
-    #[test]
-    fn packet_dropped_4() {
+    #[tokio::test]
+    async fn packet_dropped_4() {
         let mut manager = RemoteAckManager::new();
 
         manager.register_pkt(10);
 
-        assert_eq!(manager.ack_info(), (10, 0, Some(vec![(9, 1)])));
+        assert_eq!(
+            manager.ack_info(),
+            AckInfo {
+                highest_seen: 10,
+                num_acks: 0,
+                ranges: Some(vec![(9, 1)])
+            }
+        );
     }
 }

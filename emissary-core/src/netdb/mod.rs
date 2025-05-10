@@ -39,7 +39,7 @@ use crate::{
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
     subsystem::SubsystemEvent,
     transport::TransportService,
-    tunnel::{TunnelPoolEvent, TunnelPoolHandle},
+    tunnel::{RoutingTable, TunnelPoolEvent, TunnelPoolHandle},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -154,13 +154,13 @@ pub struct NetDb<R: Runtime> {
     /// Active queries.
     active: HashMap<Bytes, QueryKind<R>>,
 
-    /// Exploratory tunnel pool handle.
-    exploratory_pool_handle: TunnelPoolHandle,
-
     /// Router exploration timer.
     ///
     /// `None` if the router is run as floodfill.
     exploration_timer: Option<R::Timer>,
+
+    /// Exploratory tunnel pool handle.
+    exploratory_pool_handle: TunnelPoolHandle,
 
     /// Has the router been configured to act as a floodfill router.
     floodfill: bool,
@@ -209,6 +209,9 @@ pub struct NetDb<R: Runtime> {
     /// Connected routers.
     routers: HashMap<RouterId, RouterState>,
 
+    /// Routing table.
+    routing_table: RoutingTable,
+
     /// Transport service.
     service: TransportService<R>,
 }
@@ -220,6 +223,7 @@ impl<R: Runtime> NetDb<R> {
         floodfill: bool,
         service: TransportService<R>,
         exploratory_pool_handle: TunnelPoolHandle,
+        routing_table: RoutingTable,
         netdb_msg_rx: mpsc::Receiver<Message>,
     ) -> (Self, NetDbHandle) {
         let floodfills = router_ctx
@@ -291,6 +295,7 @@ impl<R: Runtime> NetDb<R> {
                 router_dht,
                 router_infos: HashMap::new(),
                 routers: HashMap::new(),
+                routing_table,
                 service,
             },
             NetDbHandle::new(handle_tx),
@@ -376,38 +381,78 @@ impl<R: Runtime> NetDb<R> {
 
     /// Flood `message` to `routers`.
     fn send_message(&mut self, routers: &[RouterId], message: MessageKind) {
-        routers.iter().for_each(|router_id| match self.routers.get_mut(router_id) {
-            None => match self.service.connect(router_id) {
-                Err(error) => tracing::trace!(
-                    target: LOG_TARGET,
-                    %router_id,
-                    ?error,
-                    "failed to connect to router",
-                ),
-                Ok(()) => {
-                    self.routers.insert(
-                        router_id.clone(),
-                        RouterState::Dialing {
-                            pending_messages: vec![message.clone()],
-                        },
-                    );
+        for router_id in routers {
+            // check if `router_id` is us
+            //
+            // this can happen if the reply instructions of the message contained a tunnel
+            // for which we're acting as the IBGW
+            if router_id == self.router_ctx.router_id() {
+                // `Message::parse_short()` is expected to succeed as the message was created by us
+                let message = Message::parse_short(match &message {
+                    MessageKind::Expiring { message, .. } => message,
+                    MessageKind::NonExpiring { message } => message,
+                })
+                .expect("to succeed");
+
+                match message.message_type {
+                    MessageType::TunnelGateway => match self.routing_table.route_message(message) {
+                        Ok(_) => tracing::debug!(
+                            target: LOG_TARGET,
+                            "route `TunnelGateway` to self",
+                        ),
+                        Err(error) => tracing::warn!(
+                            target: LOG_TARGET,
+                            %error,
+                            "failed to route `TunnelGateway` to self",
+                        ),
+                    },
+                    message_type => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?message_type,
+                            "unable to route non-tunnel message to self",
+                        );
+                        debug_assert!(false);
+                    }
                 }
-            },
-            Some(RouterState::Dialing { pending_messages }) => {
-                pending_messages.push(message.clone());
+
+                continue;
             }
-            Some(RouterState::Connected) => {
-                if let Err((error, _)) = self.service.send(router_id, message.clone().into_inner())
-                {
-                    tracing::debug!(
+
+            match self.routers.get_mut(router_id) {
+                None => match self.service.connect(router_id) {
+                    Err(error) => tracing::trace!(
                         target: LOG_TARGET,
                         %router_id,
                         ?error,
-                        "failed to send message to router",
-                    );
+                        "failed to connect to router",
+                    ),
+                    Ok(()) => {
+                        self.routers.insert(
+                            router_id.clone(),
+                            RouterState::Dialing {
+                                pending_messages: vec![message.clone()],
+                            },
+                        );
+                    }
+                },
+                Some(RouterState::Dialing { pending_messages }) => {
+                    pending_messages.push(message.clone());
+                }
+                Some(RouterState::Connected) => {
+                    if let Err((error, _)) =
+                        self.service.send(router_id, message.clone().into_inner())
+                    {
+                        tracing::debug!(
+                            target: LOG_TARGET,
+                            %router_id,
+                            ?error,
+                            "failed to send message to router",
+                        );
+                    }
                 }
             }
-        });
+        }
     }
 
     /// Handle [`DatabaseStore`] for [`RouterInfo`] if the local router is run as a floodfill.
@@ -1490,7 +1535,7 @@ impl<R: Runtime> NetDb<R> {
         let Some(floodfill) = self.floodfill_dht.closest(&key, 1usize).next() else {
             tracing::warn!(
                 target: LOG_TARGET,
-                "cannot query leaseset, no floodfills",
+                "cannot query router info, no floodfills",
             );
             let _ = tx.send(Err(QueryError::NoFloodfills));
             return;
@@ -1575,7 +1620,7 @@ impl<R: Runtime> NetDb<R> {
             tracing::warn!(
                 target: LOG_TARGET,
                 %router_id,
-                "cannot send router info, no floodfills",
+                "cannot publish router info, no floodfills",
             );
             return;
         }
@@ -2025,10 +2070,10 @@ mod tests {
         runtime::mock::MockRuntime,
         subsystem::{InnerSubsystemEvent, SubsystemCommand},
         transport::ProtocolCommand,
-        tunnel::TunnelMessage,
+        tunnel::{RoutingKindRecycle, TunnelMessage},
     };
     use std::collections::VecDeque;
-    use thingbuf::mpsc::channel;
+    use thingbuf::mpsc::{channel, with_recycle};
 
     #[tokio::test]
     async fn lease_set_store_to_floodfill() {
@@ -2049,6 +2094,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2063,6 +2112,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2162,6 +2212,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2176,6 +2230,7 @@ mod tests {
             false,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2258,6 +2313,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2272,6 +2331,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2356,6 +2416,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2370,6 +2434,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2382,12 +2447,12 @@ mod tests {
             let lease1 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(20),
             };
             let lease2 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(20),
             };
 
             (
@@ -2418,12 +2483,12 @@ mod tests {
             let lease1 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(10),
             };
             let lease2 = Lease {
                 router_id: RouterId::random(),
                 tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(10),
             };
 
             (
@@ -2633,9 +2698,16 @@ mod tests {
         }
 
         // poll netdb until it does its maintenance
-        tokio::time::timeout(Duration::from_secs(35), &mut netdb).await.unwrap_err();
+        netdb.maintenance_timer = MockRuntime::timer(Duration::from_secs(6));
+        tokio::time::timeout(Duration::from_secs(7), &mut netdb).await.unwrap_err();
 
-        // verify two of the lease sets are pruned
+        // verify that one lease set is pruned
+        assert_eq!(netdb.lease_sets.len(), 2);
+
+        netdb.maintenance_timer = MockRuntime::timer(Duration::from_secs(6));
+        tokio::time::timeout(Duration::from_secs(7), &mut netdb).await.unwrap_err();
+
+        // verify that second lease set is pruned
         assert_eq!(netdb.lease_sets.len(), 1);
     }
 
@@ -2658,6 +2730,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2672,6 +2748,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2767,6 +2844,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2781,6 +2862,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2855,6 +2937,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2869,6 +2955,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -2973,6 +3060,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -2987,6 +3078,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3067,6 +3159,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3081,6 +3177,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3183,6 +3280,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3197,6 +3298,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3257,6 +3359,10 @@ mod tests {
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3271,6 +3377,7 @@ mod tests {
             false,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3337,6 +3444,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3351,6 +3462,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3597,6 +3709,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3611,6 +3727,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3846,6 +3963,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3860,6 +3981,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -3933,6 +4055,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -3947,6 +4073,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4024,6 +4151,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4038,6 +4169,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4112,6 +4244,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4126,6 +4262,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4279,6 +4416,10 @@ mod tests {
         let (_msg_tx, msg_rx) = channel(64);
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4293,6 +4434,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4378,6 +4520,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4392,6 +4538,7 @@ mod tests {
             false,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4445,6 +4592,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4459,6 +4610,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4519,6 +4671,10 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
                 MockRuntime::register_metrics(vec![], None),
@@ -4533,6 +4689,7 @@ mod tests {
             true,
             service,
             tp_handle,
+            rtbl,
             msg_rx,
         );
 
@@ -4573,5 +4730,133 @@ mod tests {
             Ok(Some(Err(QueryError::NoFloodfills))) => {}
             _ => panic!("invalid value"),
         }
+    }
+
+    #[tokio::test]
+    async fn floodfill_is_ibgw() {
+        let (service, rx, _tx, storage) = TransportService::new();
+        let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
+
+        // add few floodfills to router storage
+        let mut floodfills = (0..3)
+            .map(|_| {
+                let info = RouterInfoBuilder::default().as_floodfill().build().0;
+                let id = info.identity.id();
+                storage.add_router(info);
+
+                id
+            })
+            .collect::<HashSet<_>>();
+
+        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
+        let (_msg_tx, msg_rx) = channel(64);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
+        let (transit_tx, _transit_rx) = channel(64);
+        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+
+        let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
+            RouterContext::new(
+                MockRuntime::register_metrics(vec![], None),
+                storage,
+                router_info.identity.id(),
+                Bytes::from(router_info.serialize(&signing_key)),
+                static_key,
+                signing_key,
+                2u8,
+                event_handle.clone(),
+            ),
+            true,
+            service,
+            tp_handle,
+            rtbl,
+            msg_rx,
+        );
+
+        let (key, lease_set) = {
+            let sgk = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
+            let sk = StaticPrivateKey::random(&mut MockRuntime::rng());
+            let destination = Destination::new::<MockRuntime>(sgk.public());
+            let id = destination.id();
+
+            let lease1 = Lease {
+                router_id: RouterId::random(),
+                tunnel_id: TunnelId::random(),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
+            };
+            let lease2 = Lease {
+                router_id: RouterId::random(),
+                tunnel_id: TunnelId::random(),
+                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
+            };
+
+            (
+                Bytes::from(id.to_vec()),
+                Bytes::from(
+                    LeaseSet2 {
+                        header: LeaseSet2Header {
+                            destination,
+                            expires: (Duration::from_secs(5 * 60)).as_secs() as u32,
+                            is_unpublished: false,
+                            offline_signature: None,
+                            published: (MockRuntime::time_since_epoch()).as_secs() as u32,
+                        },
+                        public_keys: vec![sk.public()],
+                        leases: vec![lease1.clone(), lease2.clone()],
+                    }
+                    .serialize(&sgk),
+                ),
+            )
+        };
+
+        // add ibgw for the floodfill and make reply go through this tunnel
+        let reply_tunnel_id = TunnelId::random();
+        let reply_router_id = netdb.router_ctx.router_id().clone();
+        let ibgw_rx = netdb.routing_table.try_add_tunnel::<16>(reply_tunnel_id).unwrap();
+
+        let message = DatabaseStoreBuilder::new(key, DatabaseStoreKind::LeaseSet2 { lease_set })
+            .with_reply_type(StoreReplyType::Tunnel {
+                reply_token: MockRuntime::rng().next_u32(),
+                tunnel_id: reply_tunnel_id,
+                router_id: reply_router_id,
+            })
+            .build();
+
+        assert!(netdb.lease_sets.is_empty());
+        assert!(netdb
+            .on_message(
+                Message {
+                    payload: message.to_vec(),
+                    message_type: MessageType::DatabaseStore,
+                    ..Default::default()
+                },
+                None
+            )
+            .is_ok());
+        assert_eq!(netdb.lease_sets.len(), 1);
+
+        assert!((0..3).all(|_| match rx.try_recv().unwrap() {
+            ProtocolCommand::Connect { router_id } => {
+                assert!(floodfills.remove(&router_id));
+                true
+            }
+            _ => false,
+        }));
+
+        // verify that there are no more dials since the reply is supposed to go through an ibgw
+        // that the floodfill is part of
+        assert!(rx.try_recv().is_err());
+
+        assert_eq!(netdb.routers.len(), 3);
+        assert!(netdb
+            .routers
+            .values()
+            .all(|state| std::matches!(state, RouterState::Dialing { .. })));
+
+        let message = ibgw_rx.try_recv().unwrap();
+        let message = TunnelGateway::parse(&message.payload).unwrap();
+        let message = Message::parse_standard(message.payload).unwrap();
+
+        assert_eq!(message.message_type, MessageType::DeliveryStatus);
     }
 }

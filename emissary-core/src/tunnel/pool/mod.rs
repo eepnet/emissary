@@ -1418,7 +1418,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
         if let Some(rx) = &mut self.shutdown_rx {
             if rx.poll_unpin(cx).is_ready() {
                 tracing::info!(
-                    target: "emissary::sam",
+                    target: LOG_TARGET,
                     name = %self.config.name,
                     "tunnel pool shutting down",
                 );
@@ -1431,7 +1431,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                     tracing::warn!(
                         target: LOG_TARGET,
                         ?error,
-                        "failed to sent shutdown confirmation to tunnel pool owner",
+                        "failed to send shutdown confirmation to tunnel pool owner",
                     );
                 }
 

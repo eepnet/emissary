@@ -2874,7 +2874,6 @@ mod tests {
 
     #[tokio::test]
     async fn new_lease_set_published() {
-        crate::util::init_logger();
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
         let (netdb_handle, netdb_rx) = NetDbHandle::create();

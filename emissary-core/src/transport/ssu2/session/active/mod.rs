@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::chachapoly::{ChaCha, ChaChaPoly},
+    crypto::chachapoly::ChaChaPoly,
     error::Ssu2Error,
     i2np::Message,
     primitives::RouterId,
@@ -25,12 +25,13 @@ use crate::{
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
-            message::{Block, DataMessageBuilder},
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             session::{
                 active::{
-                    ack::{LocalAckManager, RemoteAckManager},
+                    ack::{AckInfo, RemoteAckManager},
                     duplicate::DuplicateFilter,
                     fragment::FragmentHandler,
+                    transmission::TransmissionManager,
                 },
                 terminating::TerminationContext,
                 KeyContext,
@@ -44,20 +45,107 @@ use crate::{
 use futures::FutureExt;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{collections::VecDeque, vec, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
+    cmp::min,
     future::Future,
     net::SocketAddr,
     pin::Pin,
+    sync::atomic::{AtomicU32, Ordering},
     task::{Context, Poll},
+    time::Duration,
 };
 
 mod ack;
 mod duplicate;
 mod fragment;
+mod transmission;
+
+// TODO: move code from `TransmissionManager` into here?
 
 /// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ssu2::session::active";
+const LOG_TARGET: &str = "emissary::ssu2::active";
+
+/// Command channel size.
+const CMD_CHANNEL_SIZE: usize = 512;
+
+/// SSU2 resend timeout
+const SSU2_RESEND_TIMEOUT: Duration = Duration::from_millis(40);
+
+/// Maximum timeout for immediate ACK response.
+const MAX_IMMEDIATE_ACK_TIMEOUT: Duration = Duration::from_millis(5);
+
+/// Maximum timeout for ACK.
+const MAX_ACK_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// Immediate ACK interval.
+///
+/// How often should an immediate ACK be bundled in a message.
+const IMMEDIATE_ACK_INTERVAL: u32 = 10u32;
+
+/// ACK timer.
+///
+/// Keeps track and allows scheduling both while respecting the priority of an immediate ACK.
+struct AckTimer<R: Runtime> {
+    /// Immediate ACK timer, if set.
+    immediate: Option<R::Timer>,
+
+    /// Normal ACK timer, if set.
+    normal: Option<R::Timer>,
+}
+
+impl<R: Runtime> AckTimer<R> {
+    fn new() -> Self {
+        Self {
+            immediate: None,
+            normal: None,
+        }
+    }
+
+    /// Schedule immediate ACK.
+    ///
+    /// It's only scheduled if there is no immediate ACK pending
+    fn schedule_immediate_ack(&mut self, rtt: Duration) {
+        if self.immediate.is_none() {
+            self.immediate = Some(R::timer(min(rtt / 16, MAX_IMMEDIATE_ACK_TIMEOUT)));
+        }
+    }
+
+    /// Schedule normal ACK.
+    ///
+    /// It's only scheduled if there is no previous ACK, neither immediate nor regular, pending.
+    fn schedule_ack(&mut self, rtt: Duration) {
+        if self.immediate.is_none() && self.normal.is_none() {
+            self.normal = Some(R::timer(min(rtt / 6, MAX_ACK_TIMEOUT)));
+        }
+    }
+}
+
+impl<R: Runtime> Future for AckTimer<R> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Some(timer) = &mut self.immediate {
+            if timer.poll_unpin(cx).is_ready() {
+                self.immediate = None;
+                self.normal = None;
+
+                return Poll::Ready(());
+            }
+        }
+
+        if let Some(timer) = &mut self.normal {
+            if timer.poll_unpin(cx).is_ready() {
+                self.immediate = None;
+                self.normal = None;
+
+                return Poll::Ready(());
+            }
+        }
+
+        Poll::Pending
+    }
+}
 
 /// SSU2 active session context.
 pub struct Ssu2SessionContext {
@@ -87,6 +175,9 @@ pub struct Ssu2SessionContext {
 
 /// Active SSU2 session.
 pub struct Ssu2Session<R: Runtime> {
+    /// ACK timer.
+    ack_timer: AckTimer<R>,
+
     /// Socket address of the remote router.
     address: SocketAddr,
 
@@ -110,11 +201,11 @@ pub struct Ssu2Session<R: Runtime> {
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
 
-    /// Local ACK manager.
-    _local_ack: LocalAckManager,
+    /// Packet number of the packet that last requested an immediate ACK.
+    last_immediate_ack: u32,
 
     /// Next packet number.
-    pkt_num: u32,
+    pkt_num: Arc<AtomicU32>,
 
     /// RX channel for receiving inbound packets from [`Ssu2Socket`].
     pkt_rx: Receiver<Packet>,
@@ -129,6 +220,10 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Remote ACK manager.
     remote_ack: RemoteAckManager,
+
+    /// Resend timer.
+    resend_timer: Option<R::Timer>,
+
     /// ID of the remote router.
     router_id: RouterId,
 
@@ -137,6 +232,9 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Subsystem handle.
     subsystem_handle: SubsystemHandle,
+
+    /// Transmission manager.
+    transmission: TransmissionManager<R>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -146,7 +244,8 @@ impl<R: Runtime> Ssu2Session<R> {
         pkt_tx: Sender<Packet>,
         subsystem_handle: SubsystemHandle,
     ) -> Self {
-        let (cmd_tx, cmd_rx) = channel(666usize);
+        let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
+        let pkt_num = Arc::new(AtomicU32::new(1u32));
 
         tracing::debug!(
             target: LOG_TARGET,
@@ -156,6 +255,7 @@ impl<R: Runtime> Ssu2Session<R> {
         );
 
         Self {
+            ack_timer: AckTimer::<R>::new(),
             address: context.address,
             cmd_rx,
             cmd_tx,
@@ -163,26 +263,18 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(),
             intro_key: context.intro_key,
-            _local_ack: LocalAckManager::new(),
-            pkt_num: 1u32, // TODO: may not be correct for outbound sessions
+            last_immediate_ack: 0u32,
+            pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
             remote_ack: RemoteAckManager::new(),
-            router_id: context.router_id,
+            resend_timer: None,
+            router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
+            transmission: TransmissionManager::<R>::new(context.router_id, pkt_num),
         }
-    }
-
-    /// Get next outbound packet number.
-    //
-    // TODO: check for overflow and terminate session
-    fn next_pkt_num(&mut self) -> u32 {
-        let pkt_num = self.pkt_num;
-        self.pkt_num += 1;
-
-        pkt_num
     }
 
     /// Handle inbound `message`.
@@ -208,7 +300,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 router_id = %self.router_id,
                 message_id = ?message.message_id,
                 message_type = ?message.message_type,
-                "ignoring duplicat message",
+                "ignoring duplicate message",
             );
             return;
         }
@@ -225,30 +317,45 @@ impl<R: Runtime> Ssu2Session<R> {
         }
     }
 
-    /// Handle ACKs.
-    fn handle_acks(&mut self, _ack_through: u32, _num_acks: u8, _ranges: Vec<(u8, u8)>) {}
-
     /// Handle received `pkt` for this session.
     fn handle_packet(&mut self, pkt: Packet) -> Result<(), Ssu2Error> {
         let Packet { mut pkt, .. } = pkt;
 
-        let iv2 = TryInto::<[u8; 12]>::try_into(&pkt[pkt.len() - 12..]).expect("to succeed");
-        ChaCha::with_iv(self.recv_key_ctx.k_header_2, iv2)
-            .decrypt([0u8; 8])
-            .into_iter()
-            .zip(&mut pkt[8..])
-            .for_each(|(a, b)| {
-                *b ^= a;
-            });
+        let (pkt_num, immediate_ack) = match HeaderReader::new(self.intro_key, &mut pkt)?
+            .parse(self.recv_key_ctx.k_header_2)?
+        {
+            HeaderKind::Data {
+                immediate_ack,
+                pkt_num,
+            } => (pkt_num, immediate_ack),
+            kind => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?kind,
+                    "unexpected packet",
+                );
+                return Err(Ssu2Error::UnexpectedMessage);
+            }
+        };
 
-        // TODO: immediate ack
-
-        let pkt_num = u32::from_be_bytes(TryInto::<[u8; 4]>::try_into(&pkt[8..12]).unwrap());
+        tracing::trace!(
+            target: LOG_TARGET,
+            router_id = %self.router_id,
+            ?pkt_num,
+            pkt_len = ?pkt.len(),
+            ?immediate_ack,
+            "handle packet",
+        );
 
         // TODO: unnecessary memory copy
         let mut payload = pkt[16..].to_vec();
         ChaChaPoly::with_nonce(&self.recv_key_ctx.k_data, pkt_num as u64)
             .decrypt_with_ad(&pkt[..16], &mut payload)?;
+
+        if immediate_ack {
+            self.ack_timer.schedule_immediate_ack(self.transmission.round_trip_time());
+        }
 
         for block in Block::parse(&payload).ok_or(Ssu2Error::Malformed)? {
             match block {
@@ -270,10 +377,10 @@ impl<R: Runtime> Ssu2Session<R> {
                         reason,
                     )));
                 }
-
                 Block::I2Np { message } => {
                     self.handle_message(message);
                     self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
                 }
                 Block::FirstFragment {
                     message_type,
@@ -282,6 +389,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment,
                 } => {
                     self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.first_fragment(
                         message_type,
@@ -299,6 +407,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment,
                 } => {
                     self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.follow_on_fragment(
                         message_id,
@@ -315,7 +424,49 @@ impl<R: Runtime> Ssu2Session<R> {
                     ranges,
                 } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
-                    self.handle_acks(ack_through, num_acks, ranges);
+                    self.remote_ack.register_ack(ack_through, num_acks, &ranges);
+                    self.transmission.register_ack(ack_through, num_acks, &ranges);
+
+                    if let Some(packets) = self.transmission.pending_packets() {
+                        let AckInfo {
+                            highest_seen,
+                            num_acks,
+                            ranges,
+                        } = self.remote_ack.ack_info();
+                        let num_pkts = packets.len();
+
+                        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
+                            // include immediate ack in the last fragment
+                            let message = if num_pkts > 1 && i == num_pkts - 1 {
+                                self.last_immediate_ack = pkt_num;
+
+                                DataMessageBuilder::default().with_immediate_ack()
+                            } else {
+                                DataMessageBuilder::default()
+                            }
+                            .with_dst_id(self.dst_id)
+                            .with_key_context(self.intro_key, &self.send_key_ctx)
+                            .with_message(pkt_num, message_kind)
+                            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                            .build::<R>();
+
+                            if let Err(error) = self.pkt_tx.try_send(Packet {
+                                pkt: message.to_vec(),
+                                address: self.address,
+                            }) {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    router_id = %self.router_id,
+                                    ?error,
+                                    "failed to send packet",
+                                );
+                            }
+
+                            if self.resend_timer.is_none() {
+                                self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+                            }
+                        }
+                    }
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
@@ -337,26 +488,48 @@ impl<R: Runtime> Ssu2Session<R> {
 
     /// Send `message` to remote router.
     fn send_message(&mut self, message: Vec<u8>) {
-        tracing::trace!(
-            target: LOG_TARGET,
-            router_id = %self.router_id,
-            message_len = ?message.len(),
-            "send i2np message",
-        );
-
         // TODO: this makes no sense, get unserialized message from subsystem
-        let msg = Message::parse_short(&message).unwrap();
-        let message_id = msg.message_id;
-        let (highest_seen, num_acks, ranges) = self.remote_ack.ack_info();
+        let message = Message::parse_short(&message).unwrap();
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack.ack_info();
+        let pkt_len = message.payload.len();
 
-        if message.len() <= 1200 {
-            let message = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num())
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_i2np(&message)
-                .with_ack(highest_seen, num_acks, ranges)
-                .build();
+        let Some(packets) = self.transmission.segment(message) else {
+            return;
+        };
+        let num_pkts = packets.len();
+
+        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
+            // include immediate ack flag if:
+            //  1) this is the last in a burst of messages
+            //  2) immediate ack has not been sent in the last `IMMEDIATE_ACK_INTERVAL` packets
+            let last_in_burst = num_pkts > 1 && i == num_pkts - 1;
+            let immediate_ack_threshold =
+                pkt_num.saturating_sub(self.last_immediate_ack) > IMMEDIATE_ACK_INTERVAL;
+
+            let message = if last_in_burst || immediate_ack_threshold {
+                self.last_immediate_ack = pkt_num;
+
+                DataMessageBuilder::default().with_immediate_ack()
+            } else {
+                DataMessageBuilder::default()
+            }
+            .with_dst_id(self.dst_id)
+            .with_key_context(self.intro_key, &self.send_key_ctx)
+            .with_message(pkt_num, message_kind)
+            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+            .build::<R>();
+
+            tracing::trace!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?pkt_num,
+                ?pkt_len,
+                "send i2np message",
+            );
 
             if let Err(error) = self.pkt_tx.try_send(Packet {
                 pkt: message.to_vec(),
@@ -364,66 +537,56 @@ impl<R: Runtime> Ssu2Session<R> {
             }) {
                 tracing::warn!(
                     target: LOG_TARGET,
-                    ?error,
-                    "failed to send packet",
-                );
-            }
-        } else {
-            let mut fragments = msg.payload.chunks(1200).collect::<VecDeque<_>>();
-            let num_fragments = fragments.len();
-            let (highest_seen, num_acks, ranges) = self.remote_ack.ack_info();
-
-            let first_fragment = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_pkt_num(self.next_pkt_num())
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_first_fragment(
-                    msg.message_type,
-                    msg.message_id,
-                    msg.expiration.as_secs() as u32,
-                    fragments.pop_front().expect("to exist"),
-                )
-                .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: overflow
-                .build();
-
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: first_fragment.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
+                    router_id = %self.router_id,
                     ?error,
                     "failed to send packet",
                 );
             }
 
-            fragments.into_iter().enumerate().for_each(|(i, fragment)| {
+            if self.resend_timer.is_none() {
+                self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+            }
+        }
+    }
+
+    fn resend(&mut self) -> Result<usize, ()> {
+        let Some(packets_to_resend) = self.transmission.resend()? else {
+            return Ok(0);
+        };
+
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack.ack_info();
+
+        Ok(packets_to_resend
+            .into_iter()
+            .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
+                self.last_immediate_ack = pkt_num;
+
                 let message = DataMessageBuilder::default()
                     .with_dst_id(self.dst_id)
-                    .with_pkt_num(self.next_pkt_num())
                     .with_key_context(self.intro_key, &self.send_key_ctx)
-                    .with_follow_on_fragment(
-                        message_id,
-                        i as u8 + 1u8,
-                        i == num_fragments - 2,
-                        fragment,
-                    )
-                    .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: overflow
-                    .build()
-                    .to_vec();
+                    .with_message(pkt_num, message_kind)
+                    .with_immediate_ack()
+                    .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                    .build::<R>();
 
                 if let Err(error) = self.pkt_tx.try_send(Packet {
-                    pkt: message,
+                    pkt: message.to_vec(),
                     address: self.address,
                 }) {
                     tracing::warn!(
                         target: LOG_TARGET,
+                        router_id = %self.router_id,
                         ?error,
                         "failed to send packet",
                     );
                 }
-            });
-        };
+
+                pkt_count + 1
+            }))
     }
 
     /// Run the event loop of an active SSU2 session.
@@ -444,7 +607,7 @@ impl<R: Runtime> Ssu2Session<R> {
             address: self.address,
             dst_id: self.dst_id,
             intro_key: self.intro_key,
-            next_pkt_num: self.next_pkt_num(),
+            next_pkt_num: self.transmission.next_pkt_num(),
             reason,
             recv_key_ctx: self.recv_key_ctx,
             router_id: self.router_id,
@@ -488,13 +651,75 @@ impl<R: Runtime> Future for Ssu2Session<R> {
             }
         }
 
-        loop {
+        while self.transmission.has_capacity() {
             match self.cmd_rx.poll_recv(cx) {
                 Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
                 Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
                     self.send_message(message),
                 Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
+            }
+        }
+
+        loop {
+            match &mut self.resend_timer {
+                None => break,
+                Some(timer) => match timer.poll_unpin(cx) {
+                    Poll::Pending => break,
+                    Poll::Ready(_) => match self.resend() {
+                        Err(()) => return Poll::Ready(TerminationReason::Timeout),
+                        Ok(num_resent) => {
+                            if num_resent > 0 {
+                                tracing::trace!(
+                                    target: LOG_TARGET,
+                                    router_id = %self.router_id,
+                                    ?num_resent,
+                                    "packet resent",
+                                );
+                            }
+
+                            self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+                        }
+                    },
+                },
+            }
+        }
+
+        if self.ack_timer.poll_unpin(cx).is_ready() {
+            let AckInfo {
+                highest_seen,
+                num_acks,
+                ranges,
+            } = self.remote_ack.ack_info();
+
+            tracing::trace!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?highest_seen,
+                ?num_acks,
+                ?ranges,
+                "send explicit ack",
+            );
+
+            let message = DataMessageBuilder::default()
+                .with_dst_id(self.dst_id)
+                .with_key_context(self.intro_key, &self.send_key_ctx)
+                .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
+                .with_ack(highest_seen, num_acks, ranges)
+                .build::<R>();
+
+            // TODO: report `pkt_num` to `RemoteAckManager`?
+
+            if let Err(error) = self.pkt_tx.try_send(Packet {
+                pkt: message.to_vec(),
+                address: self.address,
+            }) {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?error,
+                    "failed to send explicit ack packet",
+                );
             }
         }
 
@@ -505,5 +730,238 @@ impl<R: Runtime> Future for Ssu2Session<R> {
         let _ = self.fragment_handler.poll_unpin(cx);
 
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        i2np::{MessageType, I2NP_MESSAGE_EXPIRATION},
+        primitives::MessageId,
+        runtime::mock::MockRuntime,
+    };
+
+    #[tokio::test]
+    async fn backpressure_works() {
+        let (from_socket_tx, from_socket_rx) = channel(128);
+        let (to_socket_tx, to_socket_rx) = channel(128);
+
+        let ctx = Ssu2SessionContext {
+            address: "127.0.0.1:8888".parse().unwrap(),
+            dst_id: 1337u64,
+            intro_key: [1u8; 32],
+            pkt_rx: from_socket_rx,
+            recv_key_ctx: KeyContext {
+                k_data: [2u8; 32],
+                k_header_2: [3u8; 32],
+            },
+            router_id: RouterId::random(),
+            send_key_ctx: KeyContext {
+                k_data: [3u8; 32],
+                k_header_2: [2u8; 32],
+            },
+        };
+
+        let cmd_tx = {
+            // register one subsystem, start active session andn poll command handle
+            let (handle, cmd_rx) = {
+                let (cmd_tx, cmd_rx) = channel(16);
+                let mut handle = SubsystemHandle::new();
+                handle.register_subsystem(cmd_tx);
+
+                (handle, cmd_rx)
+            };
+
+            tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
+
+            match cmd_rx.recv().await.unwrap() {
+                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } => tx,
+                _ => panic!("invalid event"),
+            }
+        };
+
+        // send maximum amount of messages to the channel
+        for _ in 0..CMD_CHANNEL_SIZE {
+            cmd_tx
+                .try_send(SubsystemCommand::SendMessage {
+                    message: Message {
+                        message_type: MessageType::Data,
+                        message_id: *MessageId::random(),
+                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                        payload: vec![1, 2, 3, 4],
+                    }
+                    .serialize_short(),
+                })
+                .unwrap();
+        }
+
+        // try to send one more packet and verify the call fails because window is full
+        assert!(cmd_tx
+            .try_send(SubsystemCommand::SendMessage {
+                message: Message {
+                    message_type: MessageType::Data,
+                    message_id: *MessageId::random(),
+                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: vec![1, 2, 3, 4],
+                }
+                .serialize_short(),
+            })
+            .is_err());
+
+        // read and parse all packets
+        for _ in 0..16 {
+            let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
+                HeaderKind::Data { .. } => {}
+                _ => panic!("invalid packet"),
+            }
+        }
+
+        // verify that 16 more messags can be sent to the channel
+        for _ in 0..16 {
+            assert!(cmd_tx
+                .try_send(SubsystemCommand::SendMessage {
+                    message: Message {
+                        message_type: MessageType::Data,
+                        message_id: *MessageId::random(),
+                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                        payload: vec![1, 2, 3, 4],
+                    }
+                    .serialize_short(),
+                })
+                .is_ok());
+        }
+
+        // verify that the excess messages are rejected
+        assert!(cmd_tx
+            .try_send(SubsystemCommand::SendMessage {
+                message: Message {
+                    message_type: MessageType::Data,
+                    message_id: *MessageId::random(),
+                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: vec![1, 2, 3, 4],
+                }
+                .serialize_short(),
+            })
+            .is_err());
+
+        // send ack
+        let mut pkt = DataMessageBuilder::default()
+            .with_dst_id(1337u64)
+            .with_pkt_num(1)
+            .with_key_context(
+                [1u8; 32],
+                &KeyContext {
+                    k_data: [2u8; 32],
+                    k_header_2: [3u8; 32],
+                },
+            )
+            .with_ack(16, 5, None)
+            .build::<MockRuntime>()
+            .to_vec();
+
+        let mut reader = HeaderReader::new([1u8; 32], &mut pkt).unwrap();
+        let _dst_id = reader.dst_id();
+
+        from_socket_tx
+            .try_send(Packet {
+                pkt,
+                address: "127.0.0.1:8888".parse().unwrap(),
+            })
+            .unwrap();
+
+        let future = async move {
+            for _ in 0..6 {
+                cmd_tx
+                    .send(SubsystemCommand::SendMessage {
+                        message: Message {
+                            message_type: MessageType::Data,
+                            message_id: *MessageId::random(),
+                            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                            payload: vec![1, 2, 3, 4],
+                        }
+                        .serialize_short(),
+                    })
+                    .await
+                    .unwrap();
+            }
+        };
+
+        let _ = tokio::time::timeout(Duration::from_secs(5), future).await.expect("no timeout");
+    }
+
+    #[tokio::test]
+    async fn session_terminated_after_too_many_resends() {
+        let (_from_socket_tx, from_socket_rx) = channel(128);
+        let (to_socket_tx, to_socket_rx) = channel(128);
+
+        let ctx = Ssu2SessionContext {
+            address: "127.0.0.1:8888".parse().unwrap(),
+            dst_id: 1337u64,
+            intro_key: [1u8; 32],
+            pkt_rx: from_socket_rx,
+            recv_key_ctx: KeyContext {
+                k_data: [2u8; 32],
+                k_header_2: [3u8; 32],
+            },
+            router_id: RouterId::random(),
+            send_key_ctx: KeyContext {
+                k_data: [3u8; 32],
+                k_header_2: [2u8; 32],
+            },
+        };
+
+        let (cmd_tx, handle) = {
+            // register one subsystem, start active session andn poll command handle
+            let (handle, cmd_rx) = {
+                let (cmd_tx, cmd_rx) = channel(16);
+                let mut handle = SubsystemHandle::new();
+                handle.register_subsystem(cmd_tx);
+
+                (handle, cmd_rx)
+            };
+
+            let handle =
+                tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
+
+            match cmd_rx.recv().await.unwrap() {
+                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } =>
+                    (tx, handle),
+                _ => panic!("invalid event"),
+            }
+        };
+
+        // send maximum amount of messages to the channel
+        for _ in 0..CMD_CHANNEL_SIZE {
+            cmd_tx
+                .try_send(SubsystemCommand::SendMessage {
+                    message: Message {
+                        message_type: MessageType::Data,
+                        message_id: *MessageId::random(),
+                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                        payload: vec![1, 2, 3, 4],
+                    }
+                    .serialize_short(),
+                })
+                .unwrap();
+        }
+
+        // read and parse all packets
+        for _ in 0..16 {
+            let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
+
+            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
+                HeaderKind::Data { .. } => {}
+                _ => panic!("invalid packet"),
+            }
+        }
+
+        match tokio::time::timeout(Duration::from_secs(15), handle).await {
+            Ok(Ok(context)) => assert!(std::matches!(context.reason, TerminationReason::Timeout)),
+            Ok(Err(_)) => panic!("session panicked"),
+            Err(_) => panic!("timeout"),
+        }
     }
 }

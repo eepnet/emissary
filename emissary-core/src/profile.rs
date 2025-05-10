@@ -421,16 +421,6 @@ impl<R: Runtime> ProfileStorage<R> {
     pub fn add_router(&self, router_info: RouterInfo) -> bool {
         let router_id = router_info.identity.id();
 
-        if !router_info.is_reachable_ntcp2() {
-            tracing::debug!(
-                target: LOG_TARGET,
-                %router_id,
-                caps = %router_info.capabilities,
-                "cannot add router, ntcp2 address is not reachable",
-            );
-            return false;
-        }
-
         {
             let mut fast = self.fast.write();
             let mut standard = self.standard.write();

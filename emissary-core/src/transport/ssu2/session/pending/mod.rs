@@ -50,12 +50,18 @@ pub enum PendingSsu2SessionStatus {
 
         /// Socket address of the remote router.
         target: SocketAddr,
+
+        /// Destination connection ID.
+        dst_id: u64,
     },
 
     /// New outbound session.
     NewOutboundSession {
         /// Context for the active session.
         context: Ssu2SessionContext,
+
+        /// Source connection ID.
+        src_id: u64,
     },
 
     /// Pending session terminated due to fatal error, e.g., decryption error.
