@@ -18,7 +18,7 @@
 
 // TODO: documentation
 
-use futures::Stream;
+use futures::{future::Either, Stream};
 use rand_core::{CryptoRng, RngCore};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
@@ -204,7 +204,17 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
 
 pub trait AddressBook: Unpin + Send + Sync + 'static {
     /// Attempt to resolve `host` into a base64-encoded `Destination`.
-    fn resolve(&self, host: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+    fn resolve_b64(&self, host: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+
+    /// Attempt to resolve `host` into a base64-encoded `Destination`.
+    ///
+    /// Returns `Either::Left` if `host` was found in the cache.
+    ///
+    /// Returns `Either::Right` if `host` was not found in the cache and a lookup was started.
+    fn resolve_b32(
+        &self,
+        host: String,
+    ) -> Either<String, Pin<Box<dyn Future<Output = Option<String>> + Send>>>;
 }
 
 pub trait Storage: Unpin + Send + Sync + 'static {

@@ -17,10 +17,11 @@
 // DEALINGS IN THE SOFTWARE.
 
 use emissary_core::{
-    events::EventSubscriber, router::Router, runtime::AddressBook, Config, Ntcp2Config, SamConfig,
-    Ssu2Config, TransitConfig,
+    crypto::base32_encode, events::EventSubscriber, router::Router, runtime::AddressBook, Config,
+    Ntcp2Config, SamConfig, Ssu2Config, TransitConfig,
 };
 use emissary_util::runtime::tokio::Runtime;
+use futures::future::Either;
 use rand::{thread_rng, RngCore};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -1673,9 +1674,19 @@ async fn host_lookup(kind: TransportKind) {
     }
 
     impl AddressBook for AddressBookImpl {
-        fn resolve(&self, _: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
+        fn resolve_b64(&self, _: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
             let dest = self.dest.clone();
             Box::pin(async move { Some(dest) })
+        }
+
+        fn resolve_b32(
+            &self,
+            _: String,
+        ) -> Either<String, Pin<Box<dyn Future<Output = Option<String>> + Send>>> {
+            let dest = emissary_core::crypto::base64_decode(self.dest.clone()).unwrap();
+            let dest = emissary_core::primitives::Destination::parse(dest).unwrap();
+
+            Either::Left(base32_encode(dest.id().to_vec()))
         }
     }
 

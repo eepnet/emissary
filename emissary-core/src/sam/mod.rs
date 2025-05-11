@@ -21,11 +21,11 @@
 //! https://geti2p.net/en/docs/api/samv3
 
 use crate::{
-    crypto::base64_decode,
+    crypto::base32_decode,
     error::{ChannelError, ConnectionError, Error},
     events::EventHandle,
     netdb::NetDbHandle,
-    primitives::{Destination, DestinationId, Str},
+    primitives::{DestinationId, Str},
     profile::ProfileStorage,
     runtime::{AddressBook, JoinSet, Runtime, TcpListener, UdpSocket},
     sam::{
@@ -40,7 +40,7 @@ use crate::{
     tunnel::{TunnelManagerHandle, TunnelPoolConfig},
 };
 
-use futures::{Stream, StreamExt};
+use futures::{future::Either, Stream, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
@@ -549,19 +549,57 @@ impl<R: Runtime> Future for SamServer<R> {
                                     "resolve host",
                                 );
 
-                                // attempt to resolve `host` into a `DestinationId`
-                                let address_book = Arc::clone(address_book);
+                                match address_book.resolve_b32(host) {
+                                    Either::Left(destination) =>
+                                        match base32_decode(&destination) {
+                                            None => {
+                                                tracing::error!(
+                                                    target: LOG_TARGET,
+                                                    "failed to base32-decode destination id from a host lookup",
+                                                );
+                                                debug_assert!(false);
+                                            }
+                                            Some(destination) => {
+                                                let destination_id =
+                                                    DestinationId::from(destination);
 
-                                this.host_lookups.push(async move {
-                                    let result = address_book
-                                        .resolve(host)
-                                        .await
-                                        .and_then(base64_decode)
-                                        .and_then(|destination| Destination::parse(&destination))
-                                        .map(|destination| (destination.id(), options));
+                                                tracing::trace!(
+                                                    target: LOG_TARGET,
+                                                    %destination_id,
+                                                    "destination id found from the cache",
+                                                );
 
-                                    (session_id, socket, result)
-                                });
+                                                if let Err(error) =
+                                                    this.active_sessions.send_command(
+                                                        &session_id,
+                                                        SamSessionCommand::Connect {
+                                                            socket,
+                                                            destination_id,
+                                                            options,
+                                                        },
+                                                    )
+                                                {
+                                                    tracing::warn!(
+                                                        target: LOG_TARGET,
+                                                        %session_id,
+                                                        ?error,
+                                                        "failed to send `STREAM CONNECT` to active session",
+                                                    )
+                                                }
+                                            }
+                                        },
+                                    Either::Right(future) => {
+                                        this.host_lookups.push(async move {
+                                            let result = future.await.and_then(base32_decode).map(
+                                                |destination| {
+                                                    (DestinationId::from(destination), options)
+                                                },
+                                            );
+
+                                            (session_id, socket, result)
+                                        });
+                                    }
+                                }
                             }
                         },
                     },

@@ -238,7 +238,7 @@ impl<R: Runtime> I2cpSession<R> {
                     (Some(address_book), RequestKind::HostName { host_name }) => {
                         self.host_lookups.push(async move {
                             let destination = address_book
-                                .resolve(host_name.to_string())
+                                .resolve_b64(host_name.to_string())
                                 .await
                                 .and_then(base64_decode);
 

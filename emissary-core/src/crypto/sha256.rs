@@ -26,12 +26,18 @@ pub struct Sha256 {
     hasher: sha2::Sha256,
 }
 
-impl Sha256 {
-    /// Crete new [`Sha256`].
-    pub fn new() -> Self {
+impl Default for Sha256 {
+    fn default() -> Self {
         Self {
             hasher: sha2::Sha256::new(),
         }
+    }
+}
+
+impl Sha256 {
+    /// Crete new [`Sha256`].
+    pub fn new() -> Self {
+        Default::default()
     }
 
     /// Update hasher state.

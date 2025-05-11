@@ -1104,7 +1104,7 @@ impl<R: Runtime> SamSession<R> {
                         "lookup name from address book",
                     );
 
-                    let future = address_book.resolve(name.clone());
+                    let future = address_book.resolve_b64(name.clone());
                     self.lookup_futures.push(async move { (name, future.await) });
 
                     None

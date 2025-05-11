@@ -24,7 +24,8 @@ use crate::{
     },
 };
 
-use futures::channel::oneshot;
+use emissary_core::runtime::AddressBook;
+use futures::{channel::oneshot, future::Either};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -32,7 +33,10 @@ use tokio::{
 };
 use yosemite::{style, Session, SessionOptions, StreamOptions};
 
-use std::{sync::LazyLock, time::Duration};
+use std::{
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
 mod error;
 mod response;
@@ -70,6 +74,9 @@ struct Request {
 
 /// HTTP proxy.
 pub struct HttpProxy {
+    /// Handle to [`AddressBook`], if it was enabled.
+    address_book_handle: Option<Arc<dyn AddressBook>>,
+
     // TCP listener.
     listener: TcpListener,
 
@@ -89,6 +96,7 @@ impl HttpProxy {
         config: HttpProxyConfig,
         samv3_tcp_port: u16,
         http_proxy_ready_tx: Option<oneshot::Sender<()>>,
+        address_book_handle: Option<Arc<dyn AddressBook>>,
     ) -> crate::Result<Self> {
         tracing::info!(
             target: LOG_TARGET,
@@ -112,6 +120,7 @@ impl HttpProxy {
         }
 
         Ok(Self {
+            address_book_handle,
             listener,
             requests: JoinSet::new(),
             session,
@@ -119,7 +128,10 @@ impl HttpProxy {
     }
 
     /// Parse request.
-    fn parse_request(request: Vec<u8>) -> Result<(String, Vec<u8>), HttpError> {
+    async fn parse_request(
+        request: Vec<u8>,
+        address_book_handle: Option<Arc<dyn AddressBook>>,
+    ) -> Result<(String, Vec<u8>), HttpError> {
         // parse request and create a new request with sanitized headers
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -144,7 +156,33 @@ impl HttpProxy {
                     return Err(HttpError::InvalidHost);
                 }
 
-                host
+                // .i2p hostnames must be resolved to .b32.i2p hostnames so information about local
+                // address book doesn't leak
+                match (host.ends_with(".b32.i2p"), address_book_handle) {
+                    (true, _) => host,
+                    (false, Some(handle)) => match handle.resolve_b32(host.clone()) {
+                        Either::Left(destination) => format!("{destination}.b32.i2p"),
+                        Either::Right(future) => match future.await {
+                            Some(destination) => format!("{destination}.b32.i2p"),
+                            None => {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?host,
+                                    "host not found in address book",
+                                );
+                                return Err(HttpError::InvalidHost);
+                            }
+                        },
+                    },
+                    (false, None) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?host,
+                            "address book disabled, cannot resolve .i2p host to .b32.i2p host",
+                        );
+                        return Err(HttpError::InvalidHost);
+                    }
+                }
             }
             None => {
                 tracing::warn!(
@@ -190,6 +228,13 @@ impl HttpProxy {
                         sanitized.extend_from_slice(header.value);
                         sanitized.extend_from_slice("\r\n".as_bytes());
                     }
+                    continue;
+                }
+
+                if header.name.to_lowercase() == "host" {
+                    sanitized.extend_from_slice("Host: ".as_bytes());
+                    sanitized.extend_from_slice(host.as_bytes());
+                    sanitized.extend_from_slice("\r\n".as_bytes());
                     continue;
                 }
 
@@ -250,7 +295,10 @@ impl HttpProxy {
     /// Reads the full request received from browser, parses it, removes any "prohibited" headers
     /// and reconstructs a new HTTP request that needs to be send to the requested destination,
     /// specified in the `Host` field of the original request.
-    async fn read_request(mut stream: TcpStream) -> Result<Request, (TcpStream, HttpError)> {
+    async fn read_request(
+        mut stream: TcpStream,
+        address_book_handle: Option<Arc<dyn AddressBook>>,
+    ) -> Result<Request, (TcpStream, HttpError)> {
         let mut buffer = vec![0u8; 8192];
         let mut nread = 0usize;
 
@@ -271,7 +319,7 @@ impl HttpProxy {
         }
 
         // parse request and create a new request with sanitized headers
-        match Self::parse_request(buffer[..nread].to_vec()) {
+        match Self::parse_request(buffer[..nread].to_vec(), address_book_handle).await {
             Err(error) => Err((stream, error)),
             Ok((host, request)) => Ok(Request {
                 stream,
@@ -339,8 +387,10 @@ impl HttpProxy {
             tokio::select! {
                 connection = self.listener.accept() => match connection {
                     Ok((stream, _)) => {
+                        let handle = self.address_book_handle.clone();
+
                         self.requests.spawn(async move {
-                            match tokio::time::timeout(Duration::from_secs(10), Self::read_request(stream)).await {
+                            match tokio::time::timeout(Duration::from_secs(10), Self::read_request(stream, handle)).await {
                                 Err(_) => None,
                                 Ok(Ok(request)) => Some(request),
                                 Ok(Err((mut stream, error))) => {
@@ -395,6 +445,9 @@ impl HttpProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{address_book::AddressBookManager, config::AddressBookConfig};
+    use std::path::PathBuf;
+    use tempfile::tempdir;
     use tokio::io::AsyncWriteExt;
 
     async fn make_connection() -> (TcpStream, TcpStream) {
@@ -405,19 +458,44 @@ mod tests {
         (res1.unwrap().0, res2.unwrap())
     }
 
+    async fn make_address_book() -> (Arc<dyn AddressBook>, PathBuf) {
+        let hosts = "tracker2.postman.i2p=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICrsRuil8qK~whOvj8uNTv~ohZnTZHxTLgi~sDyo98BwJ-4Y4NMSuF4GLzcgLypcR1D1WY2tDqMKRYFVyLE~MTPVjRRgXfcKolykQ666~Go~A~~CNV4qc~zlO6F4bsUhVZDU7WJ7mxCAwqaMiJsL-NgIkb~SMHNxIzaE~oy0agHJMBQAEAAcAAA==#!oldsig=i02RMv3Hy86NGhVo2O3byIf6xXqWrzrRibSabe5dmNfRRQPZO9L25A==#date=1598641102#action=adddest#sig=cB-mY~sp1uuEmcQJqremV1D6EDWCe3IwPv4lBiGAXgKRYc5MLBBzYvJXtXmOawpfLKeNM~v5fWlXYsDfKf5nDA==#olddest=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICkEbKUqJ9mPYQlTSujhNxiRIW-oLwMtvayCFci99oX8MvazPS7~97x0Gsm-onEK1Td9nBdmq30OqDxpRtXBimbzkLbR1IKObbg9HvrKs3L-kSyGwTUmHG9rSQSoZEvFMA-S0EXO~o4g21q1oikmxPMhkeVwQ22VHB0-LZJfmLr4SAAAA\npsi.i2p=a11l91etedRW5Kl2GhdDI9qiRBbDRAQY6TWJb8KlSc0P9WUrEviABAAltqDU1DFJrRhMAZg5i6rWGszkJrF-pWLQK9JOH33l4~mQjB8Hkt83l9qnNJPUlGlh9yIfBY40CQ0Ermy8gzjHLayUpypDJFv2V6rHLwxAQeaXJu8YXbyvCucEu9i6HVO49akXW9YSxcZEqxK04wZnjBqhHGlVbehleMqTx9nkd0pUpBZz~vIaG9matUSHinopEo6Wegml9FEz~FEaQpPknKuMAGGSNFVJb0NtaOQSAocAOg1nLKh80v232Y8sJOHG63asSJoBa6bGwjIHftsqD~lEmVV4NkgNPybmvsD1SCbMQ2ExaCXFPVQV-yJhIAPN9MRVT9cSBT2GCq-vpMwdJ5Nf0iPR3M-Ak961JUwWXPYTL79toXCgxDX2~nZ5QFRV490YNnfB7LQu10G89wG8lzS9GWf2i-nk~~ez0Lq0dH7qQokFXdUkPc7bvSrxqkytrbd-h8O8AAAA\nzerobin.i2p=Jf64hlpW8ILKZGDe61ljHU5wzmUYwN2klOyhM2iR-8VkUEVgDZRuaToRlXIFW4k5J1ccTzGzMxR518BkCAE3jCFIyrbF0MjQDuXO5cwmqfBFWrIv72xgKDizu3HytE4vOF2M730rv8epSNPAJg6OpyXkf5UQW96kgL8SWcxWdTbKU-O8IpE3O01Oc6j0fp1E4wVOci7qIL8UEloNN~mulgka69MkR0uEtXWOXd6wvBjLNrZgdZi7XtT4QlDjx13jr7RGpZBJAUkk~8gLqgJwoUYhbfM7x564PIn3IlMXHK5AKRVxAbCQ5GkS8KdkvNL7FsQ~EiElGzZId4wenraHMHL0destUDmuwGdHKA7YdtovXD~OnaBvIbl36iuIduZnGKPEBD31hVLdJuVId9RND7lQy5BZJHQss5HSxMWTszAnWJDwmxqzMHHCiL6BMpZnkz8znwPDSkUwEs3P6-ba7mDKKt8EPCG0nM6l~BvPl2OKQIBhXIxJLOOavGyqmmYmAAAA\nzzz.i2p=GKapJ8koUcBj~jmQzHsTYxDg2tpfWj0xjQTzd8BhfC9c3OS5fwPBNajgF-eOD6eCjFTqTlorlh7Hnd8kXj1qblUGXT-tDoR9~YV8dmXl51cJn9MVTRrEqRWSJVXbUUz9t5Po6Xa247Vr0sJn27R4KoKP8QVj1GuH6dB3b6wTPbOamC3dkO18vkQkfZWUdRMDXk0d8AdjB0E0864nOT~J9Fpnd2pQE5uoFT6P0DqtQR2jsFvf9ME61aqLvKPPWpkgdn4z6Zkm-NJOcDz2Nv8Si7hli94E9SghMYRsdjU-knObKvxiagn84FIwcOpepxuG~kFXdD5NfsH0v6Uri3usE3XWD7Pw6P8qVYF39jUIq4OiNMwPnNYzy2N4mDMQdsdHO3LUVh~DEppOy9AAmEoHDjjJxt2BFBbGxfdpZCpENkwvmZeYUyNCCzASqTOOlNzdpne8cuesn3NDXIpNnqEE6Oe5Qm5YOJykrX~Vx~cFFT3QzDGkIjjxlFBsjUJyYkFjBQAEAAcAAA==".to_string();
+
+        let dir = tempdir().unwrap().into_path();
+        tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
+        tokio::fs::write(dir.join("addressbook/addresses"), hosts).await.unwrap();
+
+        let address_book = AddressBookManager::new(
+            dir.clone(),
+            AddressBookConfig {
+                default: Some(String::from("url")),
+                subscriptions: None,
+            },
+        );
+
+        (address_book.handle(), dir.join("addressbook/addresses"))
+    }
+
     #[tokio::test]
     async fn get_accepted() {
         let (stream1, mut stream2) = make_connection().await;
 
         tokio::spawn(async move {
             stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: host.i2p\r\n\r\n".as_bytes())
+                .write_all(
+                    &"GET / HTTP/1.1\r\n\
+                    Host: lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
+                        .as_bytes(),
+                )
                 .await
                 .unwrap();
         });
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1).await.unwrap();
-        assert_eq!(host.as_str(), "host.i2p");
+        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -427,7 +505,7 @@ mod tests {
         assert_eq!(req.path, Some("/"));
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "host.i2p".as_bytes(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
         );
     }
 
@@ -438,14 +516,19 @@ mod tests {
         tokio::spawn(async move {
             stream2
                 .write_all(
-                    &"GET http://www.host.i2p HTTP/1.1\r\nHost: www.host.i2p\r\n\r\n".as_bytes(),
+                    &"GET http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p HTTP/1.1\r\n\
+                        Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
+                        .as_bytes(),
                 )
                 .await
                 .unwrap();
         });
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1).await.unwrap();
-        assert_eq!(host.as_str(), "host.i2p");
+        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -455,7 +538,7 @@ mod tests {
         assert_eq!(req.path, Some("/"));
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "www.host.i2p".as_bytes(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
         );
     }
 
@@ -465,13 +548,20 @@ mod tests {
 
         tokio::spawn(async move {
             stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: www.host.i2p\r\n\r\n".as_bytes())
+                .write_all(
+                    &"GET / HTTP/1.1\r\nHost: \
+                    www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
+                        .as_bytes(),
+                )
                 .await
                 .unwrap();
         });
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1).await.unwrap();
-        assert_eq!(host.as_str(), "host.i2p");
+        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -481,7 +571,7 @@ mod tests {
         assert_eq!(req.path, Some("/"));
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "www.host.i2p".as_bytes(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
         );
     }
 
@@ -491,13 +581,17 @@ mod tests {
 
         tokio::spawn(async move {
             stream2
-                .write_all(&"GET http://www.host.i2p/topics/new-topic?query=1 HTTP/1.1\r\nHost: www.host.i2p\r\n\r\n".as_bytes())
+                .write_all(&"GET http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p/topics/new-topic?query=1 \
+                    HTTP/1.1\r\nHost: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n".as_bytes())
                 .await
                 .unwrap();
         });
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1).await.unwrap();
-        assert_eq!(host.as_str(), "host.i2p");
+        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -507,7 +601,7 @@ mod tests {
         assert_eq!(req.path, Some("/topics/new-topic?query=1"));
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "www.host.i2p".as_bytes(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
         );
     }
 
@@ -519,7 +613,7 @@ mod tests {
             stream2
                 .write_all(
                     &"POST /upload HTTP/1.1\r\n\
-                    Host: www.host.i2p\r\n\
+                    Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\
                     Content-Type: text/plain\r\n\
                     Content-Length: 12\r\n\r\n\
                     hello, world"
@@ -529,8 +623,11 @@ mod tests {
                 .unwrap();
         });
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1).await.unwrap();
-        assert_eq!(host.as_str(), "host.i2p");
+        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
 
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
@@ -544,7 +641,7 @@ mod tests {
         );
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "www.host.i2p".as_bytes(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
         );
         assert_eq!(
             req.headers.iter().find(|header| header.name == "Content-Length").unwrap().value,
@@ -559,7 +656,8 @@ mod tests {
         tokio::spawn(async move {
             stream2
                 .write_all(
-                    "CONNECT www.host.i2p:443 HTTP/1.1\r\nHost: www.host.i2p:443\r\n\r\n"
+                    "CONNECT www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p:443 HTTP/1.1\r\n\
+                        Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p:443\r\n\r\n"
                         .as_bytes(),
                 )
                 .await
@@ -567,7 +665,7 @@ mod tests {
         });
 
         assert_eq!(
-            HttpProxy::read_request(stream1).await.unwrap_err().1,
+            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
             HttpError::MethodNotSupported("CONNECT".to_string())
         );
     }
@@ -584,7 +682,7 @@ mod tests {
         });
 
         assert_eq!(
-            HttpProxy::read_request(stream1).await.unwrap_err().1,
+            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
             HttpError::InvalidHost,
         );
     }
@@ -599,7 +697,7 @@ mod tests {
         });
 
         assert!(std::matches!(
-            HttpProxy::read_request(stream1).await.unwrap_err().1,
+            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
             HttpError::Io(_),
         ));
     }
@@ -613,8 +711,174 @@ mod tests {
         });
 
         assert_eq!(
-            HttpProxy::read_request(stream1).await.unwrap_err().1,
+            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
             HttpError::Malformed,
         );
+    }
+
+    #[tokio::test]
+    async fn i2p_host_address_book_disabled() {
+        let (stream1, mut stream2) = make_connection().await;
+
+        tokio::spawn(async move {
+            stream2
+                .write_all(&"GET / HTTP/1.1\r\nHost: host.i2p\r\n\r\n".as_bytes())
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
+            HttpError::InvalidHost,
+        );
+    }
+
+    #[tokio::test]
+    async fn i2p_host_not_found_in_address_book() {
+        let address_book = make_address_book().await.0;
+        let (stream1, mut stream2) = make_connection().await;
+
+        tokio::spawn(async move {
+            stream2
+                .write_all(&"GET / HTTP/1.1\r\nHost: host.i2p\r\n\r\n".as_bytes())
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(
+            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap_err().1,
+            HttpError::InvalidHost,
+        );
+    }
+
+    #[tokio::test]
+    async fn i2p_host_found_in_address_book() {
+        let address_book = make_address_book().await.0;
+        let (stream1, mut stream2) = make_connection().await;
+
+        tokio::spawn(async move {
+            stream2
+                .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
+                .await
+                .unwrap();
+        });
+        let Request { host, request, .. } =
+            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
+
+        let mut headers = [httparse::EMPTY_HEADER; 64];
+        let mut req = httparse::Request::new(&mut headers);
+        let _body_start = req.parse(&request).unwrap().unwrap();
+
+        assert_eq!(req.method, Some("GET"));
+        assert_eq!(req.path, Some("/"));
+        assert_eq!(
+            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
+        );
+    }
+
+    #[tokio::test]
+    async fn converted_to_relative_path_host_lookup() {
+        let address_book = make_address_book().await.0;
+        let (stream1, mut stream2) = make_connection().await;
+
+        tokio::spawn(async move {
+            stream2
+                .write_all(
+                    &"GET http://www.zzz.i2p.b32.i2p/topics/new-topic?query=1 \
+                    HTTP/1.1\r\nHost: www.zzz.i2p\r\n\r\n"
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+
+        let Request { host, request, .. } =
+            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
+        assert_eq!(
+            host.as_str(),
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+        );
+
+        let mut headers = [httparse::EMPTY_HEADER; 64];
+        let mut req = httparse::Request::new(&mut headers);
+        let _body_start = req.parse(&request).unwrap().unwrap();
+
+        assert_eq!(req.method, Some("GET"));
+        assert_eq!(req.path, Some("/topics/new-topic?query=1"));
+        assert_eq!(
+            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
+            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
+        );
+    }
+
+    #[tokio::test]
+    async fn i2p_host_found_in_b32_cache() {
+        let (address_book, path) = make_address_book().await;
+
+        // first query which does a lookup to disk
+        {
+            let (stream1, mut stream2) = make_connection().await;
+
+            tokio::spawn(async move {
+                stream2
+                    .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
+                    .await
+                    .unwrap();
+            });
+            let Request { host, request, .. } =
+                HttpProxy::read_request(stream1, Some(address_book.clone())).await.unwrap();
+            assert_eq!(
+                host.as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+
+            let mut headers = [httparse::EMPTY_HEADER; 64];
+            let mut req = httparse::Request::new(&mut headers);
+            let _body_start = req.parse(&request).unwrap().unwrap();
+
+            assert_eq!(req.method, Some("GET"));
+            assert_eq!(req.path, Some("/"));
+            assert_eq!(
+                req.headers.iter().find(|header| header.name == "Host").unwrap().value,
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
+            );
+        }
+
+        // remove address book file
+        tokio::fs::remove_file(path).await.unwrap();
+
+        // address book is removed from disk but zzz.i2p has been cached
+        {
+            let (stream1, mut stream2) = make_connection().await;
+
+            tokio::spawn(async move {
+                stream2
+                    .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
+                    .await
+                    .unwrap();
+            });
+            let Request { host, request, .. } =
+                HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
+            assert_eq!(
+                host.as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+
+            let mut headers = [httparse::EMPTY_HEADER; 64];
+            let mut req = httparse::Request::new(&mut headers);
+            let _body_start = req.parse(&request).unwrap().unwrap();
+
+            assert_eq!(req.method, Some("GET"));
+            assert_eq!(req.path, Some("/"));
+            assert_eq!(
+                req.headers.iter().find(|header| header.name == "Host").unwrap().value,
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
+            );
+        }
     }
 }

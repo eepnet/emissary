@@ -220,27 +220,39 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
             // if address book is enabled, create oneshot channel pair, pass the receiver to address
             // book and sender to http proxy and once the http proxy is ready (its tunnel pool has
             // been built), it'll signal the address book that it can start download hosts file(s)
-            let http_proxy_ready_tx = address_book_manager.map(|address_book_manager| {
-                let (tx, rx) = oneshot::channel();
-                tokio::spawn(address_book_manager.run(config.port, config.host.clone(), rx));
+            //
+            // additionally, acquire handle to address book which is passed to http proxy so it can
+            // resolve .i2p hosts to .b32.i2p hosts
+            let (http_proxy_ready_tx, address_book_handle) = match address_book_manager {
+                None => (None, None),
+                Some(address_book_manager) => {
+                    let (tx, rx) = oneshot::channel();
+                    let handle = address_book_manager.handle();
 
-                tx
-            });
+                    tokio::spawn(address_book_manager.run(config.port, config.host.clone(), rx));
+
+                    (Some(tx), Some(handle))
+                }
+            };
 
             // start event loop of http proxy
             tokio::spawn(async move {
-                match HttpProxy::new(config, address.port(), http_proxy_ready_tx).await {
-                    Ok(proxy) => {
-                        tokio::spawn(async move {
-                            if let Err(error) = proxy.run().await {
-                                tracing::debug!(
-                                    target: LOG_TARGET,
-                                    ?error,
-                                    "http proxy exited",
-                                );
-                            }
-                        });
-                    }
+                match HttpProxy::new(
+                    config,
+                    address.port(),
+                    http_proxy_ready_tx,
+                    address_book_handle,
+                )
+                .await
+                {
+                    Ok(proxy) =>
+                        if let Err(error) = proxy.run().await {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "http proxy exited",
+                            );
+                        },
                     Err(error) => tracing::warn!(
                         target: LOG_TARGET,
                         ?error,

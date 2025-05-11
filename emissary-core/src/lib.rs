@@ -27,6 +27,7 @@
 #![allow(clippy::module_inception)]
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_div_ceil)]
+#![allow(clippy::should_implement_trait)]
 
 extern crate alloc;
 
@@ -41,7 +42,6 @@ pub use profile::Profile;
 
 mod bloom;
 mod config;
-mod crypto;
 mod destination;
 mod error;
 mod i2cp;
@@ -54,6 +54,7 @@ mod transport;
 mod tunnel;
 mod util;
 
+pub mod crypto;
 pub mod events;
 pub mod i2np;
 pub mod primitives;
