@@ -52,3 +52,4 @@ tempfile = { workspace = true }
 default = ["native-ui"]
 native-ui = ["iced"]
 web-ui = ["axum", "serde_json", "tokio-tungstenite"]
+metrics = ["emissary-util/metrics"]

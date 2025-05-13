@@ -25,11 +25,14 @@ use flate2::{
     Compression,
 };
 use futures::{AsyncRead as _, AsyncWrite as _, Stream};
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
-use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use rand_core::{CryptoRng, RngCore};
 use tokio::{io::ReadBuf, net, task, time::Sleep};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+#[cfg(feature = "metrics")]
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+#[cfg(feature = "metrics")]
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 use std::{
     future::Future,
@@ -64,6 +67,7 @@ impl TokioTcpStream {
 }
 
 impl AsyncRead for TokioTcpStream {
+    #[inline]
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -79,6 +83,7 @@ impl AsyncRead for TokioTcpStream {
 }
 
 impl AsyncWrite for TokioTcpStream {
+    #[inline]
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -92,6 +97,7 @@ impl AsyncWrite for TokioTcpStream {
         }
     }
 
+    #[inline]
     fn poll_flush(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -104,6 +110,7 @@ impl AsyncWrite for TokioTcpStream {
         }
     }
 
+    #[inline]
     fn poll_close(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -199,6 +206,7 @@ impl UdpSocket for TokioUdpSocket {
         async move { net::UdpSocket::bind(address).await.ok().map(Self) }
     }
 
+    #[inline]
     fn poll_send_to(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -208,6 +216,7 @@ impl UdpSocket for TokioUdpSocket {
         Poll::Ready(futures::ready!(self.0.poll_send_to(cx, buf, target)).ok())
     }
 
+    #[inline]
     fn poll_recv_from(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -257,6 +266,7 @@ impl<T: Send + 'static> JoinSet<T> for TokioJoinSet<T> {
 impl<T: Send + 'static> Stream for TokioJoinSet<T> {
     type Item = T;
 
+    #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.0.poll_join_next(cx) {
             Poll::Pending | Poll::Ready(None) => {
@@ -273,54 +283,80 @@ impl<T: Send + 'static> Stream for TokioJoinSet<T> {
 pub struct TokioInstant(Instant);
 
 impl InstantT for TokioInstant {
+    #[inline]
     fn elapsed(&self) -> Duration {
         self.0.elapsed()
     }
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct TokioMetricsCounter(&'static str);
 
 impl Counter for TokioMetricsCounter {
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn increment(&mut self, value: usize) {
         counter!(self.0).increment(value as u64);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn increment(&mut self, _: usize) {}
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct TokioMetricsGauge(&'static str);
 
 impl Gauge for TokioMetricsGauge {
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn increment(&mut self, value: usize) {
         gauge!(self.0).increment(value as f64);
     }
 
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn decrement(&mut self, value: usize) {
         gauge!(self.0).decrement(value as f64);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn increment(&mut self, _: usize) {}
+
+    #[cfg(not(feature = "metrics"))]
+    fn decrement(&mut self, _: usize) {}
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct TokioMetricsHistogram(&'static str);
 
 impl Histogram for TokioMetricsHistogram {
+    #[cfg(feature = "metrics")]
     fn record(&mut self, record: f64) {
         histogram!(self.0).record(record);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn record(&mut self, _: f64) {}
 }
 
 #[derive(Clone)]
 pub struct TokioMetricsHandle;
 
 impl MetricsHandle for TokioMetricsHandle {
+    #[inline]
     fn counter(&self, name: &'static str) -> impl Counter {
         TokioMetricsCounter(name)
     }
 
+    #[inline]
     fn gauge(&self, name: &'static str) -> impl Gauge {
         TokioMetricsGauge(name)
     }
 
+    #[inline]
     fn histogram(&self, name: &'static str) -> impl Histogram {
         TokioMetricsHistogram(name)
     }
@@ -335,6 +371,7 @@ impl RuntimeT for Runtime {
     type Instant = TokioInstant;
     type Timer = Pin<Box<Sleep>>;
 
+    #[inline]
     fn spawn<F>(future: F)
     where
         F: Future + Send + 'static,
@@ -343,22 +380,27 @@ impl RuntimeT for Runtime {
         tokio::spawn(future);
     }
 
+    #[inline]
     fn time_since_epoch() -> Duration {
         SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("to succeed")
     }
 
+    #[inline]
     fn now() -> Self::Instant {
         TokioInstant(Instant::now())
     }
 
+    #[inline]
     fn rng() -> impl RngCore + CryptoRng {
         rand_core::OsRng
     }
 
+    #[inline]
     fn join_set<T: Send + 'static>() -> Self::JoinSet<T> {
         TokioJoinSet(task::JoinSet::<T>::new(), None)
     }
 
+    #[cfg(feature = "metrics")]
     fn register_metrics(metrics: Vec<MetricType>, port: Option<u16>) -> Self::MetricsHandle {
         if metrics.is_empty() {
             tracing::info!(
@@ -407,10 +449,17 @@ impl RuntimeT for Runtime {
         TokioMetricsHandle {}
     }
 
+    #[cfg(not(feature = "metrics"))]
+    fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> Self::MetricsHandle {
+        TokioMetricsHandle {}
+    }
+
+    #[inline]
     fn timer(duration: Duration) -> Self::Timer {
         Box::pin(tokio::time::sleep(duration))
     }
 
+    #[inline]
     async fn delay(duration: Duration) {
         tokio::time::sleep(duration).await
     }

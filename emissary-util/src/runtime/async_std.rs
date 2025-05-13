@@ -31,9 +31,12 @@ use futures::{
     stream::{BoxStream, FuturesUnordered},
     AsyncRead as _, AsyncWrite as _, FutureExt, Stream, StreamExt,
 };
-use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
-use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use rand_core::{CryptoRng, RngCore};
+
+#[cfg(feature = "metrics")]
+use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
+#[cfg(feature = "metrics")]
+use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 
 use std::{
     future::Future,
@@ -71,6 +74,7 @@ impl AsyncStdTcpStream {
 }
 
 impl AsyncRead for AsyncStdTcpStream {
+    #[inline]
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -86,6 +90,7 @@ impl AsyncRead for AsyncStdTcpStream {
 }
 
 impl AsyncWrite for AsyncStdTcpStream {
+    #[inline]
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -99,6 +104,7 @@ impl AsyncWrite for AsyncStdTcpStream {
         }
     }
 
+    #[inline]
     fn poll_flush(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -111,6 +117,7 @@ impl AsyncWrite for AsyncStdTcpStream {
         }
     }
 
+    #[inline]
     fn poll_close(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -276,6 +283,7 @@ impl UdpSocket for AsyncStdUdpSocket {
         async move { net::UdpSocket::bind(address).await.ok().map(Self::new) }
     }
 
+    #[inline]
     fn poll_send_to(
         mut self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
@@ -299,6 +307,7 @@ impl UdpSocket for AsyncStdUdpSocket {
         }
     }
 
+    #[inline]
     fn poll_recv_from(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -363,6 +372,7 @@ impl<T: Send + 'static> JoinSet<T> for FuturesJoinSet<T> {
 impl<T: Send + 'static> Stream for FuturesJoinSet<T> {
     type Item = T;
 
+    #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.0.is_empty() {
             false => self.0.poll_next_unpin(cx),
@@ -398,6 +408,7 @@ impl<T: Send + 'static> JoinSet<T> for AsyncStdJoinSet<T> {
 impl<T: Send + 'static> Stream for AsyncStdJoinSet<T> {
     type Item = T;
 
+    #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         match self.0.poll_next_unpin(cx) {
             Poll::Pending | Poll::Ready(None) => {
@@ -413,54 +424,81 @@ impl<T: Send + 'static> Stream for AsyncStdJoinSet<T> {
 pub struct AsyncStdInstant(Instant);
 
 impl InstantT for AsyncStdInstant {
+    #[inline]
     fn elapsed(&self) -> Duration {
         self.0.elapsed()
     }
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct AsyncStdMetricsCounter(&'static str);
 
 impl Counter for AsyncStdMetricsCounter {
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn increment(&mut self, value: usize) {
         counter!(self.0).increment(value as u64);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn increment(&mut self, _: usize) {}
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct AsyncStdMetricsGauge(&'static str);
 
 impl Gauge for AsyncStdMetricsGauge {
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn increment(&mut self, value: usize) {
         gauge!(self.0).increment(value as f64);
     }
 
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn decrement(&mut self, value: usize) {
         gauge!(self.0).decrement(value as f64);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn increment(&mut self, _: usize) {}
+
+    #[cfg(not(feature = "metrics"))]
+    fn decrement(&mut self, _: usize) {}
 }
 
 #[derive(Clone)]
+#[allow(unused)]
 struct AsyncStdMetricsHistogram(&'static str);
 
 impl Histogram for AsyncStdMetricsHistogram {
+    #[cfg(feature = "metrics")]
+    #[inline]
     fn record(&mut self, record: f64) {
         histogram!(self.0).record(record);
     }
+
+    #[cfg(not(feature = "metrics"))]
+    fn record(&mut self, _: f64) {}
 }
 
 #[derive(Clone)]
 pub struct AsyncStdMetricsHandle;
 
 impl MetricsHandle for AsyncStdMetricsHandle {
+    #[inline]
     fn counter(&self, name: &'static str) -> impl Counter {
         AsyncStdMetricsCounter(name)
     }
 
+    #[inline]
     fn gauge(&self, name: &'static str) -> impl Gauge {
         AsyncStdMetricsGauge(name)
     }
 
+    #[inline]
     fn histogram(&self, name: &'static str) -> impl Histogram {
         AsyncStdMetricsHistogram(name)
     }
@@ -475,6 +513,7 @@ impl RuntimeT for Runtime {
     type Instant = AsyncStdInstant;
     type Timer = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+    #[inline]
     fn spawn<F>(future: F)
     where
         F: Future + Send + 'static,
@@ -483,22 +522,27 @@ impl RuntimeT for Runtime {
         async_std::task::spawn(future);
     }
 
+    #[inline]
     fn time_since_epoch() -> Duration {
         SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("to succeed")
     }
 
+    #[inline]
     fn now() -> Self::Instant {
         AsyncStdInstant(Instant::now())
     }
 
+    #[inline]
     fn rng() -> impl RngCore + CryptoRng {
         rand_core::OsRng
     }
 
+    #[inline]
     fn join_set<T: Send + 'static>() -> Self::JoinSet<T> {
         AsyncStdJoinSet(FuturesJoinSet::<T>::new(), None)
     }
 
+    #[cfg(feature = "metrics")]
     fn register_metrics(metrics: Vec<MetricType>, port: Option<u16>) -> Self::MetricsHandle {
         if metrics.is_empty() {
             return AsyncStdMetricsHandle {};
@@ -536,10 +580,17 @@ impl RuntimeT for Runtime {
         AsyncStdMetricsHandle {}
     }
 
+    #[cfg(not(feature = "metrics"))]
+    fn register_metrics(_: Vec<MetricType>, _: Option<u16>) -> Self::MetricsHandle {
+        AsyncStdMetricsHandle {}
+    }
+
+    #[inline]
     fn timer(duration: Duration) -> Self::Timer {
         Box::pin(async_std::task::sleep(duration))
     }
 
+    #[inline]
     async fn delay(duration: Duration) {
         async_std::task::sleep(duration).await
     }
