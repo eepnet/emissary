@@ -13,7 +13,6 @@ readme.workspace = true
 [dependencies]
 axum = { version = "0.8.3", default-features = false, features = ["ws", "macros", "tokio", "http1"], optional = true }
 clap = { version = "4.5.35", features = ["derive"] }
-ctrlc = "3.4.5"
 emissary-core = { path = "../emissary-core", version = "0.2.0", features = ["std"] }
 emissary-util = { path = "../emissary-util", version = "0.2.0", features = ["tokio"] }
 futures = "0.3.31"

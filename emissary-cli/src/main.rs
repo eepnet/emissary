@@ -26,7 +26,6 @@ use crate::{
     error::Error,
     port_mapper::PortMapper,
     proxy::http::HttpProxy,
-    signal::SignalHandler,
     storage::RouterStorage,
     tunnel::{client::ClientTunnelManager, server::ServerTunnelManager},
 };
@@ -47,7 +46,6 @@ mod error;
 mod logger;
 mod port_mapper;
 mod proxy;
-mod signal;
 mod storage;
 mod tunnel;
 mod ui;
@@ -75,9 +73,6 @@ struct RouterContext {
     /// Port mapper for NAT-PMP and UPnP.
     port_mapper: PortMapper,
 
-    /// Signal handler for `SIGINT`.
-    signal_handler: SignalHandler,
-
     /// Router UI config, if enabled.
     #[allow(unused)]
     router_ui_config: Option<RouterUiConfig>,
@@ -86,7 +81,6 @@ struct RouterContext {
 /// Setup router and related subsystems.
 async fn setup_router() -> anyhow::Result<RouterContext> {
     let arguments = Arguments::parse();
-    let signal_handler = SignalHandler::new();
 
     // initialize logger with any logging directive given as a cli argument
     let handle = init_logger!(arguments.log.clone());
@@ -284,7 +278,6 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
         router,
         events,
         port_mapper,
-        signal_handler,
         router_ui_config,
     })
 }
@@ -299,12 +292,11 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
 async fn router_event_loop(
     mut router: Router<Runtime>,
     mut port_mapper: PortMapper,
-    mut handler: SignalHandler,
     mut shutdown_rx: Receiver<()>,
 ) {
     loop {
         tokio::select! {
-            _ = handler.next() => {
+            _ = tokio::signal::ctrl_c() => {
                 port_mapper.shutdown().await;
                 router.shutdown();
             }
@@ -334,16 +326,10 @@ fn main() -> anyhow::Result<()> {
     let RouterContext {
         port_mapper,
         router,
-        signal_handler,
         ..
     } = runtime.block_on(setup_router())?;
 
-    runtime.block_on(router_event_loop(
-        router,
-        port_mapper,
-        signal_handler,
-        shutdown_rx,
-    ));
+    runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
 
     Ok(())
 }
@@ -357,18 +343,12 @@ fn main() -> anyhow::Result<()> {
         port_mapper,
         router,
         router_ui_config,
-        signal_handler,
         ..
     } = runtime.block_on(setup_router())?;
 
     match router_ui_config {
         None => {
-            runtime.block_on(router_event_loop(
-                router,
-                port_mapper,
-                signal_handler,
-                shutdown_rx,
-            ));
+            runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
         }
         Some(RouterUiConfig {
             refresh_interval,
@@ -378,12 +358,7 @@ fn main() -> anyhow::Result<()> {
             runtime.spawn(async move {
                 ui::web::RouterUi::new(events, port, refresh_interval, shutdown_tx).run().await;
             });
-            runtime.block_on(router_event_loop(
-                router,
-                port_mapper,
-                signal_handler,
-                shutdown_rx,
-            ));
+            runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
         }
     }
 
@@ -397,19 +372,13 @@ fn main() -> anyhow::Result<()> {
     let RouterContext {
         router,
         port_mapper,
-        signal_handler,
         events,
         router_ui_config,
     } = runtime.block_on(setup_router())?;
 
     match router_ui_config {
         None => {
-            runtime.block_on(router_event_loop(
-                router,
-                port_mapper,
-                signal_handler,
-                shutdown_rx,
-            ));
+            runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
 
             Ok(())
         }
@@ -419,12 +388,7 @@ fn main() -> anyhow::Result<()> {
             ..
         }) => {
             std::thread::spawn(move || {
-                runtime.block_on(router_event_loop(
-                    router,
-                    port_mapper,
-                    signal_handler,
-                    shutdown_rx,
-                ));
+                runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
                 std::process::exit(0);
             });
 
