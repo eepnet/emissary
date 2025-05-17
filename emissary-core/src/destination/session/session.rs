@@ -46,7 +46,7 @@ use parking_lot::RwLock;
 #[cfg(feature = "no_std")]
 use spin::rwlock::RwLock;
 
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec::Vec};
 use core::{fmt, mem, time::Duration};
 
 /// Garlic message overheard.

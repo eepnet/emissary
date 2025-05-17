@@ -35,7 +35,7 @@ use curve25519_elligator2::{MapToPointVariant, Randomized};
 use hashbrown::HashMap;
 use zeroize::Zeroize;
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::{fmt, marker::PhantomData, mem};
 
 /// Logging target for the file.

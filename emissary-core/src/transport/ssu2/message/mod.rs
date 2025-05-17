@@ -35,7 +35,7 @@ use nom::{
     Err, IResult,
 };
 
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,
     net::{IpAddr, SocketAddr},

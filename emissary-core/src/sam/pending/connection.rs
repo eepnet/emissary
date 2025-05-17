@@ -31,7 +31,7 @@ use bytes::{BufMut, BytesMut};
 use futures::{FutureExt, StreamExt};
 use hashbrown::HashMap;
 
-use alloc::{format, string::String, sync::Arc};
+use alloc::{boxed::Box, format, string::String, sync::Arc};
 use core::{
     fmt,
     future::Future,
