@@ -22,7 +22,7 @@ ecb = { version = "0.1.2", default-features = false, features = ["alloc"] }
 ethbloom = { version = "0.14.1", default-features = false }
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
 futures = { package = "futures-util", version = "0.3.31", default-features = false, features = ["alloc"] }
-hashbrown = "0.15.2"
+hashbrown = "0.15.3"
 hmac = { version = "0.12.1", default-features = false }
 lazy_static = { version = "1.5.0", default-features = false }
 num-bigint = { version = "0.4.6", default-features = false }
