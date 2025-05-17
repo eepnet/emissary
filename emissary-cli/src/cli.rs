@@ -108,6 +108,10 @@ pub struct HttpProxyOptions {
     /// Defaults to 127.0.0.1
     #[arg(long, value_name = "HOST")]
     pub http_proxy_host: Option<String>,
+
+    /// HTTP outproxy.
+    #[arg(long, value_name = "OUTPROXY")]
+    pub http_outproxy: Option<String>,
 }
 
 #[derive(Args)]

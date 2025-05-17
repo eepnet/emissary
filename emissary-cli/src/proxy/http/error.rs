@@ -18,7 +18,7 @@
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum HttpError {
-    /// Invalid, non-.i2p host.
+    /// Host missing from request.
     InvalidHost,
 
     // Invalid path.
@@ -35,6 +35,18 @@ pub enum HttpError {
 
     /// Method not supported.
     MethodNotSupported(String),
+
+    /// Host was not found in address book.
+    HostNotFound,
+
+    /// Address book was not enabled.
+    AddressBookNotEnabled,
+
+    /// Outproxy was not enabled.
+    OutproxyNotEnabled,
+
+    /// Received partial request.
+    PartialRequest,
 }
 
 impl From<std::io::Error> for HttpError {
@@ -46,5 +58,26 @@ impl From<std::io::Error> for HttpError {
 impl From<httparse::Error> for HttpError {
     fn from(_: httparse::Error) -> Self {
         HttpError::Malformed
+    }
+}
+
+impl std::fmt::Display for HttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            HttpError::InvalidHost => write!(f, "Invalid host"),
+            HttpError::InvalidPath => write!(f, "Invalid path"),
+            HttpError::Io(error) => write!(f, "I/O error: {error}"),
+            HttpError::Malformed => write!(f, "Malformed request"),
+            HttpError::MethodMissing => write!(f, "Method missing"),
+            HttpError::MethodNotSupported(method) => write!(f, "Method not supported: {method}"),
+            HttpError::HostNotFound => write!(f, "Host not found in address book"),
+            HttpError::AddressBookNotEnabled =>
+                write!(f, "Cannot connect to .i2p host, address book not enabled"),
+            HttpError::OutproxyNotEnabled => write!(
+                f,
+                "Cannot connect to clearnet address, outproxy not enabled"
+            ),
+            HttpError::PartialRequest => write!(f, "Partial request"),
+        }
     }
 }

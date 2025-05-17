@@ -20,7 +20,8 @@ use crate::{
     config::HttpProxyConfig,
     proxy::http::{
         error::HttpError,
-        response::{ResponseBuilder, Status},
+        request::Request,
+        response::{send_response, Status},
     },
 };
 
@@ -33,43 +34,23 @@ use tokio::{
 };
 use yosemite::{style, Session, SessionOptions, StreamOptions};
 
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 mod error;
+mod request;
 mod response;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::proxy::http";
 
-/// Illegal HTTP headers that get removed from the inbound HTTP request.
-static ILLEGAL: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
-    Vec::from_iter([
-        "accept",
-        "referer",
-        "x-requested-with",
-        "via",
-        "from",
-        "forwarded",
-        "dnt",
-        "x-forwarded",
-        "proxy-",
-    ])
-});
-
-/// Parsed request.
+/// Request context.
 #[derive(Debug)]
-struct Request {
-    /// TCP stream.
+struct RequestContext {
+    /// Client's TCP stream.
     stream: TcpStream,
 
-    /// Host.
-    host: String,
-
-    /// Serialized request.
-    request: Vec<u8>,
+    /// Parsed request.
+    request: Request,
 }
 
 /// HTTP proxy.
@@ -81,10 +62,13 @@ pub struct HttpProxy {
     listener: TcpListener,
 
     /// Inbound requests.
-    requests: JoinSet<Option<Request>>,
+    requests: JoinSet<Option<RequestContext>>,
 
     /// SAMv3 streaming session for the HTTP proxy.
     session: Session<style::Stream>,
+
+    /// HTTP outproxy, if enabled.
+    outproxy: Option<String>,
 }
 
 impl HttpProxy {
@@ -102,6 +86,7 @@ impl HttpProxy {
             target: LOG_TARGET,
             host = %config.host,
             port = %config.port,
+            outproxy = ?config.outproxy,
             "starting http proxy",
         );
 
@@ -119,186 +104,73 @@ impl HttpProxy {
             let _ = tx.send(());
         }
 
+        // validate outproxy
+        //
+        // if the outproxy is given as a .b32.i2p host, it can be used as-is
+        //
+        // if it's given as a .i2p host, it must be converted into a .b32.i2p host by doing a host
+        // lookup into address book
+        //
+        // if either address book is disabled or hostname is not found in it, outproxy is disabled
+        let outproxy = match config.outproxy {
+            None => None,
+            Some(outproxy) => {
+                let outproxy = outproxy.strip_prefix("http://").unwrap_or(&outproxy);
+                let outproxy = outproxy.strip_prefix("www.").unwrap_or(outproxy);
+
+                match outproxy.ends_with(".i2p") {
+                    false => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            %outproxy,
+                            "outproxy must be .b32.i2p or .i2p hostname",
+                        );
+                        None
+                    }
+                    true => match (outproxy.ends_with(".b32.i2p"), &address_book_handle) {
+                        (true, _) => Some(outproxy.to_owned()),
+                        (false, Some(handle)) => match handle.resolve_b32(outproxy.to_owned()) {
+                            Either::Left(host) => Some(format!("{host}.b32.i2p")),
+                            Either::Right(future) => match future.await {
+                                Some(host) => Some(format!("{host}.b32.i2p")),
+                                None => {
+                                    tracing::warn!(
+                                        target: LOG_TARGET,
+                                        %outproxy,
+                                        "outproxy not found in address book",
+                                    );
+                                    None
+                                }
+                            },
+                        },
+                        (false, None) => {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                %outproxy,
+                                "address book not enabled, unable to resolve outproxy hostname",
+                            );
+                            None
+                        }
+                    },
+                }
+            }
+        };
+
         Ok(Self {
             address_book_handle,
             listener,
+            outproxy,
             requests: JoinSet::new(),
             session,
         })
     }
 
-    /// Parse request.
-    async fn parse_request(
-        request: Vec<u8>,
-        address_book_handle: Option<Arc<dyn AddressBook>>,
-    ) -> Result<(String, Vec<u8>), HttpError> {
-        // parse request and create a new request with sanitized headers
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let body_start = req.parse(&request)?.unwrap();
-        let method = match req.method {
-            None => return Err(HttpError::MethodMissing),
-            Some("GET") => "GET".to_string(),
-            Some("POST") => "POST".to_string(),
-            Some(method) => return Err(HttpError::MethodNotSupported(method.to_string())),
-        };
-        let host = match req.headers.iter().find(|header| header.name.to_lowercase() == "host") {
-            Some(host) => {
-                let host = std::str::from_utf8(host.value).map_err(|_| HttpError::Malformed)?;
-                let host = host.strip_prefix("www.").unwrap_or(host).to_string();
-
-                if !host.ends_with(".i2p") {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?host,
-                        "ignoring non-.i2p host",
-                    );
-                    return Err(HttpError::InvalidHost);
-                }
-
-                // .i2p hostnames must be resolved to .b32.i2p hostnames so information about local
-                // address book doesn't leak
-                match (host.ends_with(".b32.i2p"), address_book_handle) {
-                    (true, _) => host,
-                    (false, Some(handle)) => match handle.resolve_b32(host.clone()) {
-                        Either::Left(destination) => format!("{destination}.b32.i2p"),
-                        Either::Right(future) => match future.await {
-                            Some(destination) => format!("{destination}.b32.i2p"),
-                            None => {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    ?host,
-                                    "host not found in address book",
-                                );
-                                return Err(HttpError::InvalidHost);
-                            }
-                        },
-                    },
-                    (false, None) => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?host,
-                            "address book disabled, cannot resolve .i2p host to .b32.i2p host",
-                        );
-                        return Err(HttpError::InvalidHost);
-                    }
-                }
-            }
-            None => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "host missing",
-                );
-                return Err(HttpError::InvalidHost);
-            }
-        };
-        let path = match url::Url::parse(req.path.ok_or(HttpError::InvalidPath)?) {
-            Ok(url) => match url.query() {
-                Some(query) => format!("{}?{query}", url.path()),
-                None => url.path().to_string(),
-            },
-            Err(_) => req.path.ok_or(HttpError::InvalidPath)?.to_string(),
-        };
-
-        tracing::trace!(
-            target: LOG_TARGET,
-            method = ?req.method,
-            %host,
-            num_headers = ?req.headers.len(),
-            "inbound request",
-        );
-
-        Ok((host.clone(), {
-            // serialize request into a byte vector
-            let mut sanitized = Vec::new();
-
-            sanitized.extend_from_slice(format!("{} ", method).as_bytes());
-            sanitized.extend_from_slice(format!("{} ", path).as_bytes());
-            sanitized.extend_from_slice("HTTP/1.1\r\n".as_bytes());
-
-            for header in req.headers.iter_mut() {
-                if header.name.to_lowercase() == "user-agent" {
-                    sanitized.extend_from_slice("User-Agent: MYOB/6.66 (AN/ON)\r\n".as_bytes());
-                    continue;
-                }
-
-                if header.name.to_lowercase().starts_with("accept") {
-                    if header.name.to_lowercase() == "accept-encoding" {
-                        sanitized.extend_from_slice("Accept-Encoding: ".as_bytes());
-                        sanitized.extend_from_slice(header.value);
-                        sanitized.extend_from_slice("\r\n".as_bytes());
-                    }
-                    continue;
-                }
-
-                if header.name.to_lowercase() == "host" {
-                    sanitized.extend_from_slice("Host: ".as_bytes());
-                    sanitized.extend_from_slice(host.as_bytes());
-                    sanitized.extend_from_slice("\r\n".as_bytes());
-                    continue;
-                }
-
-                if header.name.to_lowercase() == "connection" {
-                    match std::str::from_utf8(header.value) {
-                        Ok(value) if value.to_lowercase() == "upgrade" => {
-                            sanitized.extend_from_slice("Connection: upgrade\r\n".as_bytes());
-                        }
-                        _ => sanitized.extend_from_slice("Connection: close\r\n".as_bytes()),
-                    }
-
-                    continue;
-                }
-
-                if header.name.to_lowercase() == "referer" {
-                    let Ok(value) = std::str::from_utf8(header.value) else {
-                        continue;
-                    };
-
-                    if value.contains(&host) {
-                        sanitized.extend_from_slice("Referer: ".as_bytes());
-                        sanitized.extend_from_slice(header.value);
-                        sanitized.extend_from_slice("\r\n".as_bytes());
-                    } else {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?value,
-                            "skipping invalid `Referer`",
-                        )
-                    }
-
-                    continue;
-                }
-
-                if ILLEGAL.iter().any(|illegal| header.name.to_lowercase().starts_with(illegal)) {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        name = ?header.name,
-                        value = ?(std::str::from_utf8(header.value)),
-                        "skipping illegal header",
-                    );
-                    continue;
-                }
-
-                sanitized.extend_from_slice(format!("{}: ", header.name).as_bytes());
-                sanitized.extend_from_slice(header.value);
-                sanitized.extend_from_slice("\r\n".as_bytes());
-            }
-            sanitized.extend_from_slice("\r\n".as_bytes());
-            sanitized.extend_from_slice(&request[body_start..]);
-
-            sanitized
-        }))
-    }
-
     /// Read request from browser.
     ///
-    /// Reads the full request received from browser, parses it, removes any "prohibited" headers
-    /// and reconstructs a new HTTP request that needs to be send to the requested destination,
-    /// specified in the `Host` field of the original request.
-    async fn read_request(
-        mut stream: TcpStream,
-        address_book_handle: Option<Arc<dyn AddressBook>>,
-    ) -> Result<Request, (TcpStream, HttpError)> {
+    /// Parses and validates the received request and returns [`RequestContext`] which contains the
+    /// validated request and the TCP stream of the client which is used to send the response or an
+    /// error.
+    async fn read_request(mut stream: TcpStream) -> Result<RequestContext, (TcpStream, HttpError)> {
         let mut buffer = vec![0u8; 8192];
         let mut nread = 0usize;
 
@@ -318,27 +190,33 @@ impl HttpProxy {
             }
         }
 
-        // parse request and create a new request with sanitized headers
-        match Self::parse_request(buffer[..nread].to_vec(), address_book_handle).await {
+        match Request::parse(buffer[..nread].to_vec()) {
             Err(error) => Err((stream, error)),
-            Ok((host, request)) => Ok(Request {
-                stream,
-                host,
-                request,
-            }),
+            Ok(request) => Ok(RequestContext { stream, request }),
         }
     }
 
-    /// Handle sanitized HTTP request.
+    /// Handle `request`.
     ///
-    /// Attempt to connect to remote destination and if the connection succeeds, send the request to
-    /// them and read back response.
-    fn on_request(&mut self, request: Request) {
-        let Request {
+    /// Assembles the validated request into an actual HTTP request and resolves a .i2p host into a
+    /// .b32.i2p host if a .i2p host was used and if address book was enabled.
+    ///
+    /// If the outbound request was for an outproxy, ensures that an outproxy has been configured.
+    ///
+    /// After the final request has been assembled and the host has been resolved, opens a stream to
+    /// the remote destination and if a connection is successfully established, sends the request
+    /// and reads the response which is relayed to client.
+    async fn on_request(&mut self, request: RequestContext) -> Result<(), (TcpStream, HttpError)> {
+        let RequestContext {
             mut stream,
-            host,
             request,
         } = request;
+
+        let (host, request) =
+            match request.assemble(&self.address_book_handle, &self.outproxy).await {
+                Ok((host, request)) => (host, request),
+                Err(error) => return Err((stream, error)),
+            };
 
         let future = self.session.connect_detached_with_options(
             &host,
@@ -356,29 +234,21 @@ impl HttpProxy {
                         ?error,
                         "failed to connect to destination",
                     );
-
-                    let response = ResponseBuilder::new(Status::InternalServerError)
-                        .with_error(format!("Failed to establish connection to {host}"))
-                        .build();
-
-                    if let Err(error) = stream.write_all(response.as_bytes()).await {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            ?error,
-                            "failed to send error response to client",
-                        );
-                    }
-
+                    send_response(stream, Status::GatewayTimeout(host)).await;
                     Err(error)
                 }
                 Ok(mut i2p_stream) => {
                     // write request and read from the stream until it is closed
                     i2p_stream.write_all(&request).await?;
 
-                    tokio::io::copy(&mut i2p_stream, &mut stream).await.map_err(From::from)
+                    tokio::io::copy_bidirectional(&mut i2p_stream, &mut stream)
+                        .await
+                        .map_err(From::from)
                 }
             }
         });
+
+        Ok(())
     }
 
     /// Run event loop of [`HttpProxy`].
@@ -387,34 +257,17 @@ impl HttpProxy {
             tokio::select! {
                 connection = self.listener.accept() => match connection {
                     Ok((stream, _)) => {
-                        let handle = self.address_book_handle.clone();
-
                         self.requests.spawn(async move {
-                            match tokio::time::timeout(Duration::from_secs(10), Self::read_request(stream, handle)).await {
+                            match tokio::time::timeout(Duration::from_secs(10), Self::read_request(stream)).await {
                                 Err(_) => None,
                                 Ok(Ok(request)) => Some(request),
-                                Ok(Err((mut stream, error))) => {
+                                Ok(Err((stream, error))) => {
                                     tracing::debug!(
                                         target: LOG_TARGET,
                                         ?error,
                                         "failed to handle inbound http request",
                                     );
-
-                                    let error = match error {
-                                        HttpError::Io(_) => return None,
-                                        HttpError::InvalidHost => "Only .i2p and .b32.i2p hosts are supported",
-                                        _ => "Malformed request",
-                                    }.to_string();
-
-                                    let response = ResponseBuilder::new(Status::BadRequest).with_error(error).build();
-                                    if let Err(error) = stream.write_all(response.as_bytes()).await {
-                                        tracing::debug!(
-                                            target: LOG_TARGET,
-                                            ?error,
-                                            "failed to send error response to client",
-                                        );
-                                    }
-
+                                    send_response(stream, Status::BadRequest(error)).await;
                                     None
                                 }
                             }
@@ -430,7 +283,14 @@ impl HttpProxy {
                 },
                 request = self.requests.join_next(), if !self.requests.is_empty() => match request {
                     None | Some(Ok(None)) => {}
-                    Some(Ok(Some(request))) => self.on_request(request),
+                    Some(Ok(Some(request))) => if let Err((stream, error)) = self.on_request(request).await {
+                        tracing::debug!(
+                            target: LOG_TARGET,
+                            ?error,
+                            "failed to handle inbound http request",
+                        );
+                        send_response(stream, Status::BadRequest(error)).await;
+                    }
                     Some(Err(error)) => tracing::debug!(
                         target: LOG_TARGET,
                         ?error,
@@ -446,438 +306,612 @@ impl HttpProxy {
 mod tests {
     use super::*;
     use crate::{address_book::AddressBookManager, config::AddressBookConfig};
-    use std::path::PathBuf;
+    use reqwest::{
+        header::{HeaderMap, HeaderValue, CONNECTION},
+        Client, Proxy, StatusCode,
+    };
     use tempfile::tempdir;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncBufReadExt, BufReader};
 
-    async fn make_connection() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let (res1, res2) = tokio::join!(listener.accept(), TcpStream::connect(address));
-
-        (res1.unwrap().0, res2.unwrap())
+    /// Fake SAMv3 server.
+    struct SamServer {
+        /// TCP listener for the server.
+        listener: TcpListener,
     }
 
-    async fn make_address_book() -> (Arc<dyn AddressBook>, PathBuf) {
-        let hosts = "tracker2.postman.i2p=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICrsRuil8qK~whOvj8uNTv~ohZnTZHxTLgi~sDyo98BwJ-4Y4NMSuF4GLzcgLypcR1D1WY2tDqMKRYFVyLE~MTPVjRRgXfcKolykQ666~Go~A~~CNV4qc~zlO6F4bsUhVZDU7WJ7mxCAwqaMiJsL-NgIkb~SMHNxIzaE~oy0agHJMBQAEAAcAAA==#!oldsig=i02RMv3Hy86NGhVo2O3byIf6xXqWrzrRibSabe5dmNfRRQPZO9L25A==#date=1598641102#action=adddest#sig=cB-mY~sp1uuEmcQJqremV1D6EDWCe3IwPv4lBiGAXgKRYc5MLBBzYvJXtXmOawpfLKeNM~v5fWlXYsDfKf5nDA==#olddest=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICkEbKUqJ9mPYQlTSujhNxiRIW-oLwMtvayCFci99oX8MvazPS7~97x0Gsm-onEK1Td9nBdmq30OqDxpRtXBimbzkLbR1IKObbg9HvrKs3L-kSyGwTUmHG9rSQSoZEvFMA-S0EXO~o4g21q1oikmxPMhkeVwQ22VHB0-LZJfmLr4SAAAA\npsi.i2p=a11l91etedRW5Kl2GhdDI9qiRBbDRAQY6TWJb8KlSc0P9WUrEviABAAltqDU1DFJrRhMAZg5i6rWGszkJrF-pWLQK9JOH33l4~mQjB8Hkt83l9qnNJPUlGlh9yIfBY40CQ0Ermy8gzjHLayUpypDJFv2V6rHLwxAQeaXJu8YXbyvCucEu9i6HVO49akXW9YSxcZEqxK04wZnjBqhHGlVbehleMqTx9nkd0pUpBZz~vIaG9matUSHinopEo6Wegml9FEz~FEaQpPknKuMAGGSNFVJb0NtaOQSAocAOg1nLKh80v232Y8sJOHG63asSJoBa6bGwjIHftsqD~lEmVV4NkgNPybmvsD1SCbMQ2ExaCXFPVQV-yJhIAPN9MRVT9cSBT2GCq-vpMwdJ5Nf0iPR3M-Ak961JUwWXPYTL79toXCgxDX2~nZ5QFRV490YNnfB7LQu10G89wG8lzS9GWf2i-nk~~ez0Lq0dH7qQokFXdUkPc7bvSrxqkytrbd-h8O8AAAA\nzerobin.i2p=Jf64hlpW8ILKZGDe61ljHU5wzmUYwN2klOyhM2iR-8VkUEVgDZRuaToRlXIFW4k5J1ccTzGzMxR518BkCAE3jCFIyrbF0MjQDuXO5cwmqfBFWrIv72xgKDizu3HytE4vOF2M730rv8epSNPAJg6OpyXkf5UQW96kgL8SWcxWdTbKU-O8IpE3O01Oc6j0fp1E4wVOci7qIL8UEloNN~mulgka69MkR0uEtXWOXd6wvBjLNrZgdZi7XtT4QlDjx13jr7RGpZBJAUkk~8gLqgJwoUYhbfM7x564PIn3IlMXHK5AKRVxAbCQ5GkS8KdkvNL7FsQ~EiElGzZId4wenraHMHL0destUDmuwGdHKA7YdtovXD~OnaBvIbl36iuIduZnGKPEBD31hVLdJuVId9RND7lQy5BZJHQss5HSxMWTszAnWJDwmxqzMHHCiL6BMpZnkz8znwPDSkUwEs3P6-ba7mDKKt8EPCG0nM6l~BvPl2OKQIBhXIxJLOOavGyqmmYmAAAA\nzzz.i2p=GKapJ8koUcBj~jmQzHsTYxDg2tpfWj0xjQTzd8BhfC9c3OS5fwPBNajgF-eOD6eCjFTqTlorlh7Hnd8kXj1qblUGXT-tDoR9~YV8dmXl51cJn9MVTRrEqRWSJVXbUUz9t5Po6Xa247Vr0sJn27R4KoKP8QVj1GuH6dB3b6wTPbOamC3dkO18vkQkfZWUdRMDXk0d8AdjB0E0864nOT~J9Fpnd2pQE5uoFT6P0DqtQR2jsFvf9ME61aqLvKPPWpkgdn4z6Zkm-NJOcDz2Nv8Si7hli94E9SghMYRsdjU-knObKvxiagn84FIwcOpepxuG~kFXdD5NfsH0v6Uri3usE3XWD7Pw6P8qVYF39jUIq4OiNMwPnNYzy2N4mDMQdsdHO3LUVh~DEppOy9AAmEoHDjjJxt2BFBbGxfdpZCpENkwvmZeYUyNCCzASqTOOlNzdpne8cuesn3NDXIpNnqEE6Oe5Qm5YOJykrX~Vx~cFFT3QzDGkIjjxlFBsjUJyYkFjBQAEAAcAAA==".to_string();
+    impl SamServer {
+        /// Create new [`SamServer`].
+        async fn new() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-        let dir = tempdir().unwrap().into_path();
-        tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
-        tokio::fs::write(dir.join("addressbook/addresses"), hosts).await.unwrap();
+            Self { listener }
+        }
 
-        let address_book = AddressBookManager::new(
-            dir.clone(),
-            AddressBookConfig {
-                default: Some(String::from("url")),
-                subscriptions: None,
-            },
-        );
+        /// Run the event loop of [`SamServer`].
+        async fn run(self) {
+            while let Ok((stream, _)) = self.listener.accept().await {
+                tokio::spawn(async move {
+                    let mut lines = BufReader::new(stream).lines();
 
-        (address_book.handle(), dir.join("addressbook/addresses"))
+                    while let Ok(Some(command)) = lines.next_line().await {
+                        if command.starts_with("HELLO VERSION") {
+                            lines
+                                .get_mut()
+                                .write_all(
+                                    format!("HELLO REPLY RESULT=OK VERSION=3.2\n").as_bytes(),
+                                )
+                                .await
+                                .unwrap();
+                            continue;
+                        }
+
+                        if command.starts_with("SESSION CREATE") {
+                            lines
+                                .get_mut()
+                                .write_all(
+                                    format!("SESSION STATUS RESULT=OK DESTINATION=Fam-qmfYnngAnwkq3qwhkkoUeWNPckuYbZhK4xWwTzHa3BN9DY4dozKDPywI22LWfT1ALnVDonnRhCux0Iv3wc74-s2CTJOGLpYvPGviS99dFSqRwgxi1dESbt5Liw4FIDZQMcDjcNziHspnTFfE4B3sZUtoNM0GYkrgksS3BgVo3SvNn57~FkHDJvNxcaEL0uq9OGPfxNXNtyIeBxaUSJjYNbgcHG9Q2kzb~Z39FzylbEiS979HJnc~w9Wo4DO8VCHGM1j6-CeRlf3hZpMaqQQJU0Q~k035~voydSIzDLJzMPvVmKAV4q-0A5ikidKKv1N3kREQF5xDuDT1z3BMVHMIsyUECi8HOm3Ixa7XdcqpvHRl~W4RksOEdMChLrUZbqVr-8uW0lMRhRszAuU2PnF16bw9XEZoVAsNNHgvFQvnOwfLnPpSxtZaGNHGO8wQaYmT3cImMUUhBbc9dcTYAHy8geZ1KzW4j7lpH4SsNaJPszCevkIVdvlqEAXZqh1YBQAEAAcAADwJfIcEBwdeM2rjFM~cPo4btsSszyKlGZeUPzoTfHZv~4eR5efcr5YlogkmARNw57h4sjmYvTESdTE7353u2uI=\n")
+                                        .as_bytes(),
+                                )
+                                .await
+                                .unwrap();
+                            continue;
+                        }
+
+                        println!("unhandled command: {command}");
+                    }
+                });
+            }
+        }
     }
 
-    #[tokio::test]
-    async fn get_accepted() {
-        let (stream1, mut stream2) = make_connection().await;
+    async fn read_response(mut stream: TcpStream) -> String {
+        let mut buffer = vec![0u8; 8192];
+        let mut nread = 0usize;
 
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    &"GET / HTTP/1.1\r\n\
-                    Host: lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
+        // read from `stream` until complete request has been received
+        loop {
+            nread += match stream.read(&mut buffer[nread..]).await {
+                Err(_) => panic!("i/o error"),
+                Ok(0) => panic!("read zero"),
+                Ok(nread) => nread,
+            };
 
-        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn get_full_path() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    &"GET http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p HTTP/1.1\r\n\
-                        Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-
-        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn www_stripped_from_host() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    &"GET / HTTP/1.1\r\nHost: \
-                    www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-
-        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn converted_to_relative_path() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(&"GET http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p/topics/new-topic?query=1 \
-                    HTTP/1.1\r\nHost: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\r\n".as_bytes())
-                .await
-                .unwrap();
-        });
-
-        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/topics/new-topic?query=1"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn post_accepted() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    &"POST /upload HTTP/1.1\r\n\
-                    Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p\r\n\
-                    Content-Type: text/plain\r\n\
-                    Content-Length: 12\r\n\r\n\
-                    hello, world"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-
-        let Request { host, request, .. } = HttpProxy::read_request(stream1, None).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("POST"));
-        assert_eq!(req.path, Some("/upload"));
-        assert_eq!(
-            std::str::from_utf8(&request[_body_start..]).unwrap(),
-            "hello, world"
-        );
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Content-Length").unwrap().value,
-            "12".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn connect_reject() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    "CONNECT www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p:443 HTTP/1.1\r\n\
-                        Host: www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p:443\r\n\r\n"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-
-        assert_eq!(
-            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
-            HttpError::MethodNotSupported("CONNECT".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn non_i2p_host() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: host.com\r\n\r\n".as_bytes())
-                .await
-                .unwrap();
-        });
-
-        assert_eq!(
-            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
-            HttpError::InvalidHost,
-        );
-    }
-
-    #[tokio::test]
-    async fn read_partial_request() {
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2.write_all(&"GET / HTTP/1.1\r\nHost".as_bytes()).await.unwrap();
-            stream2.shutdown().await.unwrap();
-        });
-
-        assert!(std::matches!(
-            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
-            HttpError::Io(_),
-        ));
+            let mut headers = [httparse::EMPTY_HEADER; 64];
+            match httparse::Response::new(&mut headers).parse(&buffer[..nread]) {
+                Err(error) => panic!("failed to parse response: {error:?}"),
+                Ok(response) if response.is_complete() =>
+                    return std::str::from_utf8(&buffer[..nread]).unwrap().to_owned(),
+                Ok(_) => {}
+            }
+        }
     }
 
     #[tokio::test]
     async fn invalid_request() {
-        let (stream1, mut stream2) = make_connection().await;
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
 
-        tokio::spawn(async move {
-            stream2.write_all(&"hello, world\r\n".as_bytes()).await.unwrap();
-        });
+            port
+        };
 
-        assert_eq!(
-            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
-            HttpError::Malformed,
-        );
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: None,
+            },
+            sam_port,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let address = proxy.listener.local_addr().unwrap();
+        tokio::spawn(proxy.run());
+
+        // send invalid http request to the proxy
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        stream.write_all("hello, world!\n".as_bytes()).await.unwrap();
+
+        let response = read_response(stream).await;
+        assert!(response.contains("400 Bad Request"));
+        assert!(response.contains("Malformed request"));
     }
 
     #[tokio::test]
-    async fn i2p_host_address_book_disabled() {
-        let (stream1, mut stream2) = make_connection().await;
+    async fn connect_to_i2p_without_address_book() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
 
-        tokio::spawn(async move {
-            stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: host.i2p\r\n\r\n".as_bytes())
-                .await
-                .unwrap();
-        });
+            port
+        };
 
-        assert_eq!(
-            HttpProxy::read_request(stream1, None).await.unwrap_err().1,
-            HttpError::InvalidHost,
-        );
-    }
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: None,
+            },
+            sam_port,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let port = proxy.listener.local_addr().unwrap().port();
+        tokio::spawn(proxy.run());
 
-    #[tokio::test]
-    async fn i2p_host_not_found_in_address_book() {
-        let address_book = make_address_book().await.0;
-        let (stream1, mut stream2) = make_connection().await;
+        let client = Client::builder()
+            .proxy(Proxy::http(format!("http://127.0.0.1:{port}")).expect("to succeed"))
+            .http1_title_case_headers()
+            .build()
+            .expect("to succeed");
 
-        tokio::spawn(async move {
-            stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: host.i2p\r\n\r\n".as_bytes())
-                .await
-                .unwrap();
-        });
-
-        assert_eq!(
-            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap_err().1,
-            HttpError::InvalidHost,
-        );
-    }
-
-    #[tokio::test]
-    async fn i2p_host_found_in_address_book() {
-        let address_book = make_address_book().await.0;
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
-                .await
-                .unwrap();
-        });
-        let Request { host, request, .. } =
-            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn converted_to_relative_path_host_lookup() {
-        let address_book = make_address_book().await.0;
-        let (stream1, mut stream2) = make_connection().await;
-
-        tokio::spawn(async move {
-            stream2
-                .write_all(
-                    &"GET http://www.zzz.i2p.b32.i2p/topics/new-topic?query=1 \
-                    HTTP/1.1\r\nHost: www.zzz.i2p\r\n\r\n"
-                        .as_bytes(),
-                )
-                .await
-                .unwrap();
-        });
-
-        let Request { host, request, .. } =
-            HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
-        assert_eq!(
-            host.as_str(),
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-        );
-
-        let mut headers = [httparse::EMPTY_HEADER; 64];
-        let mut req = httparse::Request::new(&mut headers);
-        let _body_start = req.parse(&request).unwrap().unwrap();
-
-        assert_eq!(req.method, Some("GET"));
-        assert_eq!(req.path, Some("/topics/new-topic?query=1"));
-        assert_eq!(
-            req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-            "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
-        );
-    }
-
-    #[tokio::test]
-    async fn i2p_host_found_in_b32_cache() {
-        let (address_book, path) = make_address_book().await;
-
-        // first query which does a lookup to disk
+        match client
+            .get("http://zzz.i2p")
+            .headers(HeaderMap::from_iter([(
+                CONNECTION,
+                HeaderValue::from_static("close"),
+            )]))
+            .send()
+            .await
         {
-            let (stream1, mut stream2) = make_connection().await;
-
-            tokio::spawn(async move {
-                stream2
-                    .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
+            Err(error) => panic!("failure: {error:?}"),
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::from_u16(400).unwrap());
+                assert!(response
+                    .text()
                     .await
-                    .unwrap();
-            });
-            let Request { host, request, .. } =
-                HttpProxy::read_request(stream1, Some(address_book.clone())).await.unwrap();
+                    .unwrap()
+                    .contains("Cannot connect to .i2p host, address book not enabled"));
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn address_book_enabled_but_host_not_found() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
+
+            port
+        };
+
+        // create empty address book
+        let address_book = {
+            let dir = tempdir().unwrap().into_path();
+            tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
+            tokio::fs::File::create(dir.join("addressbook/addresses")).await.unwrap();
+
+            AddressBookManager::new(
+                dir.clone(),
+                AddressBookConfig {
+                    default: None,
+                    subscriptions: None,
+                },
+            )
+            .handle()
+        };
+
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: None,
+            },
+            sam_port,
+            None,
+            Some(address_book),
+        )
+        .await
+        .unwrap();
+        let port = proxy.listener.local_addr().unwrap().port();
+        tokio::spawn(proxy.run());
+
+        let client = Client::builder()
+            .proxy(Proxy::http(format!("http://127.0.0.1:{port}")).expect("to succeed"))
+            .http1_title_case_headers()
+            .build()
+            .expect("to succeed");
+
+        match client
+            .get("http://zzz.i2p")
+            .headers(HeaderMap::from_iter([(
+                CONNECTION,
+                HeaderValue::from_static("close"),
+            )]))
+            .send()
+            .await
+        {
+            Err(error) => panic!("failure: {error:?}"),
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::from_u16(400).unwrap());
+                assert!(response.text().await.unwrap().contains("Host not found in address book"));
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn outproxy_not_configured() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
+
+            port
+        };
+
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: None,
+            },
+            sam_port,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let port = proxy.listener.local_addr().unwrap().port();
+        tokio::spawn(proxy.run());
+
+        let client = Client::builder()
+            .proxy(Proxy::http(format!("http://127.0.0.1:{port}")).expect("to succeed"))
+            .http1_title_case_headers()
+            .build()
+            .expect("to succeed");
+
+        match client
+            .get("http://google.com")
+            .headers(HeaderMap::from_iter([(
+                CONNECTION,
+                HeaderValue::from_static("close"),
+            )]))
+            .send()
+            .await
+        {
+            Err(error) => panic!("failure: {error:?}"),
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::from_u16(400).unwrap());
+                assert!(response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("Cannot connect to clearnet address, outproxy not enabled"));
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn outproxy_given_as_i2p_host_but_no_address_book() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
+
+            port
+        };
+
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: Some("outproxy.i2p".to_string()),
+            },
+            sam_port,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let port = proxy.listener.local_addr().unwrap().port();
+        tokio::spawn(proxy.run());
+
+        let client = Client::builder()
+            .proxy(Proxy::http(format!("http://127.0.0.1:{port}")).expect("to succeed"))
+            .http1_title_case_headers()
+            .build()
+            .expect("to succeed");
+
+        match client
+            .get("http://google.com")
+            .headers(HeaderMap::from_iter([(
+                CONNECTION,
+                HeaderValue::from_static("close"),
+            )]))
+            .send()
+            .await
+        {
+            Err(error) => panic!("failure: {error:?}"),
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::from_u16(400).unwrap());
+                assert!(response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("Cannot connect to clearnet address, outproxy not enabled"));
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn outproxy_not_found_in_address_book() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
+
+            port
+        };
+
+        // create empty address book
+        let address_book = {
+            let dir = tempdir().unwrap().into_path();
+            tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
+            tokio::fs::File::create(dir.join("addressbook/addresses")).await.unwrap();
+
+            AddressBookManager::new(
+                dir.clone(),
+                AddressBookConfig {
+                    default: None,
+                    subscriptions: None,
+                },
+            )
+            .handle()
+        };
+
+        let proxy = HttpProxy::new(
+            HttpProxyConfig {
+                port: 0,
+                host: "127.0.0.1".to_string(),
+                outproxy: Some("outproxy.i2p".to_string()),
+            },
+            sam_port,
+            None,
+            Some(address_book),
+        )
+        .await
+        .unwrap();
+        let port = proxy.listener.local_addr().unwrap().port();
+        tokio::spawn(proxy.run());
+
+        let client = Client::builder()
+            .proxy(Proxy::http(format!("http://127.0.0.1:{port}")).expect("to succeed"))
+            .http1_title_case_headers()
+            .build()
+            .expect("to succeed");
+
+        match client
+            .get("http://google.com")
+            .headers(HeaderMap::from_iter([(
+                CONNECTION,
+                HeaderValue::from_static("close"),
+            )]))
+            .send()
+            .await
+        {
+            Err(error) => panic!("failure: {error:?}"),
+            Ok(response) => {
+                assert_eq!(response.status(), StatusCode::from_u16(400).unwrap());
+                assert!(response
+                    .text()
+                    .await
+                    .unwrap()
+                    .contains("Cannot connect to clearnet address, outproxy not enabled"));
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn outproxy_resolved_from_i2p_hostname() {
+        let sam_port = {
+            let sam = SamServer::new().await;
+            let port = sam.listener.local_addr().unwrap().port();
+            tokio::spawn(sam.run());
+
+            port
+        };
+
+        // create empty address book
+        let address_book = {
+            let hosts = "tracker2.postman.i2p=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICrsRuil8qK~whOvj8uNTv~ohZnTZHxTLgi~sDyo98BwJ-4Y4NMSuF4GLzcgLypcR1D1WY2tDqMKRYFVyLE~MTPVjRRgXfcKolykQ666~Go~A~~CNV4qc~zlO6F4bsUhVZDU7WJ7mxCAwqaMiJsL-NgIkb~SMHNxIzaE~oy0agHJMBQAEAAcAAA==#!oldsig=i02RMv3Hy86NGhVo2O3byIf6xXqWrzrRibSabe5dmNfRRQPZO9L25A==#date=1598641102#action=adddest#sig=cB-mY~sp1uuEmcQJqremV1D6EDWCe3IwPv4lBiGAXgKRYc5MLBBzYvJXtXmOawpfLKeNM~v5fWlXYsDfKf5nDA==#olddest=lnQ6yoBTxQuQU8EQ1FlF395ITIQF-HGJxUeFvzETLFnoczNjQvKDbtSB7aHhn853zjVXrJBgwlB9sO57KakBDaJ50lUZgVPhjlI19TgJ-CxyHhHSCeKx5JzURdEW-ucdONMynr-b2zwhsx8VQCJwCEkARvt21YkOyQDaB9IdV8aTAmP~PUJQxRwceaTMn96FcVenwdXqleE16fI8CVFOV18jbJKrhTOYpTtcZKV4l1wNYBDwKgwPx5c0kcrRzFyw5~bjuAKO~GJ5dR7BQsL7AwBoQUS4k1lwoYrG1kOIBeDD3XF8BWb6K3GOOoyjc1umYKpur3G~FxBuqtHAsDRICkEbKUqJ9mPYQlTSujhNxiRIW-oLwMtvayCFci99oX8MvazPS7~97x0Gsm-onEK1Td9nBdmq30OqDxpRtXBimbzkLbR1IKObbg9HvrKs3L-kSyGwTUmHG9rSQSoZEvFMA-S0EXO~o4g21q1oikmxPMhkeVwQ22VHB0-LZJfmLr4SAAAA\npsi.i2p=a11l91etedRW5Kl2GhdDI9qiRBbDRAQY6TWJb8KlSc0P9WUrEviABAAltqDU1DFJrRhMAZg5i6rWGszkJrF-pWLQK9JOH33l4~mQjB8Hkt83l9qnNJPUlGlh9yIfBY40CQ0Ermy8gzjHLayUpypDJFv2V6rHLwxAQeaXJu8YXbyvCucEu9i6HVO49akXW9YSxcZEqxK04wZnjBqhHGlVbehleMqTx9nkd0pUpBZz~vIaG9matUSHinopEo6Wegml9FEz~FEaQpPknKuMAGGSNFVJb0NtaOQSAocAOg1nLKh80v232Y8sJOHG63asSJoBa6bGwjIHftsqD~lEmVV4NkgNPybmvsD1SCbMQ2ExaCXFPVQV-yJhIAPN9MRVT9cSBT2GCq-vpMwdJ5Nf0iPR3M-Ak961JUwWXPYTL79toXCgxDX2~nZ5QFRV490YNnfB7LQu10G89wG8lzS9GWf2i-nk~~ez0Lq0dH7qQokFXdUkPc7bvSrxqkytrbd-h8O8AAAA\nzerobin.i2p=Jf64hlpW8ILKZGDe61ljHU5wzmUYwN2klOyhM2iR-8VkUEVgDZRuaToRlXIFW4k5J1ccTzGzMxR518BkCAE3jCFIyrbF0MjQDuXO5cwmqfBFWrIv72xgKDizu3HytE4vOF2M730rv8epSNPAJg6OpyXkf5UQW96kgL8SWcxWdTbKU-O8IpE3O01Oc6j0fp1E4wVOci7qIL8UEloNN~mulgka69MkR0uEtXWOXd6wvBjLNrZgdZi7XtT4QlDjx13jr7RGpZBJAUkk~8gLqgJwoUYhbfM7x564PIn3IlMXHK5AKRVxAbCQ5GkS8KdkvNL7FsQ~EiElGzZId4wenraHMHL0destUDmuwGdHKA7YdtovXD~OnaBvIbl36iuIduZnGKPEBD31hVLdJuVId9RND7lQy5BZJHQss5HSxMWTszAnWJDwmxqzMHHCiL6BMpZnkz8znwPDSkUwEs3P6-ba7mDKKt8EPCG0nM6l~BvPl2OKQIBhXIxJLOOavGyqmmYmAAAA\nzzz.i2p=GKapJ8koUcBj~jmQzHsTYxDg2tpfWj0xjQTzd8BhfC9c3OS5fwPBNajgF-eOD6eCjFTqTlorlh7Hnd8kXj1qblUGXT-tDoR9~YV8dmXl51cJn9MVTRrEqRWSJVXbUUz9t5Po6Xa247Vr0sJn27R4KoKP8QVj1GuH6dB3b6wTPbOamC3dkO18vkQkfZWUdRMDXk0d8AdjB0E0864nOT~J9Fpnd2pQE5uoFT6P0DqtQR2jsFvf9ME61aqLvKPPWpkgdn4z6Zkm-NJOcDz2Nv8Si7hli94E9SghMYRsdjU-knObKvxiagn84FIwcOpepxuG~kFXdD5NfsH0v6Uri3usE3XWD7Pw6P8qVYF39jUIq4OiNMwPnNYzy2N4mDMQdsdHO3LUVh~DEppOy9AAmEoHDjjJxt2BFBbGxfdpZCpENkwvmZeYUyNCCzASqTOOlNzdpne8cuesn3NDXIpNnqEE6Oe5Qm5YOJykrX~Vx~cFFT3QzDGkIjjxlFBsjUJyYkFjBQAEAAcAAA==".to_string();
+
+            let dir = tempdir().unwrap().into_path();
+            tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
+            tokio::fs::write(dir.join("addressbook/addresses"), hosts).await.unwrap();
+
+            AddressBookManager::new(
+                dir.clone(),
+                AddressBookConfig {
+                    default: None,
+                    subscriptions: None,
+                },
+            )
+            .handle()
+        };
+
+        // no prefixes
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some("zzz.i2p".to_string()),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
             assert_eq!(
-                host.as_str(),
+                proxy.outproxy.as_ref().unwrap().as_str(),
                 "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
-            );
-
-            let mut headers = [httparse::EMPTY_HEADER; 64];
-            let mut req = httparse::Request::new(&mut headers);
-            let _body_start = req.parse(&request).unwrap().unwrap();
-
-            assert_eq!(req.method, Some("GET"));
-            assert_eq!(req.path, Some("/"));
-            assert_eq!(
-                req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
             );
         }
 
-        // remove address book file
-        tokio::fs::remove_file(path).await.unwrap();
-
-        // address book is removed from disk but zzz.i2p has been cached
+        // www. prefix
         {
-            let (stream1, mut stream2) = make_connection().await;
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some("www.zzz.i2p".to_string()),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
 
-            tokio::spawn(async move {
-                stream2
-                    .write_all(&"GET / HTTP/1.1\r\nHost: zzz.i2p\r\n\r\n".as_bytes())
-                    .await
-                    .unwrap();
-            });
-            let Request { host, request, .. } =
-                HttpProxy::read_request(stream1, Some(address_book)).await.unwrap();
             assert_eq!(
-                host.as_str(),
+                proxy.outproxy.as_ref().unwrap().as_str(),
                 "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
             );
+        }
 
-            let mut headers = [httparse::EMPTY_HEADER; 64];
-            let mut req = httparse::Request::new(&mut headers);
-            let _body_start = req.parse(&request).unwrap().unwrap();
+        // http:// prefix
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some("http://zzz.i2p".to_string()),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
 
-            assert_eq!(req.method, Some("GET"));
-            assert_eq!(req.path, Some("/"));
             assert_eq!(
-                req.headers.iter().find(|header| header.name == "Host").unwrap().value,
-                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".as_bytes(),
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+        }
+
+        // http://www. prefix
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some("http://www.zzz.i2p".to_string()),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+        }
+
+        // http://www. .b32.i2p host
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some(
+                        "http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+                            .to_string(),
+                    ),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+        }
+
+        // http:// .b32.i2p host
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some(
+                        "http://lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+                            .to_string(),
+                    ),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+        }
+
+        // http:// .b32.i2p host
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some(
+                        "www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+                            .to_string(),
+                    ),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
+            );
+        }
+
+        // .b32.i2p host
+        {
+            let proxy = HttpProxy::new(
+                HttpProxyConfig {
+                    port: 0,
+                    host: "127.0.0.1".to_string(),
+                    outproxy: Some(
+                        "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".to_string(),
+                    ),
+                },
+                sam_port,
+                None,
+                Some(address_book.clone()),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(
+                proxy.outproxy.as_ref().unwrap().as_str(),
+                "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
             );
         }
     }

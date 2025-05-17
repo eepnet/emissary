@@ -206,7 +206,7 @@ pub trait AddressBook: Unpin + Send + Sync + 'static {
     /// Attempt to resolve `host` into a base64-encoded `Destination`.
     fn resolve_b64(&self, host: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>;
 
-    /// Attempt to resolve `host` into a base64-encoded `Destination`.
+    /// Attempt to resolve `host` into a base32-encoded destination hash.
     ///
     /// Returns `Either::Left` if `host` was found in the cache.
     ///

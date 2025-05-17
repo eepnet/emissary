@@ -121,6 +121,7 @@ pub struct ReseedConfig {
 pub struct HttpProxyConfig {
     pub port: u16,
     pub host: String,
+    pub outproxy: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -229,6 +230,7 @@ impl Default for EmissaryConfig {
             http_proxy: Some(HttpProxyConfig {
                 host: "127.0.0.1".to_string(),
                 port: 4444u16,
+                outproxy: None,
             }),
             i2cp: Some(I2cpConfig {
                 port: 7654,
@@ -1083,6 +1085,7 @@ impl Config {
                 HttpProxyOptions {
                     http_proxy_port,
                     http_proxy_host,
+                    http_outproxy,
                 },
             ) => {
                 if let Some(port) = http_proxy_port {
@@ -1092,17 +1095,23 @@ impl Config {
                 if let Some(host) = &http_proxy_host {
                     config.host = host.clone();
                 }
+
+                if let Some(outproxy) = http_outproxy {
+                    config.outproxy = Some(outproxy.clone());
+                }
             }
             (
                 None,
                 HttpProxyOptions {
                     http_proxy_port: Some(port),
                     http_proxy_host: Some(host),
+                    http_outproxy,
                 },
             ) => {
                 self.http_proxy = Some(HttpProxyConfig {
                     port: *port,
                     host: host.clone(),
+                    outproxy: http_outproxy.clone(),
                 });
             }
             _ => {}
@@ -1232,6 +1241,7 @@ mod tests {
             http_proxy: HttpProxyOptions {
                 http_proxy_port: None,
                 http_proxy_host: None,
+                http_outproxy: None,
             },
             transit: TransitOptions {
                 max_transit_tunnels: None,
