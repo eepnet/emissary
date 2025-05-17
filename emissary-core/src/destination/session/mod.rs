@@ -554,7 +554,7 @@ impl<R: Runtime> SessionManager<R> {
                             self.pending.remove(destination_id);
                             self.active.insert(
                                 destination_id.clone(),
-                                ActiveSession::new(Session::new(context)),
+                                ActiveSession::new(Session::new(*context)),
                             );
 
                             let mut out = BytesMut::with_capacity(message.len() + 4);
@@ -802,7 +802,7 @@ impl<R: Runtime> SessionManager<R> {
                             self.pending.remove(&destination_id);
                             self.active.insert(
                                 destination_id.clone(),
-                                ActiveSession::new(Session::new(context)),
+                                ActiveSession::new(Session::new(*context)),
                             );
 
                             (tag_set_id, tag_index, destination_id, message)

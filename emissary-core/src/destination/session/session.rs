@@ -92,7 +92,7 @@ pub enum PendingSessionEvent<R: Runtime> {
         message: Vec<u8>,
 
         /// Session context.
-        context: SessionContext<R>,
+        context: Box<SessionContext<R>>,
 
         /// Tag set ID.
         tag_set_id: u16,
@@ -144,10 +144,10 @@ enum PendingSessionState<R: Runtime> {
         outbound: HashMap<usize, OutboundSession<R>>,
 
         /// Send tag set.
-        send_tag_set: TagSet,
+        send_tag_set: Box<TagSet>,
 
         /// Receive tag set.
-        recv_tag_set: TagSet,
+        recv_tag_set: Box<TagSet>,
 
         /// Remote's static public key.
         remote_public_key: StaticPublicKey,
@@ -434,15 +434,15 @@ impl<R: Runtime> PendingSession<R> {
 
                 Ok(PendingSessionEvent::CreateSession {
                     message: out.freeze().to_vec(),
-                    context: SessionContext {
+                    context: Box::new(SessionContext {
                         garlic_tags,
                         local: self.local.clone(),
-                        recv_tag_set,
+                        recv_tag_set: *recv_tag_set,
                         remote: self.remote.clone(),
-                        send_tag_set,
+                        send_tag_set: *send_tag_set,
                         tag_set_entries,
                         nsr_context: NsrContext::new(nsr_tag_set_entries, outbound),
-                    },
+                    }),
                     tag_set_id,
                     tag_index,
                 })
@@ -504,7 +504,7 @@ impl<R: Runtime> PendingSession<R> {
 
                 Ok(PendingSessionEvent::CreateSession {
                     message,
-                    context: SessionContext {
+                    context: Box::new(SessionContext {
                         recv_tag_set,
                         send_tag_set,
                         tag_set_entries,
@@ -512,7 +512,7 @@ impl<R: Runtime> PendingSession<R> {
                         local: self.local.clone(),
                         remote: self.remote.clone(),
                         nsr_context: NsrContext::Inactive,
-                    },
+                    }),
                     tag_set_id,
                     tag_index,
                 })
@@ -571,8 +571,8 @@ impl<R: Runtime> PendingSession<R> {
 
                 self.state = PendingSessionState::AwaitingEsTransmit {
                     outbound,
-                    send_tag_set,
-                    recv_tag_set,
+                    send_tag_set: Box::new(send_tag_set),
+                    recv_tag_set: Box::new(recv_tag_set),
                     garlic_tags,
                     tag_set_entries,
                     remote_public_key,

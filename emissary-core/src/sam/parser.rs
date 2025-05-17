@@ -164,7 +164,7 @@ pub enum HostKind {
     /// Destination.
     Destination {
         /// Destination.
-        destination: Destination,
+        destination: Box<Destination>,
     },
 
     /// Base32-encoded host, such as udhdrtrcetjm5sxzskjyr5ztpeszydbh4dpl3pl4utgqqw2v4jna.b32.i2p.
@@ -228,7 +228,7 @@ pub enum SamCommand {
         session_kind: SessionKind,
 
         /// Destination context.
-        destination: DestinationContext,
+        destination: Box<DestinationContext>,
 
         /// Session options.
         options: HashMap<String, String>,
@@ -411,7 +411,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                 Ok(SamCommand::CreateSession {
                     session_id,
                     session_kind,
-                    destination,
+                    destination: Box::new(destination),
                     options: value
                         .key_value_pairs
                         .into_iter()
@@ -481,7 +481,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     let decoded = base64_decode(destination).ok_or(())?;
 
                     HostKind::Destination {
-                        destination: Destination::parse(&decoded).ok_or(())?,
+                        destination: Box::new(Destination::parse(&decoded).ok_or(())?),
                     }
                 };
 

@@ -201,7 +201,7 @@ pub enum Block {
     /// Router info.
     RouterInfo {
         /// Router info.
-        router_info: RouterInfo,
+        router_info: Box<RouterInfo>,
     },
 
     /// I2NP message.
@@ -507,7 +507,12 @@ impl Block {
             Err::Error(make_error(input, ErrorKind::Fail))
         })?;
 
-        Ok((rest, Block::RouterInfo { router_info }))
+        Ok((
+            rest,
+            Block::RouterInfo {
+                router_info: Box::new(router_info),
+            },
+        ))
     }
 
     /// Attempt to parse [`Block::I2Np`] from `input`.

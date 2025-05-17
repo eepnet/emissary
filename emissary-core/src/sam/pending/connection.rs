@@ -58,7 +58,7 @@ pub enum ConnectionKind<R: Runtime> {
         socket: SamSocket<R>,
 
         /// Destination context.
-        destination: DestinationContext,
+        destination: Box<DestinationContext>,
 
         /// Negotiated version.
         version: SamVersion,
