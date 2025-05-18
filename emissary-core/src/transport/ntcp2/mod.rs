@@ -166,7 +166,15 @@ impl<R: Runtime> Ntcp2Transport<R> {
         let listener =
             R::TcpListener::bind(format!("0.0.0.0:{}", config.port).parse().expect("to succeed"))
                 .await
-                .ok_or(Error::Connection(ConnectionError::BindFailure))?;
+                .ok_or_else(|| {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        port = %config.port,
+                        "ntcp2 port in use, select another port for the transport",
+                    );
+
+                    Error::Connection(ConnectionError::BindFailure)
+                })?;
 
         let socket_address = listener.local_address().ok_or_else(|| {
             tracing::warn!(

@@ -73,7 +73,7 @@ udp_port = 7655
 
 `publish` accepts `true`/`false` which tells router whether the address should be published in the router info. The router will not be able to accept any inbound connections on unpublished transports.
 
-`port` specifies on which port the transport should be bound. It can be left as `0`, meaning the transport will be bound to a random, OS-assigned port. This is not recommended outside of testing.
+`port` specifies on which port the transport should be bound. It can be left as `0`, meaning the transport will be bound to a random, OS-assigned port. This is not recommended outside of testing. A random port for NTCP2 and SSU2 is generated when the router boots up for the first time.
 
 `host` is the public IP of your machine, i.e., the external address which other routers use to connect to your router. This can be found from your internet router's configuration page or, e.g., from [https://whatismyip.com](https://www.whatismyip.com), assuming you have a static IP. You can also leave `host` empty and use UPnP or NAT-PMP for external address discovery, see next section for more details.
 
@@ -93,7 +93,7 @@ Enable both UPnP and NAT-PMP and use them for port forwarding and external addre
 
 ```toml
 [ntcp2]
-port = 25115
+port = 25515
 publish = true
 
 [port-forwarding]

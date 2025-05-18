@@ -23,7 +23,7 @@ use crate::{
 };
 
 use home::home_dir;
-use rand::{rngs::OsRng, thread_rng, RngCore};
+use rand::{rngs::OsRng, thread_rng, Rng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use std::{
@@ -34,6 +34,17 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+
+/// Reserved ports.
+///
+/// Taken from i2pd.
+const RESERVED_PORTS: [u16; 57] = [
+    9119, 9150, 9306, 9312, 9389, 9418, 9535, 9536, 9695, 9800, 9899, 10000, 10050, 10051, 10110,
+    10212, 10933, 11001, 11112, 11235, 11371, 12222, 12223, 13075, 13400, 13720, 13721, 13724,
+    13782, 13783, 13785, 13786, 15345, 17224, 17225, 17500, 18104, 19788, 19812, 19813, 19814,
+    19999, 20000, 24465, 24554, 26000, 27000, 27001, 27002, 27003, 27004, 27005, 27006, 27007,
+    27008, 27009, 28000,
+];
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Profile {
@@ -238,7 +249,15 @@ impl Default for EmissaryConfig {
             }),
             metrics: Some(MetricsConfig { port: 7788 }),
             ntcp2: Some(Ntcp2Config {
-                port: 25115u16,
+                port: {
+                    loop {
+                        let port: u16 = rand::thread_rng().gen_range(9151..=30777);
+
+                        if !RESERVED_PORTS.iter().any(|reserved_port| reserved_port == &port) {
+                            break port;
+                        }
+                    }
+                },
                 host: None,
                 publish: Some(true),
             }),
@@ -1263,8 +1282,15 @@ mod tests {
         assert!(config.routers.is_empty());
         assert_eq!(config.static_key.len(), 32);
         assert_eq!(config.signing_key.len(), 32);
-        assert_eq!(config.ntcp2_config.as_ref().unwrap().port, 25115);
-        assert_eq!(config.ntcp2_config.as_ref().unwrap().host, None,);
+        assert_eq!(config.ntcp2_config.as_ref().unwrap().host, None);
+
+        // ensure ntcp2 port is within correct range and not any of the reserved ports
+        {
+            let port = config.ntcp2_config.as_ref().unwrap().port;
+
+            assert!(port >= 9151 && port <= 30777);
+            assert!(!RESERVED_PORTS.iter().any(|p| p == &port));
+        }
 
         let (key, iv) = {
             let mut path = dir.path().to_owned();
@@ -1323,7 +1349,8 @@ mod tests {
             let config = Config::parse(Some(dir.path().to_owned()), &make_arguments()).unwrap();
             let ntcp2_config = config.ntcp2_config.unwrap();
 
-            assert_eq!(ntcp2_config.port, 25115u16);
+            assert!(ntcp2_config.port >= 9151 && ntcp2_config.port <= 30777);
+            assert!(!RESERVED_PORTS.iter().any(|p| p == &ntcp2_config.port));
 
             (ntcp2_config.key, ntcp2_config.iv)
         };
