@@ -16,7 +16,7 @@ clap = { version = "4.5.38", features = ["derive"] }
 emissary-core = { path = "../emissary-core", version = "0.2.0", features = ["std"] }
 emissary-util = { path = "../emissary-util", version = "0.2.0", features = ["tokio"] }
 futures = "0.3.31"
-home = "=0.5.9"
+home = "=0.5.11"
 httparse = "1.10.1"
 iced = { version = "0.13.1", features = ["advanced", "tokio"], optional = true }
 igd-next = { version = "0.16.1", default-features = false, features = ["aio_tokio"] }

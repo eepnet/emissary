@@ -20,7 +20,7 @@ members = [
 default-members = ["emissary-cli"]
 
 [workspace.dependencies]
-anyhow = "1.0.97"
+anyhow = "1.0.98"
 ed25519-dalek = { version = "2.1.1", default-features = false }
 flate2 = "1.1.1"
 futures = "0.3.31"
@@ -31,7 +31,7 @@ rand_core = { version = "0.6.3", default-features = false }
 reqwest = { version = "0.12.15", default-features = false }
 sha2 = { version = "0.10.9", default-features = false }
 tempfile = "3.19.1"
-tokio-util = { version = "0.7.14", features = ["compat"] }
+tokio-util = { version = "0.7.15", features = ["compat"] }
 tokio = { version = "1.44.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "time"] }
 tracing = { version = "0.1.41", default-features = false }
