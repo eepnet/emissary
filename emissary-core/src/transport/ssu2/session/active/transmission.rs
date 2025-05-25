@@ -19,8 +19,8 @@
 use crate::{
     i2np::{Message, MessageType},
     primitives::RouterId,
-    runtime::{Instant, Runtime},
-    transport::ssu2::message::data::MessageKind,
+    runtime::{Histogram, Instant, MetricsHandle, Runtime},
+    transport::ssu2::{message::data::MessageKind, metrics::*},
 };
 
 use alloc::{
@@ -230,6 +230,12 @@ struct Segment<R: Runtime> {
 
 /// Transmission manager.
 pub struct TransmissionManager<R: Runtime> {
+    /// Metrics handle.
+    metrics: R::MetricsHandle,
+
+    /// Pending segments.
+    pending: VecDeque<SegmentKind>,
+
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
 
@@ -242,17 +248,15 @@ pub struct TransmissionManager<R: Runtime> {
     /// In-flight segments.
     segments: BTreeMap<u32, Segment<R>>,
 
-    /// Pending segments.
-    pending: VecDeque<SegmentKind>,
-
     /// Window size.
     window_size: usize,
 }
 
 impl<R: Runtime> TransmissionManager<R> {
     /// Create new [`TransmissionManager`].
-    pub fn new(router_id: RouterId, pkt_num: Arc<AtomicU32>) -> Self {
+    pub fn new(router_id: RouterId, pkt_num: Arc<AtomicU32>, metrics: R::MetricsHandle) -> Self {
         Self {
+            metrics,
             pkt_num,
             router_id,
             pending: VecDeque::new(),
@@ -295,6 +299,8 @@ impl<R: Runtime> TransmissionManager<R> {
     /// and one or more `MessageKind::FollowOnFragment`s.
     pub fn segment(&mut self, message: Message) -> Option<Vec<(u32, MessageKind<'_>)>> {
         if message.serialized_len_short() + SSU2_OVERHEAD <= 1200 {
+            self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
+
             // no window size left to send more packets
             if !self.has_capacity() {
                 self.pending.push_back(SegmentKind::UnFragmented {
@@ -325,6 +331,7 @@ impl<R: Runtime> TransmissionManager<R> {
 
         let fragments = message.payload.chunks(1200).collect::<Vec<_>>();
         let num_fragments = fragments.len();
+        self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
 
         let fragments = fragments
             .into_iter()
@@ -402,6 +409,11 @@ impl<R: Runtime> TransmissionManager<R> {
             if let Some(Segment { num_sent, sent, .. }) =
                 self.segments.remove(&(ack_through.saturating_sub(i as u32)))
             {
+                // register ack time irrespective of how many the packet was sent
+                self.metrics
+                    .histogram(ACK_RECEIVE_TIME)
+                    .record(sent.elapsed().as_millis() as f64);
+
                 // packet has not been resent
                 if num_sent == 1 {
                     self.rto.calculate_rto(sent.elapsed());
@@ -423,6 +435,11 @@ impl<R: Runtime> TransmissionManager<R> {
 
                 // TODO: if-let chain
                 if let Some(Segment { num_sent, sent, .. }) = self.segments.remove(&next_pkt) {
+                    // register ack time irrespective of how many the packet was sent
+                    self.metrics
+                        .histogram(ACK_RECEIVE_TIME)
+                        .record(sent.elapsed().as_millis() as f64);
+
                     // packet has not been resent
                     if num_sent == 1 {
                         self.rto.calculate_rto(sent.elapsed());
@@ -596,6 +613,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -617,6 +635,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -639,6 +658,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -661,6 +681,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -684,6 +705,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -707,6 +729,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -733,6 +756,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -755,6 +779,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -778,6 +803,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -801,6 +827,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -822,6 +849,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -843,6 +871,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -865,6 +894,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -886,6 +916,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -907,6 +938,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -928,6 +960,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -946,6 +979,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -978,6 +1012,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -1037,6 +1072,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -1065,6 +1101,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -1119,6 +1156,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -1157,6 +1195,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let pkts = mgr
             .segment(Message {
@@ -1195,6 +1234,7 @@ mod tests {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             RouterId::random(),
             Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
         );
         let _ = mgr
             .segment(Message {

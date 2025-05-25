@@ -19,7 +19,8 @@
 use crate::{
     i2np::{Message, MessageType},
     primitives::MessageId,
-    runtime::{Instant, Runtime},
+    runtime::{Counter, Histogram, Instant, MetricsHandle, Runtime},
+    transport::ssu2::metrics::{GARBAGE_COLLECTED_COUNT, INBOUND_FRAGMENT_COUNT},
 };
 
 use futures::FutureExt;
@@ -87,8 +88,10 @@ impl<R: Runtime> Fragment<R> {
     }
 
     /// Construct I2NP message from received fragments.
-    pub fn construct(mut self) -> Option<Message> {
+    pub fn construct(mut self, metrics: &R::MetricsHandle) -> Option<Message> {
         let (message_type, message_id, expiration) = self.info.take()?;
+        metrics.histogram(INBOUND_FRAGMENT_COUNT).record(self.fragments.len() as f64);
+
         let payload = self.fragments.into_values().fold(
             Vec::<u8>::with_capacity(self.total_size),
             |mut payload, fragment| {
@@ -108,19 +111,23 @@ impl<R: Runtime> Fragment<R> {
 
 /// Fragment handler.
 pub struct FragmentHandler<R: Runtime> {
+    /// Garbage collection timer.
+    gc_timer: R::Timer,
+
     /// Fragmented messages.
     messages: HashMap<MessageId, Fragment<R>>,
 
-    /// Garbage collection timer.
-    gc_timer: R::Timer,
+    /// Metrics handle.
+    metrics: R::MetricsHandle,
 }
 
 impl<R: Runtime> FragmentHandler<R> {
     /// Create new [`FragmentHandler`].
-    pub fn new() -> Self {
+    pub fn new(metrics: R::MetricsHandle) -> Self {
         Self {
             messages: HashMap::new(),
             gc_timer: R::timer(GARBAGE_COLLECTION_INTERVAL),
+            metrics,
         }
     }
 
@@ -142,7 +149,12 @@ impl<R: Runtime> FragmentHandler<R> {
 
         message
             .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
+            .then(|| {
+                self.messages
+                    .remove(&message_id)
+                    .expect("message to exist")
+                    .construct(&self.metrics)
+            })
             .flatten()
     }
 
@@ -168,7 +180,12 @@ impl<R: Runtime> FragmentHandler<R> {
 
         message
             .is_ready()
-            .then(|| self.messages.remove(&message_id).expect("message to exist").construct())
+            .then(|| {
+                self.messages
+                    .remove(&message_id)
+                    .expect("message to exist")
+                    .construct(&self.metrics)
+            })
             .flatten()
     }
 }
@@ -187,6 +204,7 @@ impl<R: Runtime> Future for FragmentHandler<R> {
             .collect::<Vec<_>>()
             .iter()
             .for_each(|key| {
+                self.metrics.counter(GARBAGE_COLLECTED_COUNT).increment(1);
                 self.messages.remove(key);
             });
 
@@ -229,7 +247,8 @@ mod tests {
     async fn simple_fragmentation() {
         let expiration = MockRuntime::time_since_epoch();
         let message_id = MessageId::from(1338);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         let mut fragments = split(4, vec![0u8; 1337]);
 
         assert_eq!(fragments.len(), 4);
@@ -275,7 +294,8 @@ mod tests {
             data
         };
         let mut fragments = split(2, data.clone());
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         assert_eq!(fragments.len(), 2);
         assert!(handler
@@ -305,7 +325,8 @@ mod tests {
         let expiration = MockRuntime::time_since_epoch();
         let message_id = MessageId::from(1338);
         let mut fragments = split(4, vec![0u8; 30_005]);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         assert_eq!(fragments.len(), 4);
 
         let first = fragments.pop_front().unwrap();
@@ -344,7 +365,8 @@ mod tests {
         let expiration = MockRuntime::time_since_epoch();
         let mut fragments = split(4, vec![0u8; 1337]);
         let message_id = MessageId::from(1338);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         assert_eq!(fragments.len(), 4);
         assert!(handler
@@ -381,7 +403,8 @@ mod tests {
     async fn garbage_collection_works() {
         let message_id = MessageId::from(1338);
         let mut fragments = split(4, vec![0u8; 30_005]);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         assert_eq!(fragments.len(), 4);
 
         // last fragment is delivered first

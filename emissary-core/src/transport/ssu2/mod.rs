@@ -37,6 +37,7 @@ use core::{
 };
 
 mod message;
+mod metrics;
 mod session;
 mod socket;
 
@@ -123,9 +124,9 @@ impl<R: Runtime> Ssu2Transport<R> {
         }
     }
 
-    /// Collect `Ssu2Transport`-related metric counters, gauges and histograms.
+    /// Collect SSU2-related metric counters, gauges and histograms.
     pub fn metrics(metrics: Vec<MetricType>) -> Vec<MetricType> {
-        metrics
+        metrics::register_metrics(metrics)
     }
 
     /// Initialize [`SsU2Transport`].

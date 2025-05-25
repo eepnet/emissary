@@ -183,6 +183,9 @@ pub struct OutboundSsu2Session<R: Runtime> {
     /// Source connection ID.
     src_id: u64,
 
+    /// When was the handshake started.
+    started: R::Instant,
+
     /// Pending session state.
     state: PendingSessionState,
 
@@ -252,6 +255,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             router_id,
             rx: Some(rx),
             src_id,
+            started: R::now(),
             state: PendingSessionState::AwaitingRetry {
                 local_static_key,
                 router_info,
@@ -276,7 +280,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         local_static_key: StaticPrivateKey,
         router_info: Bytes,
         static_key: StaticPublicKey,
-    ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         let (pkt_num, token) =
             match HeaderReader::new(self.intro_key, &mut pkt)?.parse(self.intro_key)? {
                 HeaderKind::Retry {
@@ -381,7 +385,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         ephemeral_key: EphemeralPrivateKey,
         local_static_key: StaticPrivateKey,
         router_info: Bytes,
-    ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         let temp_key = Hmac::new(self.noise_ctx.chaining_key()).update([]).finalize();
         let k_header_2 =
             Hmac::new(&temp_key).update(b"SessCreateHeader").update([0x01]).finalize_new();
@@ -499,7 +503,10 @@ impl<R: Runtime> OutboundSsu2Session<R> {
     /// <https://geti2p.net/spec/ssu2#kdf-for-session-confirmed-part-2>
     /// <https://geti2p.net/spec/ssu2#sessionconfirmed-type-2>
     /// <https://geti2p.net/spec/ssu2#kdf-for-data-phase>
-    fn on_data(&mut self, mut pkt: Vec<u8>) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    fn on_data(
+        &mut self,
+        mut pkt: Vec<u8>,
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         let temp_key = Hmac::new(self.noise_ctx.chaining_key()).update([]).finalize();
         let k_ab = Hmac::new(&temp_key).update([0x01]).finalize();
         let k_ba = Hmac::new(&temp_key).update(&k_ab).update([0x02]).finalize();
@@ -561,6 +568,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 pkt_rx: self.rx.take().expect("to exist"),
             },
             src_id: self.src_id,
+            started: self.started,
         }))
     }
 
@@ -573,7 +581,10 @@ impl<R: Runtime> OutboundSsu2Session<R> {
     ///
     /// If a fatal error occurs during handling of the packet,
     /// [`PendingSsu2SessionStatus::SessionTerminated`] is returned.
-    fn on_packet(&mut self, pkt: Vec<u8>) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    fn on_packet(
+        &mut self,
+        pkt: Vec<u8>,
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::AwaitingRetry {
                 local_static_key,
@@ -596,8 +607,9 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 );
                 debug_assert!(false);
                 Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
-                    router_id: Some(self.router_id.clone()),
                     connection_id: self.src_id,
+                    router_id: Some(self.router_id.clone()),
+                    started: self.started,
                 }))
             }
         }
@@ -608,14 +620,14 @@ impl<R: Runtime> OutboundSsu2Session<R> {
     /// Convenient function for calling `OutboundSsu2Session::poll()` which, if an error occurred
     /// during negotiation, reports a connection failure to installed subsystems and returns the
     /// session status.
-    pub async fn run(mut self) -> PendingSsu2SessionStatus {
+    pub async fn run(mut self) -> PendingSsu2SessionStatus<R> {
         let status = (&mut self).await;
 
         if core::matches!(
             status,
             PendingSsu2SessionStatus::SessionTermianted { .. }
                 | PendingSsu2SessionStatus::Timeout { .. }
-                | PendingSsu2SessionStatus::SocketClosed
+                | PendingSsu2SessionStatus::SocketClosed { .. }
         ) {
             self.subsystem_handle.report_connection_failure(self.router_id.clone()).await;
         }
@@ -625,16 +637,21 @@ impl<R: Runtime> OutboundSsu2Session<R> {
 }
 
 impl<R: Runtime> Future for OutboundSsu2Session<R> {
-    type Output = PendingSsu2SessionStatus;
+    type Output = PendingSsu2SessionStatus<R>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             let pkt = match &mut self.rx {
-                None => return Poll::Ready(PendingSsu2SessionStatus::SocketClosed),
+                None =>
+                    return Poll::Ready(PendingSsu2SessionStatus::SocketClosed {
+                        started: self.started,
+                    }),
                 Some(rx) => match rx.poll_recv(cx) {
                     Poll::Pending => break,
                     Poll::Ready(None) =>
-                        return Poll::Ready(PendingSsu2SessionStatus::SocketClosed),
+                        return Poll::Ready(PendingSsu2SessionStatus::SocketClosed {
+                            started: self.started,
+                        }),
                     Poll::Ready(Some(Packet { pkt, .. })) => pkt,
                 },
             };
@@ -655,6 +672,7 @@ impl<R: Runtime> Future for OutboundSsu2Session<R> {
                     return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
                         connection_id: self.src_id,
                         router_id: None,
+                        started: self.started,
                     });
                 }
             }
@@ -689,6 +707,7 @@ impl<R: Runtime> Future for OutboundSsu2Session<R> {
             PacketRetransmitterEvent::Timeout => Poll::Ready(PendingSsu2SessionStatus::Timeout {
                 connection_id: self.src_id,
                 router_id: Some(self.router_id.clone()),
+                started: self.started,
             }),
         }
     }

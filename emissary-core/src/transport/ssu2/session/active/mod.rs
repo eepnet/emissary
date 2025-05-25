@@ -21,11 +21,12 @@ use crate::{
     error::Ssu2Error,
     i2np::Message,
     primitives::RouterId,
-    runtime::Runtime,
+    runtime::{Counter, MetricsHandle, Runtime},
     subsystem::{SubsystemCommand, SubsystemHandle},
     transport::{
         ssu2::{
             message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
+            metrics::*,
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -204,6 +205,9 @@ pub struct Ssu2Session<R: Runtime> {
     /// Packet number of the packet that last requested an immediate ACK.
     last_immediate_ack: u32,
 
+    /// Metrics handle.
+    metrics: R::MetricsHandle,
+
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
 
@@ -243,6 +247,7 @@ impl<R: Runtime> Ssu2Session<R> {
         context: Ssu2SessionContext,
         pkt_tx: Sender<Packet>,
         subsystem_handle: SubsystemHandle,
+        metrics: R::MetricsHandle,
     ) -> Self {
         let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
         let pkt_num = Arc::new(AtomicU32::new(1u32));
@@ -261,9 +266,10 @@ impl<R: Runtime> Ssu2Session<R> {
             cmd_tx,
             dst_id: context.dst_id,
             duplicate_filter: DuplicateFilter::new(),
-            fragment_handler: FragmentHandler::<R>::new(),
+            fragment_handler: FragmentHandler::<R>::new(metrics.clone()),
             intro_key: context.intro_key,
             last_immediate_ack: 0u32,
+            metrics: metrics.clone(),
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             pkt_tx,
@@ -273,7 +279,7 @@ impl<R: Runtime> Ssu2Session<R> {
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
-            transmission: TransmissionManager::<R>::new(context.router_id, pkt_num),
+            transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
         }
     }
 
@@ -291,6 +297,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 expiration = ?message.expiration,
                 "discarding expired message",
             );
+            self.metrics.counter(EXPIRED_PKT_COUNT).increment(1);
             return;
         }
 
@@ -302,6 +309,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 message_type = ?message.message_type,
                 "ignoring duplicate message",
             );
+            self.metrics.counter(DUPLICATE_PKT_COUNT).increment(1);
             return;
         }
 
@@ -460,6 +468,7 @@ impl<R: Runtime> Ssu2Session<R> {
                                     ?error,
                                     "failed to send packet",
                                 );
+                                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
                             }
 
                             if self.resend_timer.is_none() {
@@ -541,6 +550,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     ?error,
                     "failed to send packet",
                 );
+                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
             }
 
             if self.resend_timer.is_none() {
@@ -553,6 +563,7 @@ impl<R: Runtime> Ssu2Session<R> {
         let Some(packets_to_resend) = self.transmission.resend()? else {
             return Ok(0);
         };
+        self.metrics.counter(RETRANSMISSION_COUNT).increment(packets_to_resend.len());
 
         let AckInfo {
             highest_seen,
@@ -583,6 +594,7 @@ impl<R: Runtime> Ssu2Session<R> {
                         ?error,
                         "failed to send packet",
                     );
+                    self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
                 }
 
                 pkt_count + 1
@@ -720,6 +732,7 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                     ?error,
                     "failed to send explicit ack packet",
                 );
+                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
             }
         }
 
@@ -773,7 +786,15 @@ mod tests {
                 (handle, cmd_rx)
             };
 
-            tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
+            tokio::spawn(
+                Ssu2Session::<MockRuntime>::new(
+                    ctx,
+                    to_socket_tx,
+                    handle,
+                    MockRuntime::register_metrics(vec![], None),
+                )
+                .run(),
+            );
 
             match cmd_rx.recv().await.unwrap() {
                 crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } => tx,
@@ -923,8 +944,15 @@ mod tests {
                 (handle, cmd_rx)
             };
 
-            let handle =
-                tokio::spawn(Ssu2Session::<MockRuntime>::new(ctx, to_socket_tx, handle).run());
+            let handle = tokio::spawn(
+                Ssu2Session::<MockRuntime>::new(
+                    ctx,
+                    to_socket_tx,
+                    handle,
+                    MockRuntime::register_metrics(vec![], None),
+                )
+                .run(),
+            );
 
             match cmd_rx.recv().await.unwrap() {
                 crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } =>

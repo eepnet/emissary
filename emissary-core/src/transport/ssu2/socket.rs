@@ -21,11 +21,12 @@ use crate::{
     error::{ChannelError, Ssu2Error},
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
-    runtime::{JoinSet, Runtime, UdpSocket},
+    runtime::{Counter, Gauge, Histogram, JoinSet, MetricsHandle, Runtime, UdpSocket},
     subsystem::SubsystemHandle,
     transport::{
         ssu2::{
             message::{HeaderKind, HeaderReader},
+            metrics::*,
             session::{
                 active::{Ssu2Session, Ssu2SessionContext},
                 pending::{
@@ -188,7 +189,7 @@ pub struct Ssu2Socket<R: Runtime> {
     pending_pkts: VecDeque<(BytesMut, SocketAddr)>,
 
     /// Pending SSU2 sessions.
-    pending_sessions: R::JoinSet<PendingSsu2SessionStatus>,
+    pending_sessions: R::JoinSet<PendingSsu2SessionStatus<R>>,
 
     /// RX channel for receiving packets from active sessions.
     pkt_rx: Receiver<Packet>,
@@ -474,9 +475,15 @@ impl<R: Runtime> Ssu2Socket<R> {
         };
 
         self.active_sessions.push(
-            Ssu2Session::<R>::new(context, self.pkt_tx.clone(), self.subsystem_handle.clone())
-                .run(),
+            Ssu2Session::<R>::new(
+                context,
+                self.pkt_tx.clone(),
+                self.subsystem_handle.clone(),
+                self.router_ctx.metrics_handle().clone(),
+            )
+            .run(),
         );
+        self.router_ctx.metrics_handle().gauge(NUM_CONNECTIONS).increment(1);
 
         if let Some(waker) = self.waker.take() {
             waker.wake_by_ref();
@@ -546,13 +553,31 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     return Poll::Ready(None);
                 }
                 Poll::Ready(Some((nread, from))) => {
-                    if let Err(error) = this.handle_packet(nread, from) {
-                        tracing::debug!(
+                    this.router_ctx.metrics_handle().counter(INBOUND_BANDWIDTH).increment(nread);
+                    this.router_ctx.metrics_handle().counter(INBOUND_PKT_COUNT).increment(1);
+                    this.router_ctx
+                        .metrics_handle()
+                        .histogram(INBOUND_PKT_SIZES)
+                        .record(nread as f64);
+
+                    match this.handle_packet(nread, from) {
+                        Err(Ssu2Error::Channel(ChannelError::Full)) => {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                "cannot process packet, channel is full",
+                            );
+                            this.router_ctx
+                                .metrics_handle()
+                                .counter(NUM_DROPS_CHANNEL_FULL)
+                                .increment(1);
+                        }
+                        Err(error) => tracing::debug!(
                             target: LOG_TARGET,
                             ?from,
                             ?error,
                             "failed to handle packet",
-                        );
+                        ),
+                        Ok(()) => {}
                     }
                 }
             }
@@ -572,6 +597,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
 
                     this.terminating_session
                         .push(TerminatingSsu2Session::<R>::new(termination_ctx));
+                    this.router_ctx.metrics_handle().gauge(NUM_CONNECTIONS).decrement(1);
                 }
             }
         }
@@ -598,128 +624,160 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             match this.pending_sessions.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(PendingSsu2SessionStatus::NewInboundSession {
-                    context,
-                    pkt,
-                    target,
-                    dst_id,
-                })) => {
-                    let router_id = context.router_id.clone();
+                Poll::Ready(Some(status)) => {
+                    this.router_ctx
+                        .metrics_handle()
+                        .histogram(HANDSHAKE_DURATION)
+                        .record(status.duration());
 
-                    match this.unvalidated_sessions.get(&router_id) {
-                        None => {
-                            tracing::debug!(
+                    match &status {
+                        PendingSsu2SessionStatus::NewInboundSession { .. }
+                        | PendingSsu2SessionStatus::NewOutboundSession { .. } => this
+                            .router_ctx
+                            .metrics_handle()
+                            .counter(NUM_HANDSHAKE_SUCCESSES)
+                            .increment(1),
+                        _ => this
+                            .router_ctx
+                            .metrics_handle()
+                            .counter(NUM_HANDSHAKE_FAILURES)
+                            .increment(1),
+                    }
+
+                    match status {
+                        PendingSsu2SessionStatus::NewInboundSession {
+                            context,
+                            dst_id,
+                            pkt,
+                            started: _,
+                            target,
+                        } => {
+                            let router_id = context.router_id.clone();
+
+                            match this.unvalidated_sessions.get(&router_id) {
+                                None => {
+                                    tracing::debug!(
+                                        target: LOG_TARGET,
+                                        %router_id,
+                                        connection_id = ?context.dst_id,
+                                        "inbound session negotiated",
+                                    );
+
+                                    this.unvalidated_sessions.insert(
+                                        router_id.clone(),
+                                        PendingSessionKind::Inbound {
+                                            pkt,
+                                            address: target,
+                                            context,
+                                            dst_id,
+                                        },
+                                    );
+
+                                    return Poll::Ready(Some(
+                                        TransportEvent::ConnectionEstablished {
+                                            direction: Direction::Inbound,
+                                            router_id,
+                                        },
+                                    ));
+                                }
+                                Some(kind) => tracing::warn!(
+                                    target: LOG_TARGET,
+                                    %router_id,
+                                    connection_id = ?context.dst_id,
+                                    ?kind,
+                                    "inbound session negotiated but already pending, rejecting",
+                                ),
+                            }
+                        }
+                        PendingSsu2SessionStatus::NewOutboundSession {
+                            context,
+                            src_id,
+                            started: _,
+                        } => {
+                            let router_id = context.router_id.clone();
+
+                            tracing::trace!(
                                 target: LOG_TARGET,
                                 %router_id,
                                 connection_id = ?context.dst_id,
-                                "inbound session negotiated",
+                                "outbound session negotiated",
                             );
 
-                            this.unvalidated_sessions.insert(
+                            if let Some(kind) = this.unvalidated_sessions.insert(
                                 router_id.clone(),
-                                PendingSessionKind::Inbound {
-                                    pkt,
-                                    address: target,
+                                PendingSessionKind::Outbound {
+                                    address: context.address,
                                     context,
-                                    dst_id,
+                                    src_id,
                                 },
-                            );
+                            ) {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    %router_id,
+                                    ?kind,
+                                    "unvalidated session already exists",
+                                );
+                                debug_assert!(false);
+                            }
 
                             return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
-                                direction: Direction::Inbound,
+                                direction: Direction::Outbound,
                                 router_id,
                             }));
                         }
-                        Some(kind) => tracing::warn!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            connection_id = ?context.dst_id,
-                            ?kind,
-                            "inbound session negotiated but already pending, rejecting",
-                        ),
-                    }
-                }
-                Poll::Ready(Some(PendingSsu2SessionStatus::NewOutboundSession {
-                    context,
-                    src_id,
-                })) => {
-                    let router_id = context.router_id.clone();
-
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        %router_id,
-                        connection_id = ?context.dst_id,
-                        "outbound session negotiated",
-                    );
-
-                    if let Some(kind) = this.unvalidated_sessions.insert(
-                        router_id.clone(),
-                        PendingSessionKind::Outbound {
-                            address: context.address,
-                            context,
-                            src_id,
+                        PendingSsu2SessionStatus::SessionTermianted {
+                            connection_id,
+                            router_id,
+                            started: _,
+                        } => match router_id {
+                            None => {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?connection_id,
+                                    "pending inbound session terminated",
+                                );
+                                debug_assert!(false);
+                            }
+                            Some(router_id) => {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    %router_id,
+                                    ?connection_id,
+                                    "pending outbound session terminated",
+                                );
+                                debug_assert!(false);
+                                return Poll::Ready(Some(TransportEvent::ConnectionFailure {
+                                    router_id,
+                                }));
+                            }
                         },
-                    ) {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            ?kind,
-                            "unvalidated session already exists",
-                        );
-                        debug_assert!(false);
+                        PendingSsu2SessionStatus::Timeout {
+                            connection_id,
+                            router_id,
+                            started: _,
+                        } => match router_id {
+                            None => {
+                                tracing::debug!(
+                                    target: LOG_TARGET,
+                                    ?connection_id,
+                                    "pending inbound session timed out",
+                                );
+                            }
+                            Some(router_id) => {
+                                tracing::debug!(
+                                    target: LOG_TARGET,
+                                    %router_id,
+                                    ?connection_id,
+                                    "pending outbound session timed out",
+                                );
+                                return Poll::Ready(Some(TransportEvent::ConnectionFailure {
+                                    router_id,
+                                }));
+                            }
+                        },
+                        PendingSsu2SessionStatus::SocketClosed { .. } => return Poll::Ready(None),
                     }
-
-                    return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
-                        direction: Direction::Outbound,
-                        router_id,
-                    }));
                 }
-                Poll::Ready(Some(PendingSsu2SessionStatus::SessionTermianted {
-                    connection_id,
-                    router_id,
-                })) => match router_id {
-                    None => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?connection_id,
-                            "pending inbound session terminated",
-                        );
-                        debug_assert!(false);
-                    }
-                    Some(router_id) => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            ?connection_id,
-                            "pending outbound session terminated",
-                        );
-                        debug_assert!(false);
-                        return Poll::Ready(Some(TransportEvent::ConnectionFailure { router_id }));
-                    }
-                },
-                Poll::Ready(Some(PendingSsu2SessionStatus::Timeout {
-                    connection_id,
-                    router_id,
-                })) => match router_id {
-                    None => {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            ?connection_id,
-                            "pending inbound session timed out",
-                        );
-                    }
-                    Some(router_id) => {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            ?connection_id,
-                            "pending outbound session timed out",
-                        );
-                        return Poll::Ready(Some(TransportEvent::ConnectionFailure { router_id }));
-                    }
-                },
-                Poll::Ready(Some(PendingSsu2SessionStatus::SocketClosed)) =>
-                    return Poll::Ready(None),
             }
         }
 
@@ -744,17 +802,24 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                         this.write_state = WriteState::SendPacket { pkt, target };
                     }
                 },
-                WriteState::SendPacket { pkt, target } =>
-                    match Pin::new(&mut this.socket).poll_send_to(cx, &pkt, target) {
-                        Poll::Ready(Some(_)) => {
-                            this.write_state = WriteState::GetPacket;
-                        }
-                        Poll::Ready(None) => return Poll::Ready(None),
-                        Poll::Pending => {
-                            this.write_state = WriteState::SendPacket { pkt, target };
-                            break;
-                        }
-                    },
+                WriteState::SendPacket { pkt, target } => match Pin::new(&mut this.socket)
+                    .poll_send_to(cx, &pkt, target)
+                {
+                    Poll::Ready(Some(nwritten)) => {
+                        this.router_ctx
+                            .metrics_handle()
+                            .counter(OUTBOUND_BANDWIDTH)
+                            .increment(nwritten);
+                        this.router_ctx.metrics_handle().counter(OUTBOUND_PKT_COUNT).increment(1);
+
+                        this.write_state = WriteState::GetPacket;
+                    }
+                    Poll::Ready(None) => return Poll::Ready(None),
+                    Poll::Pending => {
+                        this.write_state = WriteState::SendPacket { pkt, target };
+                        break;
+                    }
+                },
                 WriteState::Poisoned => unreachable!(),
             }
         }

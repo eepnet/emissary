@@ -17,7 +17,9 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    primitives::RouterId, runtime::Runtime, transport::ssu2::session::active::Ssu2SessionContext,
+    primitives::RouterId,
+    runtime::{Instant, Runtime},
+    transport::ssu2::session::active::Ssu2SessionContext,
 };
 
 use bytes::BytesMut;
@@ -36,7 +38,7 @@ pub mod inbound;
 pub mod outbound;
 
 /// Status returned by [`PendingSession`] to [`Ssu2Socket`].
-pub enum PendingSsu2SessionStatus {
+pub enum PendingSsu2SessionStatus<R: Runtime> {
     /// New session has been opened.
     ///
     /// Session info is forwaded to [`Ssu2Socket`] and to [`TransportManager`] for validation and
@@ -45,14 +47,17 @@ pub enum PendingSsu2SessionStatus {
         /// Context for the active session.
         context: Ssu2SessionContext,
 
+        /// Destination connection ID.
+        dst_id: u64,
+
         /// ACK for `SessionConfirmed`.
         pkt: BytesMut,
 
+        /// When was the handshake started.
+        started: R::Instant,
+
         /// Socket address of the remote router.
         target: SocketAddr,
-
-        /// Destination connection ID.
-        dst_id: u64,
     },
 
     /// New outbound session.
@@ -62,6 +67,9 @@ pub enum PendingSsu2SessionStatus {
 
         /// Source connection ID.
         src_id: u64,
+
+        /// When was the handshake started.
+        started: R::Instant,
     },
 
     /// Pending session terminated due to fatal error, e.g., decryption error.
@@ -76,6 +84,9 @@ pub enum PendingSsu2SessionStatus {
         ///
         /// `None` if the session was inbound.
         router_id: Option<RouterId>,
+
+        /// When was the handshake started.
+        started: R::Instant,
     },
 
     /// Pending session terminated due to timeout.
@@ -90,10 +101,29 @@ pub enum PendingSsu2SessionStatus {
         ///
         /// `None` if the session was inbound.
         router_id: Option<RouterId>,
+
+        /// When was the handshake started.
+        started: R::Instant,
     },
 
     /// [`SSu2Socket`] has been closed.
-    SocketClosed,
+    SocketClosed {
+        /// When was the handshake started.
+        started: R::Instant,
+    },
+}
+
+impl<R: Runtime> PendingSsu2SessionStatus<R> {
+    /// Return duration of the handshake in milliseconds.
+    pub fn duration(&self) -> f64 {
+        match self {
+            Self::NewInboundSession { started, .. } => started.elapsed().as_millis() as f64,
+            Self::NewOutboundSession { started, .. } => started.elapsed().as_millis() as f64,
+            Self::SessionTermianted { started, .. } => started.elapsed().as_millis() as f64,
+            Self::Timeout { started, .. } => started.elapsed().as_millis() as f64,
+            Self::SocketClosed { started, .. } => started.elapsed().as_millis() as f64,
+        }
+    }
 }
 
 /// Events emitted by [`PacketRetransmitter`].

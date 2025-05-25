@@ -172,6 +172,9 @@ pub struct InboundSsu2Session<R: Runtime> {
     /// Source connection ID.
     src_id: u64,
 
+    /// When was the handshake started.
+    started: R::Instant,
+
     /// Pending session state.
     state: PendingSessionState,
 
@@ -260,6 +263,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             pkt_tx,
             rx: Some(rx),
             src_id,
+            started: R::now(),
             state: PendingSessionState::AwaitingSessionRequest { token },
             static_key,
         })
@@ -277,7 +281,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         &mut self,
         mut pkt: Vec<u8>,
         token: u64,
-    ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         let (ephemeral_key, pkt_num, recv_token) =
             match HeaderReader::new(self.intro_key, &mut pkt)?.parse(self.intro_key)? {
                 HeaderKind::SessionRequest {
@@ -478,7 +482,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         ephemeral_key: EphemeralPrivateKey,
         k_header_2: [u8; 32],
         k_session_created: [u8; 32],
-    ) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2) {
             Ok(HeaderKind::SessionConfirmed { pkt_num }) =>
                 if pkt_num != 0 {
@@ -611,9 +615,10 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 router_id: router_info.identity.id(),
                 pkt_rx: self.rx.take().expect("to exist"),
             },
-            pkt,
-            target: self.address,
             dst_id: self.dst_id,
+            pkt,
+            started: self.started,
+            target: self.address,
         }))
     }
 
@@ -621,7 +626,10 @@ impl<R: Runtime> InboundSsu2Session<R> {
     ///
     /// `pkt` contains the full header but the first part of the header has been decrypted by the
     /// `Ssu2Socket`, meaning only the second part of the header must be decrypted by us.
-    fn on_packet(&mut self, pkt: Vec<u8>) -> Result<Option<PendingSsu2SessionStatus>, Ssu2Error> {
+    fn on_packet(
+        &mut self,
+        pkt: Vec<u8>,
+    ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         match mem::replace(&mut self.state, PendingSessionState::Poisoned) {
             PendingSessionState::AwaitingSessionRequest { token } =>
                 self.on_session_request(pkt, token),
@@ -640,6 +648,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 debug_assert!(false);
                 Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
                     connection_id: self.dst_id,
+                    started: self.started,
                     router_id: None,
                 }))
             }
@@ -648,16 +657,21 @@ impl<R: Runtime> InboundSsu2Session<R> {
 }
 
 impl<R: Runtime> Future for InboundSsu2Session<R> {
-    type Output = PendingSsu2SessionStatus;
+    type Output = PendingSsu2SessionStatus<R>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             let pkt = match &mut self.rx {
-                None => return Poll::Ready(PendingSsu2SessionStatus::SocketClosed),
+                None =>
+                    return Poll::Ready(PendingSsu2SessionStatus::SocketClosed {
+                        started: self.started,
+                    }),
                 Some(rx) => match rx.poll_recv(cx) {
                     Poll::Pending => break,
                     Poll::Ready(None) =>
-                        return Poll::Ready(PendingSsu2SessionStatus::SocketClosed),
+                        return Poll::Ready(PendingSsu2SessionStatus::SocketClosed {
+                            started: self.started,
+                        }),
                     Poll::Ready(Some(Packet { pkt, .. })) => pkt,
                 },
             };
@@ -677,6 +691,7 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
                     return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
                         connection_id: self.dst_id,
                         router_id: None,
+                        started: self.started,
                     });
                 }
             }
@@ -710,6 +725,7 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
             PacketRetransmitterEvent::Timeout => Poll::Ready(PendingSsu2SessionStatus::Timeout {
                 connection_id: self.dst_id,
                 router_id: None,
+                started: self.started,
             }),
         }
     }
