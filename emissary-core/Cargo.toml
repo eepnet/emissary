@@ -17,7 +17,7 @@ cbc = { version = "0.1.2", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.10.1", default-features = false, features = ["alloc"] }
 chacha20 = { version = "0.9.1", default-features = false, features = ["zeroize"] }
 curve25519-elligator2 = { version = "0.1.0-alpha.2", default-features = false, features = ["elligator2", "alloc"] }
-data-encoding = { version = "2.8.0", default-features = false, features = ["alloc"] }
+data-encoding = { version = "2.9.0", default-features = false, features = ["alloc"] }
 ecb = { version = "0.1.2", default-features = false, features = ["alloc"] }
 ethbloom = { version = "0.14.1", default-features = false }
 futures-channel = { version = "0.3.31", default-features = false, features = ["alloc"] }
