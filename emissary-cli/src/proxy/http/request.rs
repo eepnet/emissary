@@ -349,7 +349,7 @@ mod tests {
                 DEppOy9AAmEoHDjjJxt2BFBbGxfdpZCpENkwvmZeYUyNCCzASqTOOlNzdpne8cuesn3NDXIpNnqEE6Oe5Qm5YOJykrX~Vx~cFFT3QzDGkIjj\
                 xlFBsjUJyYkFjBQAEAAcAAA==".to_string();
 
-        let dir = tempdir().unwrap().into_path();
+        let dir = tempdir().unwrap().keep();
         tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
         tokio::fs::write(dir.join("addressbook/addresses"), hosts).await.unwrap();
 

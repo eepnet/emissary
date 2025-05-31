@@ -346,7 +346,7 @@ mod tests {
     async fn save_only_destination() {
         let dir = tempdir().unwrap();
         let address_book = AddressBookManager::new(
-            dir.into_path(),
+            dir.keep(),
             AddressBookConfig {
                 default: Some(String::from("url")),
                 subscriptions: None,
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn b32_cache_hit() {
-        let dir = tempdir().unwrap().into_path();
+        let dir = tempdir().unwrap().keep();
         tokio::fs::create_dir_all(&dir.join("addressbook")).await.unwrap();
 
         let address_book = AddressBookManager::new(
