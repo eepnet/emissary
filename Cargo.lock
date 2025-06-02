@@ -1549,7 +1549,7 @@ dependencies = [
  "iced",
  "igd-next",
  "natpmp",
- "netdev 0.35.0",
+ "netdev 0.35.1",
  "parking_lot 0.12.3",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -3322,9 +3322,9 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "0.35.0"
+version = "0.35.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb465b2a61a12a97fc442080294bc074ae7ec9d9780650fc8f5fc00b6d37a416"
+checksum = "a69d2ab530aff3b82e726601d1a8d7a9e0f085defb84a6813af3b863956fd90f"
 dependencies = [
  "dlopen2",
  "ipnet",
