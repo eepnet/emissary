@@ -823,12 +823,12 @@ mod tests {
 
     #[test]
     fn reject_invalid_tunnel_lengths() {
-        let test_cases= [("0", "5"), ("5", "9"), ("8", "5"), ("5", "9"),("abc","5"),("5","abc"),("0","0"),("8","9"),("abc","def")];
+        let test_cases= [("0", "5"), ("5", "0"), ("8", "5"), ("5", "9"),("abc","5"),("5","abc"),("0","0"),("8","9"),("abc","def")];
         for (invalid_in_len,invalid_out_len) in test_cases {
             let invalid_cmd = ParsedCommand::<MockRuntime> {
                 command: "SESSION",
                 subcommand: Some("CREATE"),
-                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len),("outbound.length", invalid_out_len),]),
+                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len),("outbound.length", invalid_out_len)]),
                 _runtime: Default::default(),
                 };
             match SamCommand::try_from(invalid_cmd) {
