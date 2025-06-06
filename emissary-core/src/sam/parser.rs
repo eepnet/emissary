@@ -319,6 +319,21 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     .and_then(|value| SamVersion::try_from(*value).ok()),
             }),
             ("SESSION", Some("CREATE")) => {
+                // check if the inbound and outbound tunnel lengths are valid
+                if let (Some(inbound_len), Some(outbound_len)) = (
+                    value.key_value_pairs.get("inbound.length"),
+                    value.key_value_pairs.get("outbound.length"))
+                {
+                    match (inbound_len.parse::<u8>(), outbound_len.parse::<u8>()) {
+                        (Ok(inbound_len), Ok(outbound_len)) => {
+                            if inbound_len == 0 || inbound_len > 7 || outbound_len == 0 || outbound_len > 8 {
+                            return Err(());
+                            }
+                        }
+                        _ => return Err(()),
+                    }
+                }
+
                 let session_id = value
                     .key_value_pairs
                     .remove("ID")
@@ -804,6 +819,23 @@ mod tests {
             "SESSION CREATE STYLE=DATAGRAM DESTINATION=TRANSIENT i2cp.leaseSetEncType=4,0",
         )
         .is_none());
+    }
+
+    #[test]
+    fn reject_invalid_tunnel_lengths() {
+        let test_cases= [("0", "5"), ("5", "9"), ("8", "5"), ("5", "9"),("abc","5"),("5","abc"),("0","0"),("8","9"),("abc","def")];
+        for (invalid_in_len,invalid_out_len) in test_cases {
+            let invalid_cmd = ParsedCommand::<MockRuntime> {
+                command: "SESSION",
+                subcommand: Some("CREATE"),
+                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len),("outbound.length", invalid_out_len),]),
+                _runtime: Default::default(),
+                };
+            match SamCommand::try_from(invalid_cmd) {
+                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_in_len, invalid_out_len)),
+                Err(_e) => println!("Successfully rejected invalid tunnels lengths {:?}", (invalid_in_len, invalid_out_len))
+            }
+        } 
     }
 
     #[test]
