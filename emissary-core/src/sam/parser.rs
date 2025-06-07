@@ -320,24 +320,32 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
             }),
             ("SESSION", Some("CREATE")) => {
                 // checks if the inbound tunnel length is valid
-                if let Some(inbound_len) = value.key_value_pairs.get("inbound.length"){
+                if let Some(inbound_len) = value.key_value_pairs.get("inbound.length") {
                     match inbound_len.parse::<u8>() {
-                        Ok(inbound_len) => {
+                        Ok(inbound_len) =>
                             if inbound_len == 0 || inbound_len > 7 {
-                            return Err(());
-                            }
-                        }
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?inbound_len,
+                                    "invalid inbound tunnel length, 0-hop is not supported and 7 is the maximum length"
+                                );
+                                return Err(());
+                            },
                         _ => return Err(()),
                     }
                 }
                 // checks if the outbound tunnel length is valid
-                if let Some(outbound_len) = value.key_value_pairs.get("outbound.length"){
+                if let Some(outbound_len) = value.key_value_pairs.get("outbound.length") {
                     match outbound_len.parse::<u8>() {
-                        Ok(outbound_len) => {
+                        Ok(outbound_len) =>
                             if outbound_len == 0 || outbound_len > 8 {
-                            return Err(());
-                            }
-                        }
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?outbound_len,
+                                    "invalid outbound tunnel length, 0-hop is not supported and 8 is the maximum length"
+                                );
+                                return Err(());
+                            },
                         _ => return Err(()),
                     }
                 }
@@ -831,38 +839,54 @@ mod tests {
 
     #[test]
     fn reject_invalid_inbound_tunnel_length() {
-        let test_cases= [("0"), ("8"),("abc"),("-1"),("1.1")];
+        let test_cases = [("0"), ("8"), ("abc"), ("-1"), ("1.1")];
         for invalid_in_len in test_cases {
             let invalid_cmd = ParsedCommand::<MockRuntime> {
                 command: "SESSION",
                 subcommand: Some("CREATE"),
-                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len)]),
+                key_value_pairs: HashMap::from([
+                    ("STYLE", "STREAM"),
+                    ("ID", "test"),
+                    ("DESTINATION", "TRANSIENT"),
+                    ("inbound.length", invalid_in_len),
+                ]),
                 _runtime: Default::default(),
-                };
+            };
 
             match SamCommand::try_from(invalid_cmd) {
-                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_in_len)),
+                Ok(_) => panic!(
+                    "Failed to reject the invalid tunnel lengths {:?}",
+                    (invalid_in_len)
+                ),
                 Err(_) => {}
             }
-        } 
+        }
     }
 
     #[test]
     fn reject_invalid_outbound_tunnel_length() {
-        let test_cases= [("0"), ("9"),("abc"),("-1"),("1.1")];
+        let test_cases = [("0"), ("9"), ("abc"), ("-1"), ("1.1")];
         for invalid_out_len in test_cases {
             let invalid_cmd = ParsedCommand::<MockRuntime> {
                 command: "SESSION",
                 subcommand: Some("CREATE"),
-                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("outbound.length", invalid_out_len)]),
+                key_value_pairs: HashMap::from([
+                    ("STYLE", "STREAM"),
+                    ("ID", "test"),
+                    ("DESTINATION", "TRANSIENT"),
+                    ("outbound.length", invalid_out_len),
+                ]),
                 _runtime: Default::default(),
-                };
+            };
 
             match SamCommand::try_from(invalid_cmd) {
-                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_out_len)),
+                Ok(_) => panic!(
+                    "Failed to reject the invalid tunnel lengths {:?}",
+                    (invalid_out_len)
+                ),
                 Err(_) => {}
             }
-        } 
+        }
     }
 
     #[test]
