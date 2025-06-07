@@ -855,7 +855,7 @@ mod tests {
 
             match SamCommand::try_from(invalid_cmd) {
                 Ok(_) => panic!(
-                    "Failed to reject the invalid tunnel lengths {:?}",
+                    "Failed to reject the invalid inbound tunnel length {:?}",
                     (invalid_in_len)
                 ),
                 Err(_) => {}
@@ -881,7 +881,7 @@ mod tests {
 
             match SamCommand::try_from(invalid_cmd) {
                 Ok(_) => panic!(
-                    "Failed to reject the invalid tunnel lengths {:?}",
+                    "Failed to reject the invalid outbound tunnel length {:?}",
                     (invalid_out_len)
                 ),
                 Err(_) => {}
