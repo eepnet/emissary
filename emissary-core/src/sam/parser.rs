@@ -319,14 +319,22 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     .and_then(|value| SamVersion::try_from(*value).ok()),
             }),
             ("SESSION", Some("CREATE")) => {
-                // check if the inbound and outbound tunnel lengths are valid
-                if let (Some(inbound_len), Some(outbound_len)) = (
-                    value.key_value_pairs.get("inbound.length"),
-                    value.key_value_pairs.get("outbound.length"))
-                {
-                    match (inbound_len.parse::<u8>(), outbound_len.parse::<u8>()) {
-                        (Ok(inbound_len), Ok(outbound_len)) => {
-                            if inbound_len == 0 || inbound_len > 7 || outbound_len == 0 || outbound_len > 8 {
+                // checks if the inbound tunnel length is valid
+                if let Some(inbound_len) = value.key_value_pairs.get("inbound.length"){
+                    match inbound_len.parse::<u8>() {
+                        Ok(inbound_len) => {
+                            if inbound_len == 0 || inbound_len > 7 {
+                            return Err(());
+                            }
+                        }
+                        _ => return Err(()),
+                    }
+                }
+                // checks if the outbound tunnel length is valid
+                if let Some(outbound_len) = value.key_value_pairs.get("outbound.length"){
+                    match outbound_len.parse::<u8>() {
+                        Ok(outbound_len) => {
+                            if outbound_len == 0 || outbound_len > 8 {
                             return Err(());
                             }
                         }
@@ -822,18 +830,37 @@ mod tests {
     }
 
     #[test]
-    fn reject_invalid_tunnel_lengths() {
-        let test_cases= [("0", "5"), ("5", "0"), ("8", "5"), ("5", "9"),("abc","5"),("5","abc"),("0","0"),("8","9"),("abc","def")];
-        for (invalid_in_len,invalid_out_len) in test_cases {
+    fn reject_invalid_inbound_tunnel_length() {
+        let test_cases= [("0"), ("8"),("abc"),("-1"),("1.1")];
+        for invalid_in_len in test_cases {
             let invalid_cmd = ParsedCommand::<MockRuntime> {
                 command: "SESSION",
                 subcommand: Some("CREATE"),
-                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len),("outbound.length", invalid_out_len)]),
+                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("inbound.length", invalid_in_len)]),
                 _runtime: Default::default(),
                 };
+
             match SamCommand::try_from(invalid_cmd) {
-                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_in_len, invalid_out_len)),
-                Err(_e) => println!("Successfully rejected invalid tunnels lengths {:?}", (invalid_in_len, invalid_out_len))
+                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_in_len)),
+                Err(_) => {}
+            }
+        } 
+    }
+
+    #[test]
+    fn reject_invalid_outbound_tunnel_length() {
+        let test_cases= [("0"), ("9"),("abc"),("-1"),("1.1")];
+        for invalid_out_len in test_cases {
+            let invalid_cmd = ParsedCommand::<MockRuntime> {
+                command: "SESSION",
+                subcommand: Some("CREATE"),
+                key_value_pairs: HashMap::from([("STYLE", "STREAM"),("ID", "test"),("DESTINATION", "TRANSIENT"),("outbound.length", invalid_out_len)]),
+                _runtime: Default::default(),
+                };
+
+            match SamCommand::try_from(invalid_cmd) {
+                Ok(_) => panic!("Failed to reject the invalid tunnel lengths {:?}", (invalid_out_len)),
+                Err(_) => {}
             }
         } 
     }
