@@ -484,17 +484,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         k_session_created: [u8; 32],
     ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
         match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2) {
-            Ok(HeaderKind::SessionConfirmed { pkt_num }) =>
-                if pkt_num != 0 {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        dst_id = ?self.dst_id,
-                        src_id = ?self.src_id,
-                        ?pkt_num,
-                        "`SessionConfirmed` contains non-zero packet number",
-                    );
-                    return Err(Ssu2Error::Malformed);
-                },
+            Ok(HeaderKind::SessionConfirmed { .. }) => {}
             kind => {
                 tracing::debug!(
                     target: LOG_TARGET,

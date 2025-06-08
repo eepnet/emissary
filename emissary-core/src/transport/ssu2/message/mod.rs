@@ -1181,9 +1181,23 @@ impl<'a> HeaderReader<'a> {
                     pkt_num,
                 })
             }
-            MessageType::SessionConfirmed => Ok(HeaderKind::SessionConfirmed {
-                pkt_num: u32::from_be(header as u32),
-            }),
+            MessageType::SessionConfirmed => {
+                let pkt_num = u32::from_be(header as u32);
+
+                // the packet number of `SessionConfirmed` must be zero
+                //
+                // having non-zero packet number doesn't necessarily mean there's a bug in the code
+                // but could also mean that a duplicate `SessionCreated` message was received, and
+                // after header decryption the `type` field happened to contain 2, which is the
+                // message number for `SessionConfirmed`
+                //
+                // these messages should be ignored
+                if pkt_num != 0 {
+                    return Err(Ssu2Error::Malformed);
+                }
+
+                Ok(HeaderKind::SessionConfirmed { pkt_num })
+            }
             MessageType::Data => Ok(HeaderKind::Data {
                 immediate_ack: ((header >> 40) & 0x01) == 0x01,
                 pkt_num: u32::from_be(header as u32),
