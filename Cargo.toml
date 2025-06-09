@@ -22,7 +22,7 @@ default-members = ["emissary-cli"]
 [workspace.dependencies]
 anyhow = "1.0.98"
 ed25519-dalek = { version = "2.1.1", default-features = false }
-flate2 = "1.1.1"
+flate2 = "1.1.2"
 futures = "0.3.31"
 nom = { version = "7.1.3", default-features = false }
 parking_lot = "0.12.4"

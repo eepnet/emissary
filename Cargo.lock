@@ -1794,9 +1794,9 @@ dependencies = [
 
 [[package]]
 name = "flate2"
-version = "1.1.1"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ced92e76e966ca2fd84c8f7aa01a4aea65b0eb6648d72f7c8f3e2764a67fece"
+checksum = "4a3d7db9596fecd151c5f638c0ee5d5bd487b6e0ea232e5dc96d5250f6f94b1d"
 dependencies = [
  "crc32fast",
  "libz-sys",
@@ -6126,7 +6126,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "raw-window-handle",
  "smallvec",
@@ -6154,7 +6154,7 @@ dependencies = [
  "log",
  "naga",
  "once_cell",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",
@@ -6196,7 +6196,7 @@ dependencies = [
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
  "once_cell",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "range-alloc",
  "raw-window-handle",
