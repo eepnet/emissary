@@ -1549,7 +1549,7 @@ dependencies = [
  "iced",
  "igd-next",
  "natpmp",
- "netdev 0.35.1",
+ "netdev 0.35.2",
  "parking_lot 0.12.4",
  "rand 0.8.5",
  "rand_core 0.6.4",
@@ -3337,9 +3337,9 @@ dependencies = [
 
 [[package]]
 name = "netdev"
-version = "0.35.1"
+version = "0.35.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a69d2ab530aff3b82e726601d1a8d7a9e0f085defb84a6813af3b863956fd90f"
+checksum = "e81788709c948af7c0422e0bec0fd96c7bbbc1c53ac458e4c0a1bb2f05cf273e"
 dependencies = [
  "dlopen2",
  "ipnet",
@@ -6126,7 +6126,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "raw-window-handle",
  "smallvec",
@@ -6154,7 +6154,7 @@ dependencies = [
  "log",
  "naga",
  "once_cell",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "raw-window-handle",
  "rustc-hash 1.1.0",
@@ -6196,7 +6196,7 @@ dependencies = [
  "ndk-sys 0.5.0+25.2.9519653",
  "objc",
  "once_cell",
- "parking_lot 0.11.2",
+ "parking_lot 0.12.4",
  "profiling",
  "range-alloc",
  "raw-window-handle",
