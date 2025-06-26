@@ -67,7 +67,7 @@ pub fn rectify(bi: &BigUint, len: usize) -> Vec<u8> {
     let mut b = bi.to_bytes_be();
     match b.len() {
         sz if sz == len => b,
-        sz if sz > len => panic!("key too big ({}) max is {}", sz, len),
+        sz if sz > len => panic!("key too big ({sz}) max is {len}"),
         0 => {
             vec![0u8; len]
         }

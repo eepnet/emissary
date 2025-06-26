@@ -97,6 +97,7 @@ const ES_RECEIVE_TAGSET_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
 /// Interval to respond to ACK and NextKey requests if no other traffic is transmitted
+//
 // TODO: NS and NSR messages should have a "HIGH_PRIORITY_RESPONSE_INTERVAL" with a shorter
 // interval to respond within. ref: https://geti2p.net/spec/ecies#protocol-layer-responses
 // note that NS and NSR cannot share a message with ACK and NextKey responses.
@@ -702,7 +703,7 @@ impl<R: Runtime> SessionManager<R> {
                         "`DateTime` missing from `NewSession`",
                     );
 
-                    return Err(SessionError::Malformed);
+                    return Err(SessionError::Timestamp);
                 };
 
                 let now = R::time_since_epoch();
@@ -717,7 +718,7 @@ impl<R: Runtime> SessionManager<R> {
                         ?timestamp,
                         "`DateTime` outside of allowed range",
                     );
-                    return Err(SessionError::Malformed);
+                    return Err(SessionError::Timestamp);
                 }
 
                 // locate `DatabaseStore` i2np message from the clove set
@@ -3981,7 +3982,7 @@ mod tests {
         };
 
         match session.decrypt(message) {
-            Err(SessionError::Malformed) => {}
+            Err(SessionError::Timestamp) => {}
             Err(error) => panic!("unexpected error: {error:?}"),
             Ok(_) => panic!("unexpected success"),
         }
@@ -4009,7 +4010,7 @@ mod tests {
         };
 
         match session.decrypt(message) {
-            Err(SessionError::Malformed) => {}
+            Err(SessionError::Timestamp) => {}
             Err(error) => panic!("unexpected error: {error:?}"),
             Ok(_) => panic!("unexpected success"),
         }
@@ -4040,7 +4041,7 @@ mod tests {
         };
 
         match session.decrypt(message) {
-            Err(SessionError::Malformed) => {}
+            Err(SessionError::Timestamp) => {}
             Err(error) => panic!("unexpected error: {error:?}"),
             Ok(_) => panic!("unexpected success"),
         }

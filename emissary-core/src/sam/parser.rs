@@ -289,7 +289,7 @@ impl Default for SamCommand {
 impl fmt::Display for SamCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Hello { min, max } => write!(f, "SamCommand::Hello({:?}, {:?})", min, max),
+            Self::Hello { min, max } => write!(f, "SamCommand::Hello({min:?}, {max:?})"),
             Self::CreateSession { session_id, .. } =>
                 write!(f, "SamCommand::CreateSession({session_id})"),
             Self::Connect { session_id, .. } =>
