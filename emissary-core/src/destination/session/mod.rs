@@ -103,13 +103,12 @@ const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(2 * 60);
 // ref: https://geti2p.net/spec/ecies#ack
 const LOW_PRIORITY_RESPONSE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Number of seconds in the past that is allowable for a `DateTime` block
-/// for a new session message
-const NEW_SESSION_MAX_AGE: Duration = Duration::from_secs(5 * 60);
+/// Number of seconds in the past that is allowable for a `DateTime` block for a new session message
+const NS_MAX_AGE: Duration = Duration::from_secs(5 * 60);
 
-/// Number of seconds in the future that is allowable for a `DateTime` block
-/// for a new session_message
-const NEW_SESSION_FUTURE_LIMIT: Duration = Duration::from_secs(2 * 60);
+/// Number of seconds in the future that is allowable for a `DateTime` block for a new
+/// session_message
+const NS_FUTURE_LIMIT: Duration = Duration::from_secs(2 * 60);
 
 /// Active session with remote destination.
 struct ActiveSession<R: Runtime> {
@@ -682,6 +681,7 @@ impl<R: Runtime> SessionManager<R> {
                 let clove_set = GarlicMessage::parse(&payload).ok_or_else(|| {
                     tracing::warn!(
                         target: LOG_TARGET,
+                        local = %self.destination_id,
                         id = %self.destination_id,
                         "failed to parse NS payload into a clove set",
                     );
@@ -689,81 +689,35 @@ impl<R: Runtime> SessionManager<R> {
                     SessionError::Malformed
                 })?;
 
-                // locate `DateTime` message from the clove set
-                let date_time_blocks: Box<[_]> = clove_set
+                // validate `DateTime` block
+                let Some(GarlicMessageBlock::DateTime { timestamp }) = clove_set
                     .blocks
                     .iter()
-                    .filter(|clove| core::matches!(clove, GarlicMessageBlock::DateTime { .. }))
-                    .collect();
-
-                if date_time_blocks.len() > 1 {
-                    // Only one DateTime block is allowed
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        id = %self.destination_id,
-                        "clove set contains multiple `DateTime` blocks",
-                    );
-
-                    return Err(SessionError::Malformed);
-                }
-
-                let Some(GarlicMessageBlock::DateTime { timestamp }) =
-                    date_time_blocks.into_iter().next()
+                    .find(|clove| core::matches!(clove, GarlicMessageBlock::DateTime { .. }))
                 else {
                     tracing::warn!(
                         target: LOG_TARGET,
+                        local = %self.destination_id,
                         id = %self.destination_id,
-                        "clove set doesn't contain `DateTime`",
+                        "`DateTime` missing from `NewSession`",
                     );
 
                     return Err(SessionError::Malformed);
                 };
 
                 let now = R::time_since_epoch();
-                let past = now.saturating_sub(NEW_SESSION_MAX_AGE);
-                let future = now.saturating_add(NEW_SESSION_FUTURE_LIMIT);
+                let timestamp = Duration::from_secs(*timestamp as u64);
 
-                // The spec states that the timestamp will
-                // wrap for the year 2106 problem (u32 rollover)
-                let rollover = u32::MAX as u64;
-                let datetime_timestamp = Duration::from_secs(*timestamp as u64);
-                let wrapped_past = Duration::new(past.as_secs() % rollover, past.subsec_nanos());
-                let wrapped_future =
-                    Duration::new(future.as_secs() % rollover, future.subsec_nanos());
-
-                if wrapped_future < wrapped_past {
-                    // We are on the boundary of the 32bit timestamp epoch
-
-                    // TODO: This case will only ever happen for several minutes once
-                    // every 136 years or so and only when creating new sessions.
-                    // Should we care about it?
-
-                    if datetime_timestamp < wrapped_past && datetime_timestamp > wrapped_future {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            id = %self.destination_id,
-                            "`DateTime` is out of bounds for epoch shift",
-                        );
-                        return Err(SessionError::Timestamp);
-                    }
-                } else {
-                    if datetime_timestamp < wrapped_past {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            id = %self.destination_id,
-                            "`DateTime` is less than maximum age skew",
-                        );
-                        return Err(SessionError::Timestamp);
-                    }
-
-                    if datetime_timestamp > wrapped_future {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            id = %self.destination_id,
-                            "`DateTime` is greater than future skew",
-                        );
-                        return Err(SessionError::Timestamp);
-                    }
+                if now - NS_MAX_AGE > timestamp || now + NS_FUTURE_LIMIT < timestamp {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        local = %self.destination_id,
+                        id = %self.destination_id,
+                        ?now,
+                        ?timestamp,
+                        "`DateTime` outside of allowed range",
+                    );
+                    return Err(SessionError::Malformed);
                 }
 
                 // locate `DatabaseStore` i2np message from the clove set
@@ -1153,11 +1107,14 @@ impl<R: Runtime> Stream for SessionManager<R> {
 mod tests {
     use super::*;
     use crate::{
+        crypto::{chachapoly::ChaChaPoly, hmac::Hmac, sha256::Sha256},
         primitives::{Lease, LeaseSet2, LeaseSet2Header, RouterId, TunnelId},
         runtime::mock::MockRuntime,
     };
     use core::time::Duration;
+    use curve25519_elligator2::{MapToPointVariant, Randomized};
     use rand::thread_rng;
+    use zeroize::Zeroize;
 
     const TEST_THRESHOLD: u16 = 10;
 
@@ -3135,7 +3092,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_ack_response() {
+    async fn explicit_ack_response() {
         // create inbound `SessionManager`
         let inbound_private_key = StaticPrivateKey::random(thread_rng());
         let inbound_public_key = inbound_private_key.public();
@@ -3292,7 +3249,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_ack_response_canceled() {
+    async fn explicit_ack_response_canceled() {
         // create inbound `SessionManager`
         let inbound_private_key = StaticPrivateKey::random(thread_rng());
         let inbound_public_key = inbound_private_key.public();
@@ -3428,7 +3385,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_next_key_response() {
+    async fn explicit_next_key_response() {
         // create inbound `SessionManager`
         let inbound_private_key = StaticPrivateKey::random(thread_rng());
         let inbound_public_key = inbound_private_key.public();
@@ -3557,7 +3514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_next_key_response_canceled() {
+    async fn explicit_next_key_response_canceled() {
         // create inbound `SessionManager`
         let inbound_private_key = StaticPrivateKey::random(thread_rng());
         let inbound_public_key = inbound_private_key.public();
@@ -3665,7 +3622,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_explicit_ack_and_next_key_response() {
+    async fn explicit_ack_and_next_key_response() {
         // create inbound `SessionManager`
         let inbound_private_key = StaticPrivateKey::random(thread_rng());
         let inbound_public_key = inbound_private_key.public();
@@ -3846,8 +3803,168 @@ mod tests {
         .is_some());
     }
 
+    /// Create outbound session with custom `DateTime` block.
+    pub fn create_outbound_session(
+        remote: DestinationId,
+        remote_public_key: &StaticPublicKey,
+        date_time: Option<u32>,
+    ) -> Vec<u8> {
+        let local = DestinationId::random();
+        let local_private_key = StaticPrivateKey::random(MockRuntime::rng());
+        let local_chaining_key = Sha256::new()
+            .update("Noise_IKelg2+hs2_25519_ChaChaPoly_SHA256".as_bytes())
+            .finalize();
+        let local_public_key = local_private_key.public();
+        let local_outbound_state = Sha256::new().update(&local_chaining_key).finalize();
+
+        let (lease_set, signing_key) = LeaseSet2::random();
+        let lease_set = Bytes::from(lease_set.serialize(&signing_key));
+        let payload = &[1, 3, 3, 7];
+
+        let database_store = DatabaseStoreBuilder::new(
+            Bytes::from(local.to_vec()),
+            DatabaseStoreKind::LeaseSet2 {
+                lease_set: lease_set.clone(),
+            },
+        )
+        .build();
+
+        let hash = remote.to_vec();
+        let payload = match date_time {
+            None => GarlicMessageBuilder::default(),
+            Some(datetime) => GarlicMessageBuilder::default().with_date_time(datetime),
+        }
+        .with_garlic_clove(
+            MessageType::DatabaseStore,
+            MessageId::from(MockRuntime::rng().next_u32()),
+            MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            GarlicDeliveryInstructions::Local,
+            &database_store,
+        )
+        .with_garlic_clove(
+            MessageType::Data,
+            MessageId::from(MockRuntime::rng().next_u32()),
+            MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            GarlicDeliveryInstructions::Destination { hash: &hash },
+            &{
+                let mut out = BytesMut::with_capacity(payload.len() + 4);
+
+                out.put_u32(payload.len() as u32);
+                out.put_slice(payload);
+
+                out.freeze().to_vec()
+            },
+        )
+        .build();
+
+        // generate new elligator2-encodable ephemeral keypair
+        let (private_key, public_key, representative) = {
+            let (private_key, tweak) = KeyContext::<MockRuntime>::generate_ephemeral_keypair();
+            // conversion is expected to succeed since the key was generated by us
+            let sk = StaticPrivateKey::from_bytes(&private_key).expect("to succeed");
+            let public_key =
+                StaticPublicKey::from(Randomized::mul_base_clamped(private_key).to_montgomery().0);
+
+            // elligator2 conversion must succeed because `Self::generate_ephemeral_keypair()`
+            // has ensured that the public key is encodable
+            let representative =
+                Randomized::to_representative(&private_key, tweak).expect("to succeed");
+
+            (sk, public_key, representative)
+        };
+
+        let state = {
+            let state = Sha256::new()
+                .update(&local_outbound_state)
+                .update::<&[u8]>(remote_public_key.as_ref())
+                .finalize();
+
+            Sha256::new().update(&state).update(&public_key).finalize()
+        };
+
+        // derive keys for encrypting initiator's static key
+        let (chaining_key, static_key_ciphertext) = {
+            let mut shared = private_key.diffie_hellman(remote_public_key);
+            let mut temp_key = Hmac::new(&local_chaining_key).update(&shared).finalize();
+            let chaining_key = Hmac::new(&temp_key).update(b"").update([0x01]).finalize();
+            let mut cipher_key =
+                Hmac::new(&temp_key).update(&chaining_key).update(b"").update([0x02]).finalize();
+
+            // encrypt initiator's static public key
+            //
+            // `encrypt_with_ad()` must succeed as it's called with valid parameters
+            let mut static_key = {
+                let mut out = BytesMut::with_capacity(32 + 16);
+                out.put_slice(local_public_key.as_ref());
+
+                out.freeze().to_vec()
+            };
+
+            ChaChaPoly::with_nonce(&cipher_key, 0u64)
+                .encrypt_with_ad_new(&state, &mut static_key)
+                .expect("to succeed");
+
+            shared.zeroize();
+            temp_key.zeroize();
+            cipher_key.zeroize();
+
+            (chaining_key, static_key)
+        };
+
+        // state for payload section
+        let state = Sha256::new().update(&state).update(&static_key_ciphertext).finalize();
+
+        // encrypt payload section
+        let (_, payload_ciphertext) = {
+            let mut shared = local_private_key.diffie_hellman(remote_public_key);
+            let mut temp_key = Hmac::new(&chaining_key).update(&shared).finalize();
+            let chaining_key = Hmac::new(&temp_key).update(b"").update([0x01]).finalize();
+            let mut cipher_key =
+                Hmac::new(&temp_key).update(&chaining_key).update(b"").update([0x02]).finalize();
+
+            // create buffer with 16 extra bytes for poly1305 auth tag
+            let mut payload = {
+                let mut out = BytesMut::with_capacity(payload.len() + 16);
+                out.put_slice(&payload);
+
+                out.freeze().to_vec()
+            };
+
+            // `encrypt_with_ad()` must succeed as it's called with valid parameters
+            ChaChaPoly::with_nonce(&cipher_key, 0u64)
+                .encrypt_with_ad_new(&state, &mut payload)
+                .expect("to succeed");
+
+            shared.zeroize();
+            temp_key.zeroize();
+            cipher_key.zeroize();
+
+            (chaining_key, payload)
+        };
+
+        let payload = {
+            let mut out = BytesMut::with_capacity(
+                representative
+                    .len()
+                    .saturating_add(static_key_ciphertext.len())
+                    .saturating_add(payload_ciphertext.len()),
+            );
+            out.put_slice(&representative);
+            out.put_slice(&static_key_ciphertext);
+            out.put_slice(&payload_ciphertext);
+
+            out.freeze().to_vec()
+        };
+
+        let mut out = BytesMut::with_capacity(payload.len() + 4);
+
+        out.put_u32(payload.len() as u32);
+        out.put_slice(&payload);
+        out.freeze().to_vec()
+    }
+
     #[tokio::test]
-    async fn test_ns_too_old() {
+    async fn ns_datetime_block_missing() {
         let private_key = StaticPrivateKey::random(thread_rng());
         let public_key = private_key.public();
         let destination_id = DestinationId::random();
@@ -3856,22 +3973,76 @@ mod tests {
         let mut session =
             SessionManager::<MockRuntime>::new(destination_id.clone(), private_key, leaseset);
 
-        // create outbound `SessionManager`
-        let outbound_private_key = StaticPrivateKey::random(thread_rng());
-        let (outbound_leaseset, outbound_destination_id) = {
-            let (leaseset, signing_key) = LeaseSet2::random();
-            let outbound_destination_id = leaseset.header.destination.id();
-
-            (
-                Bytes::from(leaseset.serialize(&signing_key)),
-                outbound_destination_id,
-            )
+        let message = Message {
+            message_type: MessageType::Garlic,
+            message_id: 1337u32,
+            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            payload: create_outbound_session(destination_id, &public_key, None),
         };
-        let mut outbound_session = SessionManager::<MockRuntime>::new(
-            outbound_destination_id.clone(),
-            outbound_private_key,
-            outbound_leaseset,
-        );
-        outbound_session.add_remote_destination(destination_id.clone(), public_key);
+
+        match session.decrypt(message) {
+            Err(SessionError::Malformed) => {}
+            Err(error) => panic!("unexpected error: {error:?}"),
+            Ok(_) => panic!("unexpected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ns_too_new() {
+        let private_key = StaticPrivateKey::random(thread_rng());
+        let public_key = private_key.public();
+        let destination_id = DestinationId::random();
+        let (leaseset, signing_key) = LeaseSet2::random();
+        let leaseset = Bytes::from(leaseset.serialize(&signing_key));
+        let mut session =
+            SessionManager::<MockRuntime>::new(destination_id.clone(), private_key, leaseset);
+
+        let message = Message {
+            message_type: MessageType::Garlic,
+            message_id: 1337u32,
+            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            payload: create_outbound_session(
+                destination_id,
+                &public_key,
+                Some((MockRuntime::time_since_epoch() + 2 * NS_FUTURE_LIMIT).as_secs() as u32),
+            ),
+        };
+
+        match session.decrypt(message) {
+            Err(SessionError::Malformed) => {}
+            Err(error) => panic!("unexpected error: {error:?}"),
+            Ok(_) => panic!("unexpected success"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ns_too_old() {
+        let private_key = StaticPrivateKey::random(thread_rng());
+        let public_key = private_key.public();
+        let destination_id = DestinationId::random();
+        let (leaseset, signing_key) = LeaseSet2::random();
+        let leaseset = Bytes::from(leaseset.serialize(&signing_key));
+        let mut session =
+            SessionManager::<MockRuntime>::new(destination_id.clone(), private_key, leaseset);
+
+        let message = Message {
+            message_type: MessageType::Garlic,
+            message_id: 1337u32,
+            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            payload: create_outbound_session(
+                destination_id,
+                &public_key,
+                Some(
+                    (MockRuntime::time_since_epoch() - NS_MAX_AGE - Duration::from_secs(1))
+                        .as_secs() as u32,
+                ),
+            ),
+        };
+
+        match session.decrypt(message) {
+            Err(SessionError::Malformed) => {}
+            Err(error) => panic!("unexpected error: {error:?}"),
+            Ok(_) => panic!("unexpected success"),
+        }
     }
 }

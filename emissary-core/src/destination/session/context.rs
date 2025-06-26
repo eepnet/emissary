@@ -352,7 +352,7 @@ impl<R: Runtime> KeyContext<R> {
             let mut static_key = message[NS_STATIC_PUBKEY_OFFSET].to_vec();
             ChaChaPoly::with_nonce(&cipher_key, 0u64)
                 .decrypt_with_ad(&state, &mut static_key)
-                .inspect(|error| {
+                .inspect_err(|error| {
                     tracing::debug!(
                         target: LOG_TARGET,
                         ?error,
@@ -382,7 +382,7 @@ impl<R: Runtime> KeyContext<R> {
             let mut payload = message[NS_PAYLOAD_OFFSET].to_vec();
             ChaChaPoly::with_nonce(&cipher_key, 0u64)
                 .decrypt_with_ad(&state, &mut payload)
-                .inspect(|error| {
+                .inspect_err(|error| {
                     tracing::debug!(
                         target: LOG_TARGET,
                         ?error,
