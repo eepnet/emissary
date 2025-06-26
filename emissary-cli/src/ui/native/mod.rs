@@ -232,8 +232,7 @@ impl RouterUi {
                         calculate_bandwidth(self.bandwidth as f64 / uptime as f64);
 
                     Text::new(format!(
-                        "Total bandwidth: {:.2} {} ({:.2} {}/s)",
-                        total, total_unit, per_second, per_second_unit,
+                        "Total bandwidth: {total:.2} {total_unit} ({per_second:.2} {per_second_unit}/s)",
                     ))
                 };
                 let num_connected_text =
@@ -259,8 +258,7 @@ impl RouterUi {
                         calculate_bandwidth(self.transit_bandwidth as f64 / uptime as f64);
 
                     Text::new(format!(
-                        "Transit bandwidth: {:.2} {} ({:.2} {}/s)",
-                        total, total_unit, per_second, per_second_unit,
+                        "Transit bandwidth: {total:.2} {total_unit} ({per_second:.2} {per_second_unit}/s)",
                     ))
                 };
 
