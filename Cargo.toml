@@ -36,7 +36,7 @@ tokio = { version = "1.45.1", features = ["full"] }
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "time"] }
 tracing = { version = "0.1.41", default-features = false }
 x25519-dalek = { version = "2.0.1", default-features = false }
-yosemite = { version = "0.4.2", features = ["async-extra"] }
+yosemite = { version = "0.5.0", features = ["async-extra"] }
 
 [profile.testnet]
 inherits = "release"

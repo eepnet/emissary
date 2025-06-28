@@ -6782,9 +6782,9 @@ dependencies = [
 
 [[package]]
 name = "yosemite"
-version = "0.4.2"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a2f3183b40d343005f09d85b168d2e2dcbf3a7d2b5e722b72730df846e15997"
+checksum = "70701393b05dc890512b4312812ae0bf602fe5ede7115eb883e3ba24209ec4d8"
 dependencies = [
  "futures",
  "nom",
