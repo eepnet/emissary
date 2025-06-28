@@ -353,7 +353,7 @@ impl Responder {
             match MessageBlock::parse(&router_info) {
                 Some(MessageBlock::RouterInfo { router_info, .. }) =>
                     RouterInfo::parse(router_info).ok_or_else(|| {
-                        tracing::warn!(
+                        tracing::debug!(
                             target: LOG_TARGET,
                             "received malformed `RouterInfo` message block"
                         );

@@ -392,7 +392,7 @@ impl<R: Runtime> SessionManager<R> {
                 ))
             }
             Err(error) => {
-                tracing::warn!(
+                tracing::debug!(
                     target: LOG_TARGET,
                     ?error,
                     "failed to accept session",
