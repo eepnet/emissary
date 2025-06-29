@@ -19,7 +19,6 @@
 use crate::{
     crypto::{base32_decode, base64_decode, SigningPrivateKey, StaticPrivateKey},
     primitives::{Destination, DestinationId},
-    protocol::Protocol,
     runtime::Runtime,
 };
 
@@ -69,8 +68,6 @@ struct ParsedCommand<'a, R: Runtime> {
 }
 
 /// Session kind.
-///
-/// NOTE: `Datagram` and `Anonymous` are currently unsupported
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SessionKind {
     /// Streaming.
@@ -81,16 +78,9 @@ pub enum SessionKind {
 
     /// Anonymous datagrams.
     Anonymous,
-}
 
-impl From<SessionKind> for Protocol {
-    fn from(value: SessionKind) -> Self {
-        match value {
-            SessionKind::Stream => Protocol::Streaming,
-            SessionKind::Datagram => Protocol::Datagram,
-            SessionKind::Anonymous => Protocol::Anonymous,
-        }
-    }
+    /// Primary sessions.
+    Primary,
 }
 
 /// Supported SAM versions.
@@ -234,6 +224,18 @@ pub enum SamCommand {
         options: HashMap<String, String>,
     },
 
+    /// `SESSION ADD` message.
+    CreateSubSession {
+        /// Session ID.
+        session_id: String,
+
+        /// Session kind:
+        session_kind: SessionKind,
+
+        /// Session options.
+        options: HashMap<String, String>,
+    },
+
     /// `STREAM CONNECT` message.
     Connect {
         /// Session ID.
@@ -292,6 +294,8 @@ impl fmt::Display for SamCommand {
             Self::Hello { min, max } => write!(f, "SamCommand::Hello({min:?}, {max:?})"),
             Self::CreateSession { session_id, .. } =>
                 write!(f, "SamCommand::CreateSession({session_id})"),
+            Self::CreateSubSession { session_id, .. } =>
+                write!(f, "SamCommand::CreateSubSession({session_id})"),
             Self::Connect { session_id, .. } =>
                 write!(f, "SamCommand::StreamConnect({session_id})"),
             Self::Accept { session_id, .. } => write!(f, "SamCommand::StreamAccept({session_id})"),
@@ -320,27 +324,37 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
             }),
             ("SESSION", Some("CREATE")) => {
                 // checking that the options have valid values
-                let data_for_options_check:[(&'static str, u8,u8,&'static str);4] = [
-                ("inbound.quantity",1,16,"invalid inbound tunnel quantity, 16 is the maximum quantity"),
-                ("outbound.quantity",1,16,"invalid outbound tunnel quantity, 16 is the maximum quantity"), 
-                ("inbound.length",1,7,"invalid inbound tunnel length, 0-hop is not supported and 7 is the maximum length"), 
-                ("outbound.length",1,8,"invalid outbound tunnel length, 0-hop is not supported and 8 is the maximum length")
+                let data_for_options_check:[(&'static str, u8, u8, &'static str); 4] = [
+                    ("inbound.quantity", 1, 16, "invalid inbound tunnel quantity, 16 is the maximum quantity"),
+                    ("outbound.quantity", 1, 16, "invalid outbound tunnel quantity, 16 is the maximum quantity"), 
+                    ("inbound.length", 1, 7, "invalid inbound tunnel length, 0-hop is not supported and 7 is the maximum length"), 
+                    ("outbound.length", 1, 8, "invalid outbound tunnel length, 0-hop is not supported and 8 is the maximum length")
                 ];
+
                 for (option, min, max, error_msg) in data_for_options_check {
-                    if let Some(value) = parsed_cmd.key_value_pairs.get(option) {
-                        match value.parse::<u8>() {
-                            Ok(value) =>
-                                if value > max || value < min {
-                                    tracing::warn!(
-                                        target: LOG_TARGET,
-                                        ?min,
-                                        ?max,
-                                        ?value,
-                                        error_msg);
-                                    return Err(());
-                                },
-                            _ => return Err(()),
-                        }
+                    let Some(value) = parsed_cmd.key_value_pairs.get(option) else {
+                        continue;
+                    };
+
+                    let Ok(value) = value.parse::<u8>() else {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?value,
+                            %option,
+                            "invalid tunnel configuration",
+                        );
+                        return Err(());
+                    };
+
+                    if value > max || value < min {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?min,
+                            ?max,
+                            ?value,
+                            error_msg
+                        );
+                        return Err(());
                     }
                 }
 
@@ -357,10 +371,9 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
 
                 let session_kind = match parsed_cmd.key_value_pairs.remove("STYLE") {
                     Some("STREAM") => SessionKind::Stream,
+                    Some("PRIMARY") => SessionKind::Primary,
                     style @ (Some("RAW") | Some("DATAGRAM")) => {
                         // currently only forwarded datagrams are supported
-                        //
-                        // TODO: why is port unused?
                         let _ = parsed_cmd.key_value_pairs.get("PORT").ok_or_else(|| {
                             tracing::warn!(
                                 target: LOG_TARGET,
@@ -437,6 +450,68 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     session_id,
                     session_kind,
                     destination: Box::new(destination),
+                    options: parsed_cmd
+                        .key_value_pairs
+                        .into_iter()
+                        .map(|(key, value)| (key.to_string(), value.to_string()))
+                        .collect(),
+                })
+            }
+            ("SESSION", Some("ADD")) => {
+                let session_id = parsed_cmd
+                    .key_value_pairs
+                    .remove("ID")
+                    .ok_or_else(|| {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            "session id missing from `SESSION CREATE`",
+                        );
+                    })?
+                    .to_string();
+
+                let session_kind = match parsed_cmd.key_value_pairs.remove("STYLE") {
+                    Some("STREAM") => SessionKind::Stream,
+                    Some("PRIMARY") => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            "sub-session kind cannot be `Primary`",
+                        );
+                        return Err(());
+                    }
+                    style @ (Some("RAW") | Some("DATAGRAM")) => {
+                        // currently only forwarded datagrams are supported
+                        let _ = parsed_cmd.key_value_pairs.get("PORT").ok_or_else(|| {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                "only forwarded raw datagrams are supported",
+                            );
+                        })?;
+
+                        // if no host was specified, default to localhost
+                        if parsed_cmd.key_value_pairs.get("HOST").is_none() {
+                            parsed_cmd.key_value_pairs.insert("HOST", "127.0.0.1");
+                        }
+
+                        match style {
+                            Some("RAW") => SessionKind::Anonymous,
+                            Some("DATAGRAM") => SessionKind::Datagram,
+                            _ => unreachable!(),
+                        }
+                    }
+                    kind => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?kind,
+                            "unsupported session kind",
+                        );
+
+                        return Err(());
+                    }
+                };
+
+                Ok(SamCommand::CreateSubSession {
+                    session_id,
+                    session_kind,
                     options: parsed_cmd
                         .key_value_pairs
                         .into_iter()
@@ -620,6 +695,7 @@ impl SamCommand {
             opt(alt((
                 tag("VERSION"),
                 tag("CREATE"),
+                tag("ADD"),
                 tag("CONNECT"),
                 tag("ACCEPT"),
                 tag("FORWARD"),
@@ -663,7 +739,7 @@ pub struct Datagram {
 impl Datagram {
     /// Attempt to parse `input` into `Datagram`.
     pub fn parse(input: &[u8]) -> Option<Self> {
-        // TODO: reimplement using now
+        // TODO: reimplement using nom
         // TODO: add support for options
         //
         // the datagram starts with `3.x ` sequence which is skipped
@@ -1450,5 +1526,85 @@ mod tests {
                 _ => panic!("invalid datagram"),
             }
         }
+    }
+
+    #[test]
+    fn parse_primary_session() {
+        // transient
+        match SamCommand::parse::<MockRuntime>(
+            "SESSION CREATE STYLE=PRIMARY ID=test DESTINATION=TRANSIENT i2cp.leaseSetEncType=4,0",
+        ) {
+            Some(SamCommand::CreateSession {
+                session_id,
+                session_kind: SessionKind::Primary,
+                options,
+                ..
+            }) => {
+                assert_eq!(session_id.as_str(), "test");
+                assert_eq!(
+                    options.get("i2cp.leaseSetEncType"),
+                    Some(&"4,0".to_string())
+                );
+            }
+            response => panic!("invalid response: {response:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_sub_session_stream() {
+        match SamCommand::parse::<MockRuntime>("SESSION ADD STYLE=STREAM ID=stream-sub-session") {
+            Some(SamCommand::CreateSubSession {
+                session_id,
+                session_kind: SessionKind::Stream,
+                ..
+            }) => {
+                assert_eq!(session_id, "stream-sub-session");
+            }
+            response => panic!("invalid response: {response:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_sub_session_repliable() {
+        match SamCommand::parse::<MockRuntime>(
+            "SESSION ADD STYLE=DATAGRAM ID=repliable-sub-session PORT=8888",
+        ) {
+            Some(SamCommand::CreateSubSession {
+                session_id,
+                session_kind: SessionKind::Datagram,
+                ..
+            }) => {
+                assert_eq!(session_id, "repliable-sub-session");
+            }
+            response => panic!("invalid response: {response:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_sub_session_anonymous() {
+        match SamCommand::parse::<MockRuntime>(
+            "SESSION ADD STYLE=RAW ID=anonymous-sub-session PORT=9999",
+        ) {
+            Some(SamCommand::CreateSubSession {
+                session_id,
+                session_kind: SessionKind::Anonymous,
+                ..
+            }) => {
+                assert_eq!(session_id, "anonymous-sub-session");
+            }
+            response => panic!("invalid response: {response:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_sub_session_session_kind_primary() {
+        assert!(
+            SamCommand::parse::<MockRuntime>("SESSION ADD STYLE=PRIMARY ID=sub-session").is_none()
+        );
+    }
+
+    #[test]
+    fn parse_sub_session_id_missing() {
+        assert!(SamCommand::parse::<MockRuntime>("SESSION ADD STYLE=STREAM").is_none());
     }
 }

@@ -27,6 +27,7 @@ use crate::{
         parser::{DestinationContext, SessionKind},
         session::{SamSessionCommand, SamSessionCommandRecycle},
         socket::SamSocket,
+        SubSessionCommand,
     },
     tunnel::{TunnelPoolEvent, TunnelPoolHandle},
 };
@@ -85,6 +86,9 @@ pub struct SamSessionContext<R: Runtime> {
     /// SAMv3 socket.
     pub socket: SamSocket<R>,
 
+    /// TX channel for sending sub-session commands.
+    pub sub_session_tx: Option<Sender<SubSessionCommand>>,
+
     /// Tunnel pool handle.
     pub tunnel_pool_handle: TunnelPoolHandle,
 }
@@ -134,6 +138,9 @@ pub struct PendingSamSession<R: Runtime> {
     /// SAMv3 socket associated with the session.
     socket: SamSocket<R>,
 
+    /// TX channel for sending sub-session commands.
+    sub_session_tx: Option<Sender<SubSessionCommand>>,
+
     /// Tunnel pool build future.
     ///
     /// Resolves to a `TunnelPoolHandle` once the pool has been built.
@@ -155,6 +162,7 @@ impl<R: Runtime> PendingSamSession<R> {
         address_book: Option<Arc<dyn AddressBook>>,
         event_handle: EventHandle<R>,
         profile_storage: ProfileStorage<R>,
+        sub_session_tx: Option<Sender<SubSessionCommand>>,
     ) -> Self {
         Self {
             address_book,
@@ -170,6 +178,7 @@ impl<R: Runtime> PendingSamSession<R> {
             session_id,
             session_kind,
             socket,
+            sub_session_tx,
             tunnel_pool_future,
         }
     }
@@ -267,6 +276,7 @@ impl<R: Runtime> PendingSamSession<R> {
             session_id: self.session_id,
             session_kind: self.session_kind,
             socket: self.socket,
+            sub_session_tx: self.sub_session_tx,
             tunnel_pool_handle,
         })
     }

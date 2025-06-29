@@ -33,13 +33,14 @@ use crate::{
             streaming::{Direction, ListenerKind, StreamManager, StreamManagerEvent},
         },
         socket::SamSocket,
+        SubSessionCommand,
     },
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use futures::StreamExt;
 use hashbrown::HashMap;
-use thingbuf::mpsc::Receiver;
+use thingbuf::mpsc::{Receiver, Sender};
 
 use alloc::{
     format,
@@ -85,6 +86,9 @@ pub enum SamSessionCommand<R: Runtime> {
 
         /// Options.
         options: HashMap<String, String>,
+
+        /// Session ID.
+        session_id: Arc<str>,
     },
 
     /// Accept inbond virtual stream over this connection.
@@ -94,6 +98,9 @@ pub enum SamSessionCommand<R: Runtime> {
 
         /// Options.
         options: HashMap<String, String>,
+
+        /// Session ID.
+        session_id: Arc<str>,
     },
 
     /// Forward incoming virtual streams to a TCP listener listening to `port`.
@@ -106,6 +113,9 @@ pub enum SamSessionCommand<R: Runtime> {
 
         /// Options.
         options: HashMap<String, String>,
+
+        /// Session ID.
+        session_id: Arc<str>,
     },
 
     /// Send repliable datagram to remote destination.
@@ -115,6 +125,9 @@ pub enum SamSessionCommand<R: Runtime> {
 
         /// Datagram.
         datagram: Vec<u8>,
+
+        /// Session ID.
+        session_id: Arc<str>,
     },
 
     /// Dummy event, never constructed.
@@ -174,7 +187,7 @@ pub struct PendingSession<R: Runtime> {
     /// Pending datagrams.
     ///
     /// Only set if there are pending datagrams for the remote destination.
-    datagrams: Option<(Dest, Vec<Vec<u8>>)>,
+    datagrams: Option<(Dest, Vec<(Protocol, Vec<u8>)>)>,
 }
 
 impl<R: Runtime> PendingSession<R> {
@@ -183,6 +196,87 @@ impl<R: Runtime> PendingSession<R> {
         Self {
             streams: Vec::new(),
             datagrams: None,
+        }
+    }
+}
+
+/// Session kind for [`SamSession`].
+enum SamSessionKind {
+    /// [`SamSession`] is configured to be a primary sessions, supporting multiple sub-sessions.
+    Primary {
+        /// Registered sub-sessions.
+        sub_sessions: HashMap<Arc<str>, SessionKind>,
+    },
+
+    /// [`SamSession`] is configured to be a stream session.
+    Stream,
+
+    /// [`SamSession`] is configured to be a datagram session.
+    Datagram {
+        /// Datagram kind.
+        kind: SessionKind,
+    },
+}
+
+impl SamSessionKind {
+    /// Does [`SamSession`] support `STREAM CONNECT`/`STREAM ACCEPT`/`STREAM FORWARD`
+    ///
+    /// `session_id` is the ID that the client gave when it sent the command and it's either the ID
+    /// that was given in `SESSION CREATE` or a ID of the sub-session given in `SESSION ADD`.
+    fn supports_streams(&self, session_id: &Arc<str>) -> bool {
+        match self {
+            Self::Stream => true,
+            Self::Datagram { .. } => false,
+            Self::Primary { sub_sessions } => sub_sessions
+                .get(session_id)
+                .is_some_and(|kind| core::matches!(kind, SessionKind::Stream)),
+        }
+    }
+
+    /// Does [`SamSession`] support datagrams.
+    ///
+    /// `session_id` is the ID that the client gave when it sent the command and it's either the ID
+    /// that was given in `SESSION CREATE` or a ID of the sub-session given in `SESSION ADD`.
+    fn supports_datagrams(&self, session_id: &Arc<str>) -> bool {
+        match self {
+            Self::Stream => false,
+            Self::Datagram { .. } => true,
+            Self::Primary { sub_sessions } => sub_sessions.get(session_id).is_some_and(|kind| {
+                core::matches!(kind, SessionKind::Datagram | SessionKind::Anonymous)
+            }),
+        }
+    }
+
+    /// Convert [`SamSessionKind`] into [`Protocol`].
+    ///
+    /// Panics if [`SamSessionKind`] is `Primary` and `session_id` doesn't exist.
+    fn as_protocol(&self, session_id: &Arc<str>) -> Protocol {
+        match self {
+            Self::Stream => Protocol::Streaming,
+            Self::Datagram { kind } => match kind {
+                SessionKind::Datagram => Protocol::Datagram,
+                SessionKind::Anonymous => Protocol::Anonymous,
+                _ => unreachable!(),
+            },
+            Self::Primary { sub_sessions } => match sub_sessions.get(session_id).expect("to exist")
+            {
+                SessionKind::Stream => Protocol::Streaming,
+                SessionKind::Datagram => Protocol::Datagram,
+                SessionKind::Anonymous => Protocol::Anonymous,
+                _ => unreachable!(),
+            },
+        }
+    }
+}
+
+impl fmt::Debug for SamSessionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Stream => f.debug_struct("SamSessionKind::Stream").finish(),
+            Self::Datagram { .. } =>
+                f.debug_struct("SamSessionKind::Datagram").finish_non_exhaustive(),
+            Self::Primary { .. } =>
+                f.debug_struct("SamSessionKind::Primary").finish_non_exhaustive(),
         }
     }
 }
@@ -245,7 +339,7 @@ pub struct SamSession<R: Runtime> {
     session_id: Arc<str>,
 
     /// Session kind.
-    session_kind: SessionKind,
+    session_kind: SamSessionKind,
 
     /// Signing key.
     signing_key: SigningPrivateKey,
@@ -257,6 +351,11 @@ pub struct SamSession<R: Runtime> {
 
     /// I2P virtual stream manager.
     stream_manager: StreamManager<R>,
+
+    /// TX channel for sending session IDs of sub-sessions to `SamServer`
+    ///
+    /// `None` if `session_kind` is not `SessionKind::Primary`.
+    sub_session_tx: Option<Sender<SubSessionCommand>>,
 
     /// Waker.
     waker: Option<Waker>,
@@ -279,6 +378,7 @@ impl<R: Runtime> SamSession<R> {
             receiver,
             session_id,
             session_kind,
+            sub_session_tx,
             tunnel_pool_handle,
         } = context;
 
@@ -378,7 +478,6 @@ impl<R: Runtime> SamSession<R> {
                 datagram_tx,
                 options.clone(),
                 *signing_key.clone(),
-                session_kind,
             ),
             dest: dest.clone(),
             destination: session_destination,
@@ -390,10 +489,22 @@ impl<R: Runtime> SamSession<R> {
             pending_outbound: HashMap::new(),
             receiver,
             session_id,
-            session_kind,
+            session_kind: match session_kind {
+                SessionKind::Stream => SamSessionKind::Stream,
+                SessionKind::Datagram => SamSessionKind::Datagram {
+                    kind: SessionKind::Datagram,
+                },
+                SessionKind::Anonymous => SamSessionKind::Datagram {
+                    kind: SessionKind::Anonymous,
+                },
+                SessionKind::Primary => SamSessionKind::Primary {
+                    sub_sessions: HashMap::new(),
+                },
+            },
             signing_key: *signing_key.clone(),
             socket: Some(socket),
             stream_manager: StreamManager::new(dest, *signing_key),
+            sub_session_tx,
             waker: None,
         }
     }
@@ -459,15 +570,14 @@ impl<R: Runtime> SamSession<R> {
     }
 
     /// Handle `STREAM CONNECT`.
-    ///
-    /// TODO: more documentation
     fn on_stream_connect(
         &mut self,
         mut socket: SamSocket<R>,
         destination_id: DestinationId,
         options: HashMap<String, String>,
+        session_id: Arc<str>,
     ) {
-        let SessionKind::Stream = &self.session_kind else {
+        if !self.session_kind.supports_streams(&session_id) {
             tracing::warn!(
                 target: LOG_TARGET,
                 session_id = %self.session_id,
@@ -533,8 +643,13 @@ impl<R: Runtime> SamSession<R> {
     /// Register the socket as an active listener to [`StreamManager`].
     ///
     /// If the session wasn't configured to use streams, reject the accept request.
-    fn on_stream_accept(&mut self, socket: SamSocket<R>, options: HashMap<String, String>) {
-        let SessionKind::Stream = &self.session_kind else {
+    fn on_stream_accept(
+        &mut self,
+        socket: SamSocket<R>,
+        options: HashMap<String, String>,
+        session_id: Arc<str>,
+    ) {
+        if !self.session_kind.supports_streams(&session_id) {
             tracing::warn!(
                 target: LOG_TARGET,
                 session_id = %self.session_id,
@@ -571,8 +686,9 @@ impl<R: Runtime> SamSession<R> {
         socket: SamSocket<R>,
         port: u16,
         options: HashMap<String, String>,
+        session_id: Arc<str>,
     ) {
-        let SessionKind::Stream = &self.session_kind else {
+        if !self.session_kind.supports_streams(&session_id) {
             tracing::warn!(
                 target: LOG_TARGET,
                 session_id = %self.session_id,
@@ -603,8 +719,8 @@ impl<R: Runtime> SamSession<R> {
     /// Send datagram to destination.
     ///
     /// If the session wasn't configured to use streams, the datagram is dropped.
-    fn on_send_datagram(&mut self, destination: Dest, datagram: Vec<u8>) {
-        if let SessionKind::Stream = &self.session_kind {
+    fn on_send_datagram(&mut self, destination: Dest, datagram: Vec<u8>, session_id: Arc<str>) {
+        if !self.session_kind.supports_datagrams(&session_id) {
             tracing::warn!(
                 target: LOG_TARGET,
                 session_id = %self.session_id,
@@ -622,14 +738,14 @@ impl<R: Runtime> SamSession<R> {
             "send datagram",
         );
         let destination_id = destination.id();
+        let protocol = self.session_kind.as_protocol(&session_id);
 
         match self.destination.query_lease_set(&destination_id) {
             LeaseSetStatus::Found => {
-                let datagram = self.datagram_manager.make_datagram(datagram);
+                let datagram = self.datagram_manager.make_datagram(protocol, datagram);
 
-                if let Some(message) = I2cpPayloadBuilder::<R>::new(&datagram)
-                    .with_protocol(self.session_kind.into())
-                    .build()
+                if let Some(message) =
+                    I2cpPayloadBuilder::<R>::new(&datagram).with_protocol(protocol).build()
                 {
                     if let Err(error) = self
                         .destination
@@ -656,16 +772,16 @@ impl<R: Runtime> SamSession<R> {
                 match self.pending_outbound.get_mut(&destination_id) {
                     Some(PendingSession { datagrams, .. }) => match datagrams {
                         None => {
-                            *datagrams = Some((destination, vec![datagram]));
+                            *datagrams = Some((destination, vec![(protocol, datagram)]));
                         }
-                        Some((_, datagrams)) => datagrams.push(datagram),
+                        Some((_, datagrams)) => datagrams.push((protocol, datagram)),
                     },
                     None => {
                         self.pending_outbound.insert(
                             destination_id,
                             PendingSession {
                                 streams: Vec::new(),
-                                datagrams: Some((destination, vec![datagram])),
+                                datagrams: Some((destination, vec![(protocol, datagram)])),
                             },
                         );
                     }
@@ -682,16 +798,16 @@ impl<R: Runtime> SamSession<R> {
                 match self.pending_outbound.get_mut(&destination_id) {
                     Some(PendingSession { datagrams, .. }) => match datagrams {
                         None => {
-                            *datagrams = Some((destination, vec![datagram]));
+                            *datagrams = Some((destination, vec![(protocol, datagram)]));
                         }
-                        Some((_, datagrams)) => datagrams.push(datagram),
+                        Some((_, datagrams)) => datagrams.push((protocol, datagram)),
                     },
                     None => {
                         self.pending_outbound.insert(
                             destination_id,
                             PendingSession {
                                 streams: Vec::new(),
-                                datagrams: Some((destination, vec![datagram])),
+                                datagrams: Some((destination, vec![(protocol, datagram)])),
                             },
                         );
                     }
@@ -738,12 +854,11 @@ impl<R: Runtime> SamSession<R> {
             });
 
             if let Some((destination, datagrams)) = datagrams {
-                datagrams.into_iter().for_each(|datagram| {
-                    let datagram = self.datagram_manager.make_datagram(datagram);
+                datagrams.into_iter().for_each(|(protocol, datagram)| {
+                    let datagram = self.datagram_manager.make_datagram(protocol, datagram);
 
-                    if let Some(message) = I2cpPayloadBuilder::<R>::new(&datagram)
-                        .with_protocol(self.session_kind.into())
-                        .build()
+                    if let Some(message) =
+                        I2cpPayloadBuilder::<R>::new(&datagram).with_protocol(protocol).build()
                     {
                         if let Err(error) = self.destination.send_message(
                             DeliveryStyle::Unspecified {
@@ -1116,6 +1231,89 @@ impl<R: Runtime> SamSession<R> {
             socket.send_message(message);
         }
     }
+
+    /// Attempt to create new sub-session.
+    ///
+    /// The sub-session is rejected if [`SamSessionKind`] is not `Primary`, if there already exists
+    /// a sub-session with the same session ID or if [`SamServer`] fails to send the sub-session ->
+    /// primary session ID mapping to [`SamServer`].
+    ///
+    /// On success, the sub-session ID is added to the list of sub-sessions the primary session has.
+    ///
+    /// Returns a message indicating whether the sub-session was created successfully, which must be
+    /// sent to the client.
+    fn on_create_sub_session(
+        &mut self,
+        session_id: Arc<str>,
+        session_kind: SessionKind,
+        options: HashMap<String, String>,
+    ) -> Vec<u8> {
+        let SamSessionKind::Primary { sub_sessions } = &mut self.session_kind else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                session_id = %self.session_id,
+                sub_session_id = %session_id,
+                kind = ?self.session_kind,
+                "sub-sessions not supported for the configured session kind",
+            );
+
+            return b"SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"not a primary session\"\n".to_vec();
+        };
+
+        if let Some(session_kind) = sub_sessions.get(&session_id) {
+            tracing::warn!(
+                target: LOG_TARGET,
+                session_id = %self.session_id,
+                sub_session_id = %session_id,
+                ?session_kind,
+                "duplicate sub-session id",
+            );
+
+            return b"SESSION STATUS RESULT=DUPLICATE_ID\n".to_vec();
+        }
+
+        // `sub_session_tx` must exist since the session kind is `Primary`
+        if let Err(error) =
+            self.sub_session_tx
+                .as_ref()
+                .expect("to exist")
+                .try_send(SubSessionCommand::Add {
+                    primary_session_id: Arc::clone(&self.session_id),
+                    sub_session_id: Arc::clone(&session_id),
+                })
+        {
+            tracing::warn!(
+                target: LOG_TARGET,
+                session_id = %self.session_id,
+                sub_session_id = %session_id,
+                ?error,
+                "failed register sub-session to sam server",
+            );
+
+            return b"SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"internal error\"\n".to_vec();
+        }
+
+        // if session kind indicated datagrams, attempt to add listener into `DatagramManager`
+        if core::matches!(session_kind, SessionKind::Datagram | SessionKind::Anonymous) {
+            if let Err(()) = self.datagram_manager.add_listener(options) {
+                return b"SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"invalid datagram configuration\"\n".to_vec();
+            }
+        }
+
+        tracing::debug!(
+            target: LOG_TARGET,
+            session_id = %self.session_id,
+            sub_session_id = %session_id,
+            ?session_kind,
+            "create new sub-session",
+        );
+
+        sub_sessions.insert(Arc::clone(&session_id), session_kind);
+
+        format!("SESSION STATUS RESULT=OK ID=\"{session_id}\" MESSAGE=\"ADD {session_id}\"\n")
+            .as_bytes()
+            .to_vec()
+    }
 }
 
 impl<R: Runtime> Future for SamSession<R> {
@@ -1144,6 +1342,22 @@ impl<R: Runtime> Future for SamSession<R> {
 
             match command {
                 SamCommand::NamingLookup { name } => self.on_naming_lookup(name),
+                SamCommand::CreateSubSession {
+                    session_id,
+                    session_kind,
+                    options,
+                } => {
+                    let message =
+                        self.on_create_sub_session(Arc::from(session_id), session_kind, options);
+
+                    if let Some(socket) = &mut self.socket {
+                        socket.send_message(message);
+
+                        if let Some(waker) = self.waker.take() {
+                            waker.wake_by_ref();
+                        }
+                    }
+                }
                 command => tracing::warn!(
                     target: LOG_TARGET,
                     %command,
@@ -1160,18 +1374,24 @@ impl<R: Runtime> Future for SamSession<R> {
                     socket,
                     destination_id,
                     options,
-                })) => self.on_stream_connect(socket, destination_id, options),
-                Poll::Ready(Some(SamSessionCommand::Accept { socket, options })) =>
-                    self.on_stream_accept(socket, options),
+                    session_id,
+                })) => self.on_stream_connect(socket, destination_id, options, session_id),
+                Poll::Ready(Some(SamSessionCommand::Accept {
+                    socket,
+                    options,
+                    session_id,
+                })) => self.on_stream_accept(socket, options, session_id),
                 Poll::Ready(Some(SamSessionCommand::Forward {
                     socket,
                     port,
                     options,
-                })) => self.on_stream_forward(socket, port, options),
+                    session_id,
+                })) => self.on_stream_forward(socket, port, options, session_id),
                 Poll::Ready(Some(SamSessionCommand::SendDatagram {
                     destination,
                     datagram,
-                })) => self.on_send_datagram(destination, datagram),
+                    session_id,
+                })) => self.on_send_datagram(destination, datagram, session_id),
                 Poll::Ready(Some(SamSessionCommand::Dummy)) => unreachable!(),
             }
         }

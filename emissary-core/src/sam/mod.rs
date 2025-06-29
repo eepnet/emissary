@@ -29,7 +29,7 @@ use crate::{
     profile::ProfileStorage,
     runtime::{AddressBook, JoinSet, Runtime, TcpListener, UdpSocket},
     sam::{
-        parser::{Datagram, HostKind},
+        parser::{Datagram, HostKind, SessionKind},
         pending::{
             connection::{ConnectionKind, PendingSamConnection},
             session::{PendingSamSession, SamSessionContext},
@@ -80,14 +80,28 @@ pub struct SessionContext<R: Runtime, T: 'static + Send + Unpin> {
 
     /// TX channels for the session.
     senders: HashMap<Arc<str>, Sender<SamSessionCommand<R>, SamSessionCommandRecycle>>,
+
+    /// Active sub-session ID -> primary session ID mappings.
+    ///
+    /// This mapping must exist in [`SamServer`] because while the sub-session itself is created
+    /// using the control socket of the primary session, the protocols (streams and datagrams) use
+    /// SAMv3 ports to interact with the router and provide the session ID of the sub-session they
+    /// belong to for identification.
+    ///
+    /// This requires bidirectional traffic between [`SamServer`] and [`SamSession`], allowing
+    /// [`SamSession`] to add new sub-sessions for existing primary sessions which in turn allows
+    /// [`SamServer`] to associate incoming protocol-related commands with a correct primary
+    /// session.
+    sub_sessions: HashMap<Arc<str>, Arc<str>>,
 }
 
 impl<R: Runtime, T: 'static + Send + Unpin> SessionContext<R, T> {
     /// Create new [`SessionContext`].
     fn new() -> Self {
         Self {
-            senders: HashMap::new(),
             futures: R::join_set(),
+            senders: HashMap::new(),
+            sub_sessions: HashMap::new(),
         }
     }
 
@@ -101,6 +115,8 @@ impl<R: Runtime, T: 'static + Send + Unpin> SessionContext<R, T> {
         &mut self,
         key: &Arc<str>,
     ) -> Option<Sender<SamSessionCommand<R>, SamSessionCommandRecycle>> {
+        // remove all sub-sessions of the primary session
+        self.sub_sessions.retain(|_, primary_session_id| primary_session_id != key);
         self.senders.remove(key)
     }
 
@@ -114,6 +130,16 @@ impl<R: Runtime, T: 'static + Send + Unpin> SessionContext<R, T> {
         self.senders.insert(session_id, tx);
         self.futures.push(future);
     }
+
+    /// Add sub-session ID -> primary session ID mapping.
+    fn insert_sub_session(&mut self, session_id: Arc<str>, sub_session_id: Arc<str>) {
+        self.sub_sessions.insert(sub_session_id, session_id);
+    }
+
+    /// Remove sub-session mapping.
+    fn remove_sub_session(&mut self, sub_session_id: &Arc<str>) {
+        self.sub_sessions.remove(sub_session_id);
+    }
 }
 
 impl<R: Runtime> SessionContext<R, Arc<str>> {
@@ -123,11 +149,19 @@ impl<R: Runtime> SessionContext<R, Arc<str>> {
         session_id: &Arc<str>,
         command: SamSessionCommand<R>,
     ) -> Result<(), ChannelError> {
-        self.senders
-            .get(session_id)
-            .ok_or(ChannelError::DoesntExist)?
-            .try_send(command)
-            .map_err(From::from)
+        if let Some(session) = self.senders.get(session_id) {
+            return session.try_send(command).map_err(From::from);
+        }
+
+        match self.sub_sessions.get(session_id) {
+            None => Err(ChannelError::DoesntExist),
+            Some(primary_session_id) => self
+                .senders
+                .get(primary_session_id)
+                .ok_or(ChannelError::DoesntExist)?
+                .try_send(command)
+                .map_err(From::from),
+        }
     }
 }
 
@@ -137,6 +171,30 @@ impl<R: Runtime, T: 'static + Send + Unpin> Stream for SessionContext<R, T> {
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.futures.poll_next_unpin(cx)
     }
+}
+
+/// Sub-session command.
+#[derive(Default, Clone)]
+enum SubSessionCommand {
+    /// Associate sub-session with an active primary session.
+    Add {
+        /// Primary session ID.
+        primary_session_id: Arc<str>,
+
+        /// Sub-session ID.
+        sub_session_id: Arc<str>,
+    },
+
+    /// Remove sub-session.
+    #[allow(unused)]
+    Remove {
+        /// Sub-session ID.
+        sub_session_id: Arc<str>,
+    },
+
+    /// Dummy event.
+    #[default]
+    Dummy,
 }
 
 /// Datagram write state.
@@ -216,6 +274,12 @@ pub struct SamServer<R: Runtime> {
     /// SAMv3 datagram socket.
     socket: R::UdpSocket,
 
+    /// RX channel for receiving session IDs of subsessions.
+    sub_session_rx: Receiver<SubSessionCommand>,
+
+    /// TX channel given to primary sessions, allowing them to send sub-session commands.
+    sub_session_tx: Sender<SubSessionCommand>,
+
     /// Handle to `TunnelManager`.
     tunnel_manager_handle: TunnelManagerHandle,
 }
@@ -256,6 +320,7 @@ impl<R: Runtime> SamServer<R> {
         );
 
         let (datagram_tx, datagram_rx) = channel(1024);
+        let (sub_session_tx, sub_session_rx) = channel(64);
 
         Ok(Self {
             active_destinations: HashSet::new(),
@@ -275,6 +340,8 @@ impl<R: Runtime> SamServer<R> {
             read_buffer: vec![0u8; 0xfff],
             session_id_destinations: HashMap::new(),
             socket,
+            sub_session_rx,
+            sub_session_tx,
             tunnel_manager_handle,
         })
     }
@@ -325,10 +392,11 @@ impl<R: Runtime> Future for SamServer<R> {
                     };
 
                     if let Err(error) = this.active_sessions.send_command(
-                        &session_id,
+                        &Arc::clone(&session_id),
                         SamSessionCommand::SendDatagram {
                             destination,
                             datagram,
+                            session_id: Arc::clone(&session_id),
                         },
                     ) {
                         tracing::warn!(
@@ -448,26 +516,26 @@ impl<R: Runtime> Future for SamServer<R> {
                         // until the desired amount of inbound/outbound tunnels have been built at
                         // which point an active samv3 session can be constructed
                         let tunnel_pool_future = {
-                            let default_tpc = TunnelPoolConfig::default(); // default tunnel pool configuration cached for faster access
+                            let config = TunnelPoolConfig::default();
 
                             match this.tunnel_manager_handle.create_tunnel_pool(TunnelPoolConfig {
                                 name: Str::from(Arc::clone(&session_id)),
                                 num_inbound: options
                                     .get("inbound.quantity")
                                     .and_then(|v| v.parse().ok())
-                                    .unwrap_or(default_tpc.num_inbound),
+                                    .unwrap_or(config.num_inbound),
                                 num_inbound_hops: options
                                     .get("inbound.length")
                                     .and_then(|v| v.parse().ok())
-                                    .unwrap_or(default_tpc.num_inbound_hops),
+                                    .unwrap_or(config.num_inbound_hops),
                                 num_outbound: options
                                     .get("outbound.quantity")
                                     .and_then(|v| v.parse().ok())
-                                    .unwrap_or(default_tpc.num_outbound),
+                                    .unwrap_or(config.num_outbound),
                                 num_outbound_hops: options
                                     .get("outbound.length")
                                     .and_then(|v| v.parse().ok())
-                                    .unwrap_or(default_tpc.num_outbound_hops),
+                                    .unwrap_or(config.num_outbound_hops),
                             }) {
                                 Ok(tunnel_pool_future) => tunnel_pool_future,
                                 Err(error) => {
@@ -502,6 +570,8 @@ impl<R: Runtime> Future for SamServer<R> {
                                 this.address_book.clone(),
                                 this.event_handle.clone(),
                                 this.profile_storage.clone(),
+                                core::matches!(session_kind, SessionKind::Primary)
+                                    .then(|| this.sub_session_tx.clone()),
                             )
                             .run(),
                         );
@@ -517,11 +587,12 @@ impl<R: Runtime> Future for SamServer<R> {
                     } => match host {
                         HostKind::Destination { destination } => {
                             if let Err(error) = this.active_sessions.send_command(
-                                &session_id,
+                                &Arc::clone(&session_id),
                                 SamSessionCommand::Connect {
                                     socket,
                                     destination_id: destination.id(),
                                     options,
+                                    session_id: Arc::clone(&session_id),
                                 },
                             ) {
                                 tracing::warn!(
@@ -534,11 +605,12 @@ impl<R: Runtime> Future for SamServer<R> {
                         }
                         HostKind::B32Host { destination_id } => {
                             if let Err(error) = this.active_sessions.send_command(
-                                &session_id,
+                                &Arc::clone(&session_id),
                                 SamSessionCommand::Connect {
                                     socket,
                                     destination_id,
                                     options,
+                                    session_id: Arc::clone(&session_id),
                                 },
                             ) {
                                 tracing::warn!(
@@ -589,11 +661,12 @@ impl<R: Runtime> Future for SamServer<R> {
 
                                                 if let Err(error) =
                                                     this.active_sessions.send_command(
-                                                        &session_id,
+                                                        &Arc::clone(&session_id),
                                                         SamSessionCommand::Connect {
                                                             socket,
                                                             destination_id,
                                                             options,
+                                                            session_id: Arc::clone(&session_id),
                                                         },
                                                     )
                                                 {
@@ -628,8 +701,12 @@ impl<R: Runtime> Future for SamServer<R> {
                         ..
                     } => {
                         if let Err(error) = this.active_sessions.send_command(
-                            &session_id,
-                            SamSessionCommand::Accept { socket, options },
+                            &Arc::clone(&session_id),
+                            SamSessionCommand::Accept {
+                                socket,
+                                options,
+                                session_id: Arc::clone(&session_id),
+                            },
                         ) {
                             tracing::warn!(
                                 target: LOG_TARGET,
@@ -647,11 +724,12 @@ impl<R: Runtime> Future for SamServer<R> {
                         ..
                     } => {
                         if let Err(error) = this.active_sessions.send_command(
-                            &session_id,
+                            &Arc::clone(&session_id),
                             SamSessionCommand::Forward {
                                 socket,
                                 port,
                                 options,
+                                session_id: Arc::clone(&session_id),
                             },
                         ) {
                             tracing::warn!(
@@ -747,11 +825,12 @@ impl<R: Runtime> Future for SamServer<R> {
                 }
                 Poll::Ready(Some((session_id, socket, Some((destination_id, options))))) =>
                     if let Err(error) = this.active_sessions.send_command(
-                        &session_id,
+                        &Arc::clone(&session_id),
                         SamSessionCommand::Connect {
                             socket,
                             destination_id,
                             options,
+                            session_id: Arc::clone(&session_id),
                         },
                     ) {
                         tracing::warn!(
@@ -761,6 +840,34 @@ impl<R: Runtime> Future for SamServer<R> {
                             "failed to send `STREAM CONNECT` to active session",
                         )
                     },
+            }
+        }
+
+        loop {
+            match this.sub_session_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(Some(SubSessionCommand::Add {
+                    primary_session_id,
+                    sub_session_id,
+                })) => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        %primary_session_id,
+                        %sub_session_id,
+                        "adding primary/sub-session id mapping",
+                    );
+                    this.active_sessions.insert_sub_session(primary_session_id, sub_session_id);
+                }
+                Poll::Ready(Some(SubSessionCommand::Remove { sub_session_id })) => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        %sub_session_id,
+                        "removing primary/sub-session id mapping",
+                    );
+                    this.active_sessions.remove_sub_session(&sub_session_id);
+                }
+                Poll::Ready(Some(SubSessionCommand::Dummy)) => unreachable!(),
             }
         }
 

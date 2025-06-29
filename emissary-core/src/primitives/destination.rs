@@ -281,6 +281,16 @@ impl Destination {
     pub fn serialized(&self) -> &Bytes {
         &self.serialized
     }
+
+    /// Create random [`Destination`] for testing.
+    #[cfg(test)]
+    pub fn random() -> (Self, crate::crypto::SigningPrivateKey) {
+        let signing_key = crate::crypto::SigningPrivateKey::random(rand::thread_rng());
+        (
+            Self::new::<crate::runtime::mock::MockRuntime>(signing_key.public()),
+            signing_key,
+        )
+    }
 }
 
 #[cfg(test)]
