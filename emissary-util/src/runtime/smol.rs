@@ -575,10 +575,10 @@ impl RuntimeT for Runtime {
         SmolMetricsHandle {}
     }
 
-    #[inline]
+    // #[inline]
     fn timer(duration: Duration) -> Self::Timer {
         Box::pin(async move {
-            smol::Timer::after(duration).await;
+            let _ = smol::Timer::after(duration).await;
         })
     }
 
