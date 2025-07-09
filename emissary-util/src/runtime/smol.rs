@@ -575,16 +575,16 @@ impl RuntimeT for Runtime {
         SmolMetricsHandle {}
     }
 
-    // #[inline]
+    #[inline]
     fn timer(duration: Duration) -> Self::Timer {
         Box::pin(async move {
-            let _ = smol::Timer::after(duration).await;
+            smol::Timer::after(duration).await;
         })
     }
 
     #[inline]
     async fn delay(duration: Duration) {
-        smol::Timer::after(duration).await
+        smol::Timer::after(duration).await;
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
