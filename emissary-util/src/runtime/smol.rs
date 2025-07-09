@@ -577,7 +577,9 @@ impl RuntimeT for Runtime {
 
     #[inline]
     fn timer(duration: Duration) -> Self::Timer {
-        Box::pin(smol::Timer::after(duration).map(|_| ()))
+        Box::pin(async move {
+            smol::Timer::after(duration).await;
+        })
     }
 
     #[inline]
