@@ -577,12 +577,12 @@ impl RuntimeT for Runtime {
 
     #[inline]
     fn timer(duration: Duration) -> Self::Timer {
-        Box::pin(smol::Timer::after(duration)).map(|_| ())
+        futures::FutureExt::map(Box::pin(smol::Timer::after(duration)), |_| ())
     }
 
     #[inline]
     async fn delay(duration: Duration) {
-        smol::Timer::after(duration).await
+        futures::FutureExt::map(smol::Timer::after(duration).await, |_| ())
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
