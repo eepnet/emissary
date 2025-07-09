@@ -926,8 +926,7 @@ mod tests {
 
             match SamCommand::try_from(invalid_cmd) {
                 Ok(_) => panic!(
-                    "Failed to reject the invalid outbound tunnel quantity {:?}",
-                    (invalid_out_qty)
+                    "Failed to reject the invalid outbound tunnel quantity {invalid_out_qty:?}",
                 ),
                 Err(_) => {}
             }
@@ -951,10 +950,8 @@ mod tests {
             };
 
             match SamCommand::try_from(invalid_cmd) {
-                Ok(_) => panic!(
-                    "Failed to reject the invalid inbound tunnel length {:?}",
-                    (invalid_in_len)
-                ),
+                Ok(_) =>
+                    panic!("Failed to reject the invalid inbound tunnel length {invalid_in_len:?}",),
                 Err(_) => {}
             }
         }
@@ -978,8 +975,7 @@ mod tests {
 
             match SamCommand::try_from(invalid_cmd) {
                 Ok(_) => panic!(
-                    "Failed to reject the invalid outbound tunnel length {:?}",
-                    (invalid_out_len)
+                    "Failed to reject the invalid outbound tunnel length {invalid_out_len:?}"
                 ),
                 Err(_) => {}
             }
