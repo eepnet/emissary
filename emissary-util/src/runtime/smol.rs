@@ -31,7 +31,7 @@ use futures::{
     AsyncRead as _, AsyncWrite as _, FutureExt, Stream,
 };
 use rand_core::{CryptoRng, RngCore};
-use smol::{net, stream::StreamExt, Timer};
+use smol::{net, stream::StreamExt};
 
 #[cfg(feature = "metrics")]
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
@@ -577,12 +577,12 @@ impl RuntimeT for Runtime {
 
     #[inline]
     fn timer(duration: Duration) -> Self::Timer {
-        Box::pin(smol::Timer::after(duration))
+        Box::pin(smol::Timer::after(duration)).map(|_| ())
     }
 
     #[inline]
     async fn delay(duration: Duration) {
-        smol::Timer::after(duration).await;
+        smol::Timer::after(duration).await
     }
 
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
