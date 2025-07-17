@@ -223,19 +223,19 @@ impl UdpSocket for SmolUdpSocket {
         buf: &[u8],
         target: SocketAddr,
     ) -> Poll<Option<usize>> {
-            match self.0.poll_writable(cx) {
-                Poll::Ready(Ok(())) => match self.0.get_ref().send_to(buf, target) {
-                    Ok(n) => Poll::Ready(Some(n)),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                    Err(_) => Poll::Ready(None),
-                },
-                Poll::Ready(Err(_)) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
-            }
+        match self.0.poll_writable(cx) {
+            Poll::Ready(Ok(())) => match self.0.get_ref().send_to(buf, target) {
+                Ok(n) => Poll::Ready(Some(n)),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(_) => Poll::Ready(None),
+            },
+            Poll::Ready(Err(_)) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
+    }
 
     #[inline]
     fn poll_recv_from(
@@ -243,19 +243,19 @@ impl UdpSocket for SmolUdpSocket {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Option<(usize, SocketAddr)>> {
-            match self.0.poll_readable(cx) {
-                Poll::Ready(Ok(())) => match self.0.get_ref().recv_from(buf) {
-                    Ok((n, addr)) => Poll::Ready(Some((n, addr))),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                    Err(_) => Poll::Ready(None),
-                },
-                Poll::Ready(Err(_)) => Poll::Ready(None),
-                Poll::Pending => Poll::Pending,
-            }
+        match self.0.poll_readable(cx) {
+            Poll::Ready(Ok(())) => match self.0.get_ref().recv_from(buf) {
+                Ok((n, addr)) => Poll::Ready(Some((n, addr))),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Err(_) => Poll::Ready(None),
+            },
+            Poll::Ready(Err(_)) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
         }
+    }
 
     fn local_address(&self) -> Option<SocketAddr> {
         self.0.get_ref().local_addr().ok()
