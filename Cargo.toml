@@ -37,6 +37,7 @@ tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "
 tracing = { version = "0.1.41", default-features = false }
 x25519-dalek = { version = "2.0.1", default-features = false }
 yosemite = { version = "0.5.0", features = ["async-extra"] }
+smol = { version = "2.0.2"}
 
 [profile.testnet]
 inherits = "release"

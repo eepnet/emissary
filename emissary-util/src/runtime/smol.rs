@@ -25,13 +25,10 @@ use flate2::{
     Compression,
 };
 use futures::{
-    channel::mpsc::{channel, Receiver, Sender},
-    future::BoxFuture,
-    stream::FuturesUnordered,
-    AsyncRead as _, AsyncWrite as _, FutureExt, Stream,
+    future::BoxFuture, stream::FuturesUnordered, AsyncRead as _, AsyncWrite as _, FutureExt, Stream,
 };
 use rand_core::{CryptoRng, RngCore};
-use smol::{net, stream::StreamExt};
+use smol::{net, stream::StreamExt, Async};
 
 #[cfg(feature = "metrics")]
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
@@ -43,11 +40,12 @@ use std::{
     io::Write,
     net::SocketAddr,
     pin::{pin, Pin},
+    sync::Arc,
     task::{Context, Poll, Waker},
     time::{Duration, Instant, SystemTime},
 };
 
-/// Logging targer for the file.
+/// Logging target for the file.
 const LOG_TARGET: &str = "emissary::runtime::smol";
 
 #[derive(Default, Clone)]
@@ -206,127 +204,61 @@ impl TcpListener<SmolTcpStream> for SmolTcpListener {
     }
 }
 
-pub struct SmolUdpSocket {
-    dgram_tx: Sender<(Vec<u8>, SocketAddr)>,
-    dgram_rx: Receiver<(Vec<u8>, SocketAddr)>,
-    local_address: Option<SocketAddr>,
-}
-
-impl SmolUdpSocket {
-    fn new(socket: net::UdpSocket) -> Self {
-        let (send_tx, mut send_rx): (Sender<(Vec<u8>, SocketAddr)>, _) = channel(2048);
-        let (mut recv_tx, recv_rx) = channel(2048);
-        let local_address = socket.local_addr().ok();
-
-        smol::spawn(async move {
-            let mut buffer = vec![0u8; 0xffff];
-
-            loop {
-                futures::select! {
-                    event = send_rx.next().fuse() => match event {
-                        Some((datagram, target)) => {
-                            if let Err(error) = socket.send_to(&datagram, target).await {
-                                tracing::debug!(
-                                    target: LOG_TARGET,
-                                    ?target,
-                                    ?error,
-                                    "failed to send datagram",
-                                );
-                            }
-                        }
-                        None => return,
-                    },
-                    event = socket.recv_from(&mut buffer).fuse() => match event {
-                        Ok((nread, sender)) => {
-                            if let Err(error) = recv_tx.try_send((buffer[..nread].to_vec(), sender)) {
-                                tracing::debug!(
-                                    target: LOG_TARGET,
-                                    ?sender,
-                                    ?error,
-                                    "failed to forward datagram",
-                                );
-                            }
-                        }
-                        Err(error) => {
-                            tracing::debug!(
-                                target: LOG_TARGET,
-                                ?error,
-                                "socket error",
-                            );
-                            return;
-                        }
-                    }
-                }
-            }
-        }).detach();
-
-        Self {
-            dgram_tx: send_tx,
-            dgram_rx: recv_rx,
-            local_address,
-        }
-    }
-}
+#[derive(Clone)]
+pub struct SmolUdpSocket(Arc<Async<std::net::UdpSocket>>);
 
 impl UdpSocket for SmolUdpSocket {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>> {
-        async move { net::UdpSocket::bind(address).await.ok().map(Self::new) }
+        async move {
+            Async::<std::net::UdpSocket>::bind(address)
+                .ok()
+                .map(|async_socket| Self(Arc::new(async_socket)))
+        }
     }
 
     #[inline]
     fn poll_send_to(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
         buf: &[u8],
         target: SocketAddr,
     ) -> Poll<Option<usize>> {
-        let len = buf.len();
-        match self.dgram_tx.try_send((buf.to_vec(), target)) {
-            Ok(_) => Poll::Ready(Some(len)),
-            Err(error) => {
-                if error.is_full() {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        "datagram channel clogged",
-                    );
-                    return Poll::Ready(Some(len));
-                }
-
-                Poll::Ready(None)
+            match self.0.poll_writable(cx) {
+                Poll::Ready(Ok(())) => match self.0.get_ref().send_to(buf, target) {
+                    Ok(n) => Poll::Ready(Some(n)),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Err(_) => Poll::Ready(None),
+                },
+                Poll::Ready(Err(_)) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
             }
         }
-    }
 
     #[inline]
     fn poll_recv_from(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Option<(usize, SocketAddr)>> {
-        match self.dgram_rx.poll_next(cx) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(None) => Poll::Ready(None),
-            Poll::Ready(Some((datagram, from))) =>
-                if buf.len() < datagram.len() {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        datagram_len = ?datagram.len(),
-                        buffer_len = ?buf.len(),
-                        "truncating datagram",
-                    );
-                    debug_assert!(false);
-                    buf.copy_from_slice(&datagram[..buf.len()]);
-
-                    Poll::Ready(Some((buf.len(), from)))
-                } else {
-                    buf[..datagram.len()].copy_from_slice(&datagram);
-                    Poll::Ready(Some((datagram.len(), from)))
+            match self.0.poll_readable(cx) {
+                Poll::Ready(Ok(())) => match self.0.get_ref().recv_from(buf) {
+                    Ok((n, addr)) => Poll::Ready(Some((n, addr))),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Err(_) => Poll::Ready(None),
                 },
+                Poll::Ready(Err(_)) => Poll::Ready(None),
+                Poll::Pending => Poll::Pending,
+            }
         }
-    }
 
     fn local_address(&self) -> Option<SocketAddr> {
-        self.local_address
+        self.0.get_ref().local_addr().ok()
     }
 }
 

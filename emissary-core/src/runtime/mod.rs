@@ -65,7 +65,7 @@ pub trait TcpListener<TcpStream>: Unpin + Send + Sized + 'static {
     fn local_address(&self) -> Option<SocketAddr>;
 }
 
-pub trait UdpSocket: Unpin + Send + Sized {
+pub trait UdpSocket: Unpin + Send + Sized + Clone {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>>;
     fn poll_send_to(
         self: Pin<&mut Self>,
