@@ -228,6 +228,10 @@ impl UdpSocket for SmolUdpSocket {
                 Ok(n) => Poll::Ready(Some(n)),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     cx.waker().wake_by_ref();
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        "writable udp socket but would block when sending"
+                    );
                     Poll::Pending
                 }
                 Err(_) => Poll::Ready(None),
@@ -248,9 +252,13 @@ impl UdpSocket for SmolUdpSocket {
                 Ok((n, addr)) => Poll::Ready(Some((n, addr))),
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     cx.waker().wake_by_ref();
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        "readable udp socket but would block when receiving"
+                    );
                     Poll::Pending
                 }
-                Err(_) => return Poll::Ready(None),
+                Err(_) => Poll::Ready(None),
             },
             Poll::Ready(Err(_)) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
