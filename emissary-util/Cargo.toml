@@ -35,7 +35,7 @@ tokio-util = { workspace =true, optional = true }
 smol = { version = "2.0.2", workspace = true, optional = true}
 
 [features]
-default = ["smol"]
+default = ["tokio"]
 tokio = ["dep:tokio", "dep:tokio-util"]
 async-std = ["dep:async-std"]
 smol = ["dep:smol"]
