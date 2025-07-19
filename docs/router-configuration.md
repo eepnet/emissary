@@ -183,7 +183,7 @@ emissary-cli -lsam
 * `emissary::reseeder`
 * `emissary::router`
 * `emissary::router-storage`
-* `emissary::runtime::async-std`
+* `emissary::runtime::smol`
 * `emissary::runtime::tokio`
 * `emissary::sam`
   * `emissary::sam::parser`

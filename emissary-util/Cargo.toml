@@ -11,7 +11,6 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-async-std = { version = "1.13.1", features = ["unstable"], optional = true }
 emissary-core = { path = "../emissary-core", version = "0.2.0", features = ["std"] }
 flate2 = { workspace = true }
 metrics = { version = "0.24.2", optional = true }
@@ -28,15 +27,14 @@ nom = { workspace = true, features = ["alloc"] }
 rand_core = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["default-tls"] }
+smol = { workspace = true, optional = true }
 tempfile = { workspace = true }
 tracing = { workspace = true, features = ["log"] }
 tokio = { workspace = true, optional = true }
-tokio-util = { workspace =true, optional = true }
-smol = { version = "2.0.2", workspace = true, optional = true}
+tokio-util = { workspace = true, optional = true }
 
 [features]
-default = ["tokio"]
+default = ["smol"]
 tokio = ["dep:tokio", "dep:tokio-util"]
-async-std = ["dep:async-std"]
 smol = ["dep:smol"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]

@@ -53,6 +53,7 @@ emissary-util = { path = "../emissary-util", features = ["tokio"] }
 flate2 = { workspace = true }
 rand_core = { workspace = true, features = ["getrandom"] }
 rand = { workspace = true }
+smol = { workspace = true }
 tokio-util = { workspace = true }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
