@@ -34,7 +34,7 @@ tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
 
 [features]
-default = ["smol"]
+default = ["tokio"]
 tokio = ["dep:tokio", "dep:tokio-util"]
 smol = ["dep:smol"]
 metrics = ["dep:metrics", "dep:metrics-exporter-prometheus"]
