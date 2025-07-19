@@ -212,7 +212,7 @@ impl UdpSocket for SmolUdpSocket {
         async move {
             Async::<std::net::UdpSocket>::bind(address)
                 .ok()
-                .map(|async_socket| Self(Arc::new(async_socket)))
+                .map(|socket| Self(Arc::new(socket)))
         }
     }
 
@@ -223,21 +223,16 @@ impl UdpSocket for SmolUdpSocket {
         buf: &[u8],
         target: SocketAddr,
     ) -> Poll<Option<usize>> {
-        match self.0.poll_writable(cx) {
-            Poll::Ready(Ok(())) => match self.0.get_ref().send_to(buf, target) {
-                Ok(n) => Poll::Ready(Some(n)),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    cx.waker().wake_by_ref();
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        "writable udp socket but would block when sending"
-                    );
-                    Poll::Pending
-                }
-                Err(_) => Poll::Ready(None),
-            },
-            Poll::Ready(Err(_)) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+        loop {
+            match self.0.poll_writable(cx) {
+                Poll::Ready(Ok(_)) => match self.0.get_ref().send_to(buf, target) {
+                    Ok(n) => return Poll::Ready(Some(n)),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(_) => return Poll::Ready(None),
+                },
+                Poll::Ready(Err(_)) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 
@@ -247,21 +242,16 @@ impl UdpSocket for SmolUdpSocket {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Option<(usize, SocketAddr)>> {
-        match self.0.poll_readable(cx) {
-            Poll::Ready(Ok(())) => match self.0.get_ref().recv_from(buf) {
-                Ok((n, addr)) => Poll::Ready(Some((n, addr))),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    cx.waker().wake_by_ref();
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        "readable udp socket but would block when receiving"
-                    );
-                    Poll::Pending
-                }
-                Err(_) => Poll::Ready(None),
-            },
-            Poll::Ready(Err(_)) => Poll::Ready(None),
-            Poll::Pending => Poll::Pending,
+        loop {
+            match self.0.poll_readable(cx) {
+                Poll::Ready(Ok(_)) => match self.0.get_ref().recv_from(buf) {
+                    Ok((n, addr)) => return Poll::Ready(Some((n, addr))),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(_) => return Poll::Ready(None),
+                },
+                Poll::Ready(Err(_)) => return Poll::Ready(None),
+                Poll::Pending => return Poll::Pending,
+            }
         }
     }
 
