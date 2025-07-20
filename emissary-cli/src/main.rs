@@ -25,7 +25,7 @@ use crate::{
     config::{Config, ReseedConfig, RouterUiConfig},
     error::Error,
     port_mapper::PortMapper,
-    proxy::http::HttpProxy,
+    proxy::{http::HttpProxy, socks::SocksProxy},
     storage::RouterStorage,
     tunnel::{client::ClientTunnelManager, server::ServerTunnelManager},
 };
@@ -170,6 +170,7 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
 
     let path = config.base_path.clone();
     let http = config.http_proxy.take();
+    let socks = config.socks_proxy.take();
     let port_forwarding = config.port_forwarding.take();
     let client_tunnels = mem::take(&mut config.client_tunnels);
     let server_tunnels = mem::take(&mut config.server_tunnels);
@@ -251,6 +252,28 @@ async fn setup_router() -> anyhow::Result<RouterContext> {
                         target: LOG_TARGET,
                         ?error,
                         "failed to start http proxy",
+                    ),
+                }
+            });
+        }
+
+        // start socks proxy if it was enabled
+        if let Some(config) = socks {
+            // start event loop of socks proxy
+            tokio::spawn(async move {
+                match SocksProxy::new(config, address.port()).await {
+                    Ok(proxy) =>
+                        if let Err(error) = proxy.run().await {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "socks proxy exited",
+                            );
+                        },
+                    Err(error) => tracing::warn!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "failed to start socks proxy",
                     ),
                 }
             });

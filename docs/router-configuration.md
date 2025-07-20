@@ -18,7 +18,7 @@ Disabling `[transit]` means that the router is started with `G` caps, i.e., ["re
 
 `[address-book]` is a special case. If an address book has already been downloaded and does not need to downloaded again, `default` and `subscriptions` can be commented out while leaving `[address-book]` uncommented. New `hosts.txt` files are not downloaded when the router starts but host lookups for SAM, I2CP and HTTP proxy are still supported using the existing hosts file.
 
-`[http-proxy]`, `[address-book]`, `[[client-tunnels]]`, and `[[server-tunnels]]` require `[sam]` to be enabled for them to function.
+`[http-proxy]`,  `[socks-proxy]`, `[address-book]`, `[[client-tunnels]]`, and `[[server-tunnels]]` require `[sam]` to be enabled for them to function.
 
 ### Examples
 
@@ -304,6 +304,19 @@ emissary-cli -lsam
 
     --http-proxy-host <HOST>
         HTTP proxy host.
+
+        Defaults to 127.0.0.1
+
+    --http-outproxy <HOST>
+        HTTP outproxy.
+
+    --socks-proxy-port <PORT>
+        SOCKS proxy port.
+
+        Defaults to 4447
+
+    --socks-proxy-host <HOST>
+        SOCKS proxy host.
 
         Defaults to 127.0.0.1
 

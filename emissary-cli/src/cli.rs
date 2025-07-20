@@ -115,6 +115,21 @@ pub struct HttpProxyOptions {
 }
 
 #[derive(Args)]
+pub struct SocksProxyOptions {
+    /// SOCKS proxy port.
+    ///
+    /// Defaults to 4447.
+    #[arg(long, value_name = "PORT")]
+    pub socks_proxy_port: Option<u16>,
+
+    /// SOCKS proxy host.
+    ///
+    /// Defaults to 127.0.0.1
+    #[arg(long, value_name = "HOST")]
+    pub socks_proxy_host: Option<String>,
+}
+
+#[derive(Args)]
 pub struct PortForwardingOptions {
     /// Disable UPnP.
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -211,6 +226,10 @@ pub struct Arguments {
     /// HTTP proxy options.
     #[clap(flatten)]
     pub http_proxy: HttpProxyOptions,
+
+    /// SOCKS proxy options.
+    #[clap(flatten)]
+    pub socks_proxy: SocksProxyOptions,
 
     /// Transit tunnel options.
     #[clap(flatten)]

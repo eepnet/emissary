@@ -47,6 +47,7 @@ yosemite = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+fast-socks5 = { version = "0.10.0", features = ["socks4"] }
 
 [features]
 default = ["native-ui"]

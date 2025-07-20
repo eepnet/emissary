@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    cli::{Arguments, HttpProxyOptions},
+    cli::{Arguments, HttpProxyOptions, SocksProxyOptions},
     error::Error,
     LOG_TARGET,
 };
@@ -136,6 +136,12 @@ pub struct HttpProxyConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct SocksProxyConfig {
+    pub port: u16,
+    pub host: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AddressBookConfig {
     pub default: Option<String>,
     pub subscriptions: Option<Vec<String>>,
@@ -207,6 +213,8 @@ struct EmissaryConfig {
     floodfill: bool,
     #[serde(rename = "http-proxy")]
     http_proxy: Option<HttpProxyConfig>,
+    #[serde(rename = "socks-proxy")]
+    socks_proxy: Option<SocksProxyConfig>,
     i2cp: Option<I2cpConfig>,
     #[serde(default)]
     insecure_tunnels: bool,
@@ -243,6 +251,7 @@ impl Default for EmissaryConfig {
                 port: 4444u16,
                 outproxy: None,
             }),
+            socks_proxy: None,
             i2cp: Some(I2cpConfig {
                 port: 7654,
                 host: None,
@@ -366,6 +375,9 @@ pub struct Config {
 
     /// Signing key.
     pub signing_key: [u8; 32],
+
+    //// SOCKS proxy config.
+    pub socks_proxy: Option<SocksProxyConfig>,
 
     /// SSU2 configuration.
     pub ssu2_config: Option<emissary_core::Ssu2Config>,
@@ -758,6 +770,7 @@ impl Config {
             }),
             server_tunnels: config.server_tunnels.unwrap_or(Vec::new()),
             signing_key,
+            socks_proxy: config.socks_proxy,
             ssu2_config: None,
             static_key,
             transit: config.transit.map(|config| emissary_core::TransitConfig {
@@ -897,6 +910,7 @@ impl Config {
             }),
             server_tunnels: config.server_tunnels.unwrap_or(Vec::new()),
             signing_key,
+            socks_proxy: config.socks_proxy,
             ssu2_config: config.ssu2.map(|config| emissary_core::Ssu2Config {
                 port: config.port,
                 host: config.host,
@@ -1136,6 +1150,37 @@ impl Config {
             _ => {}
         }
 
+        match (&mut self.socks_proxy, &arguments.socks_proxy) {
+            (
+                Some(config),
+                SocksProxyOptions {
+                    socks_proxy_port,
+                    socks_proxy_host,
+                },
+            ) => {
+                if let Some(port) = socks_proxy_port {
+                    config.port = *port;
+                }
+
+                if let Some(host) = &socks_proxy_host {
+                    config.host = host.clone();
+                }
+            }
+            (
+                None,
+                SocksProxyOptions {
+                    socks_proxy_port: Some(port),
+                    socks_proxy_host: Some(host),
+                },
+            ) => {
+                self.socks_proxy = Some(SocksProxyConfig {
+                    port: *port,
+                    host: host.clone(),
+                });
+            }
+            _ => {}
+        }
+
         self.exploratory = match &mut self.exploratory {
             None => Some(emissary_core::ExploratoryConfig {
                 inbound_len: arguments.tunnel.exploratory_inbound_len,
@@ -1261,6 +1306,10 @@ mod tests {
                 http_proxy_port: None,
                 http_proxy_host: None,
                 http_outproxy: None,
+            },
+            socks_proxy: SocksProxyOptions {
+                socks_proxy_port: None,
+                socks_proxy_host: None,
             },
             transit: TransitOptions {
                 max_transit_tunnels: None,
