@@ -181,7 +181,7 @@ impl TcpListener<SmolTcpStream> for SmolTcpListener {
                 );
             })
             .ok()
-            .map(|listener| SmolTcpListener(listener))
+            .map(SmolTcpListener)
     }
 
     fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Option<(SmolTcpStream, SocketAddr)>> {
