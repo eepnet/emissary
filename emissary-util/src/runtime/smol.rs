@@ -25,10 +25,10 @@ use flate2::{
     Compression,
 };
 use futures::{
-    future::BoxFuture, stream::FuturesUnordered, AsyncRead as _, AsyncWrite as _, FutureExt, Stream,
+    future::BoxFuture, ready, stream::FuturesUnordered, AsyncRead as _, AsyncWrite as _, Stream,
 };
 use rand_core::{CryptoRng, RngCore};
-use smol::{net, stream::StreamExt, Async};
+use smol::{future::FutureExt, stream::StreamExt, Async, Timer};
 
 #[cfg(feature = "metrics")]
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
@@ -57,10 +57,10 @@ impl Runtime {
     }
 }
 
-pub struct SmolTcpStream(net::TcpStream);
+pub struct SmolTcpStream(Async<std::net::TcpStream>);
 
 impl SmolTcpStream {
-    fn new(stream: net::TcpStream) -> Self {
+    fn new(stream: Async<std::net::TcpStream>) -> Self {
         Self(stream)
     }
 }
@@ -74,7 +74,7 @@ impl AsyncRead for SmolTcpStream {
     ) -> Poll<emissary_core::Result<usize>> {
         let pinned = pin!(&mut self.0);
 
-        match futures::ready!(pinned.poll_read(cx, buf)) {
+        match ready!(pinned.poll_read(cx, buf)) {
             Ok(nread) => Poll::Ready(Ok(nread)),
             Err(error) => Poll::Ready(Err(emissary_core::Error::Custom(error.to_string()))),
         }
@@ -90,7 +90,7 @@ impl AsyncWrite for SmolTcpStream {
     ) -> Poll<emissary_core::Result<usize>> {
         let pinned = pin!(&mut self.0);
 
-        match futures::ready!(pinned.poll_write(cx, buf)) {
+        match ready!(pinned.poll_write(cx, buf)) {
             Ok(nwritten) => Poll::Ready(Ok(nwritten)),
             Err(error) => Poll::Ready(Err(emissary_core::Error::Custom(error.to_string()))),
         }
@@ -103,7 +103,7 @@ impl AsyncWrite for SmolTcpStream {
     ) -> Poll<emissary_core::Result<()>> {
         let pinned = pin!(&mut self.0);
 
-        match futures::ready!(pinned.poll_flush(cx)) {
+        match ready!(pinned.poll_flush(cx)) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(error) => Poll::Ready(Err(emissary_core::Error::Custom(error.to_string()))),
         }
@@ -116,7 +116,7 @@ impl AsyncWrite for SmolTcpStream {
     ) -> Poll<emissary_core::Result<()>> {
         let pinned = pin!(&mut self.0);
 
-        match futures::ready!(pinned.poll_close(cx)) {
+        match ready!(pinned.poll_close(cx)) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(error) => Poll::Ready(Err(emissary_core::Error::Custom(error.to_string()))),
         }
@@ -125,24 +125,32 @@ impl AsyncWrite for SmolTcpStream {
 
 impl TcpStream for SmolTcpStream {
     async fn connect(address: SocketAddr) -> Option<Self> {
-        match async {
-            futures::select! {
-                res = net::TcpStream::connect(address).fuse() => Some(res),
-                _ = futures::FutureExt::fuse(smol::Timer::after(Duration::from_secs(10))) => None,
+        let connect_future = async {
+            match Async::<std::net::TcpStream>::connect(address).await {
+                Ok(stream) => {
+                    if let Err(e) = stream.get_ref().set_nodelay(true) {
+                        return Some(Err(e));
+                    }
+                    Some(Ok(stream))
+                }
+                Err(e) => Some(Err(e)),
             }
-        }
-        .await
-        {
-            Some(Ok(stream)) => {
-                stream.set_nodelay(true).ok()?;
-                Some(Self::new(stream))
-            }
+        };
+
+        let timeout_future = async {
+            Timer::after(Duration::from_secs(10)).await;
+            None
+        };
+
+        // Ad-hoc timeout on future completion
+        match connect_future.race(timeout_future).await {
+            Some(Ok(stream)) => Some(Self::new(stream)),
             Some(Err(error)) => {
                 tracing::debug!(
                     target: LOG_TARGET,
                     ?address,
                     error = ?error.kind(),
-                    "failed to connect"
+                    "Connection failed"
                 );
                 None
             }
@@ -150,7 +158,7 @@ impl TcpStream for SmolTcpStream {
                 tracing::debug!(
                     target: LOG_TARGET,
                     ?address,
-                    "timeout while dialing address",
+                    "Connection timed out"
                 );
                 None
             }
@@ -158,41 +166,59 @@ impl TcpStream for SmolTcpStream {
     }
 }
 
-pub struct SmolTcpListener(net::TcpListener);
+pub struct SmolTcpListener(Async<std::net::TcpListener>);
 
 impl TcpListener<SmolTcpStream> for SmolTcpListener {
     // TODO: can be made sync with `socket2`
     async fn bind(address: SocketAddr) -> Option<Self> {
-        net::TcpListener::bind(address)
-            .await
+        Async::<std::net::TcpListener>::bind(address)
             .map_err(|error| {
                 tracing::debug!(
                     target: LOG_TARGET,
                     ?address,
-                    ?error,
+                    error = ?error.kind(),
                     "failed to bind"
                 );
             })
             .ok()
-            .map(SmolTcpListener)
+            .map(|listener| SmolTcpListener(listener))
     }
 
     fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Option<(SmolTcpStream, SocketAddr)>> {
         loop {
-            match futures::ready!(self.0.incoming().poll_next(cx)) {
-                Some(Ok(stream)) => match stream.local_addr() {
-                    Ok(address) => return Poll::Ready(Some((SmolTcpStream(stream), address))),
-                    Err(_) => continue,
+            match ready!(self.0.poll_readable(cx)) {
+                Ok(()) => match self.0.get_ref().accept() {
+                    Ok((stream, address)) => match stream.set_nodelay(true) {
+                        Ok(()) => match Async::new(stream) {
+                            Ok(async_stream) =>
+                                return Poll::Ready(Some((SmolTcpStream(async_stream), address))),
+                            Err(_) => return Poll::Ready(None),
+                        },
+                        Err(error) => {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "failed to configure `TCP_NODELAY` for inbound connection",
+                            );
+                            continue;
+                        }
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?error,
+                            "failed to accept connection",
+                        );
+                        return Poll::Ready(None);
+                    }
                 },
-                Some(Err(error)) => {
-                    tracing::warn!(
+                Err(error) => {
+                    tracing::debug!(
                         target: LOG_TARGET,
                         ?error,
-                        "failed to accept connection",
+                        "failed to poll socket readability",
                     );
-                    return Poll::Ready(None);
-                }
-                None => {
                     return Poll::Ready(None);
                 }
             }
@@ -200,7 +226,7 @@ impl TcpListener<SmolTcpStream> for SmolTcpListener {
     }
 
     fn local_address(&self) -> Option<SocketAddr> {
-        self.0.local_addr().ok()
+        self.0.get_ref().local_addr().ok()
     }
 }
 
@@ -224,14 +250,27 @@ impl UdpSocket for SmolUdpSocket {
         target: SocketAddr,
     ) -> Poll<Option<usize>> {
         loop {
-            match self.0.poll_writable(cx) {
-                Poll::Ready(Ok(_)) => match self.0.get_ref().send_to(buf, target) {
+            match ready!(self.0.poll_writable(cx)) {
+                Ok(()) => match self.0.get_ref().send_to(buf, target) {
                     Ok(n) => return Poll::Ready(Some(n)),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(_) => return Poll::Ready(None),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?error,
+                            "failed to send datagram",
+                        );
+                        return Poll::Ready(None);
+                    }
                 },
-                Poll::Ready(Err(_)) => return Poll::Ready(None),
-                Poll::Pending => return Poll::Pending,
+                Err(error) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "failed to poll socket writability",
+                    );
+                    return Poll::Ready(None);
+                }
             }
         }
     }
@@ -243,14 +282,27 @@ impl UdpSocket for SmolUdpSocket {
         buf: &mut [u8],
     ) -> Poll<Option<(usize, SocketAddr)>> {
         loop {
-            match self.0.poll_readable(cx) {
-                Poll::Ready(Ok(_)) => match self.0.get_ref().recv_from(buf) {
+            match ready!(self.0.poll_readable(cx)) {
+                Ok(()) => match self.0.get_ref().recv_from(buf) {
                     Ok((n, addr)) => return Poll::Ready(Some((n, addr))),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(_) => return Poll::Ready(None),
+                    Err(error) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?error,
+                            "failed to receive datagram",
+                        );
+                        return Poll::Ready(None);
+                    }
                 },
-                Poll::Ready(Err(_)) => return Poll::Ready(None),
-                Poll::Pending => return Poll::Pending,
+                Err(error) => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "failed to poll socket readability",
+                    );
+                    return Poll::Ready(None);
+                }
             }
         }
     }
