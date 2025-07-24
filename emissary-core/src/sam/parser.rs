@@ -371,7 +371,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
 
                 let session_kind = match parsed_cmd.key_value_pairs.remove("STYLE") {
                     Some("STREAM") => SessionKind::Stream,
-                    Some("PRIMARY") => SessionKind::Primary,
+                    Some("PRIMARY") | Some("MASTER") => SessionKind::Primary,
                     style @ (Some("RAW") | Some("DATAGRAM")) => {
                         // currently only forwarded datagrams are supported
                         let _ = parsed_cmd.key_value_pairs.get("PORT").ok_or_else(|| {
@@ -471,7 +471,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
 
                 let session_kind = match parsed_cmd.key_value_pairs.remove("STYLE") {
                     Some("STREAM") => SessionKind::Stream,
-                    Some("PRIMARY") => {
+                    Some("PRIMARY") | Some("MASTER") => {
                         tracing::warn!(
                             target: LOG_TARGET,
                             "sub-session kind cannot be `Primary`",
