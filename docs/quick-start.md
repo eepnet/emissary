@@ -61,6 +61,7 @@ Default listening ports:
 |   SAMv3 UDP   |   7655   |
 |      I2CP     |   7654   |
 |      HTTP     |   4444   |
+|     SOCKS     |   4447   |
 |     Web UI    |   7657   |
 
 ### Graceful shutdown

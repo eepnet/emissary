@@ -14,6 +14,7 @@
   * SAMv3
 * Proxies:
   * HTTP
+  * SOCKSv5
 
 ### Directory layout
 
