@@ -1557,9 +1557,17 @@ mod tests {
             "SESSION CREATE STYLE=MASTER ID=test DESTINATION=TRANSIENT i2cp.leaseSetEncType=4,0",
         ) {
             Some(SamCommand::CreateSession {
+                session_id,
                 session_kind: SessionKind::Primary,
+                options,
                 ..
-            }) => {}
+            }) => {
+                assert_eq!(session_id.as_str(), "test");
+                assert_eq!(
+                    options.get("i2cp.leaseSetEncType"),
+                    Some(&"4,0".to_string())
+                );
+            }
             response => panic!("invalid response: {response:?}"),
         }
     }
