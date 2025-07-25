@@ -28,7 +28,7 @@ use futures::{
     future::BoxFuture, ready, stream::FuturesUnordered, AsyncRead as _, AsyncWrite as _, Stream,
 };
 use rand_core::{CryptoRng, RngCore};
-use smol::{future::FutureExt, stream::StreamExt, Async, Timer};
+use smol::{future::FutureExt, stream::StreamExt, Async};
 
 #[cfg(feature = "metrics")]
 use metrics::{counter, describe_counter, describe_gauge, describe_histogram, gauge, histogram};
@@ -138,7 +138,7 @@ impl TcpStream for SmolTcpStream {
         };
 
         let timeout_future = async {
-            Timer::after(Duration::from_secs(10)).await;
+            smol::Timer::after(Duration::from_secs(10)).await;
             None
         };
 
