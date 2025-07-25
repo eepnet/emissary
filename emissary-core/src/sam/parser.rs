@@ -1551,6 +1551,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_master_session() {
+        // transient
+        match SamCommand::parse::<MockRuntime>(
+            "SESSION CREATE STYLE=MASTER ID=test DESTINATION=TRANSIENT i2cp.leaseSetEncType=4,0",
+        ) {
+            Some(SamCommand::CreateSession {
+                session_kind: SessionKind::Primary,
+                ..
+            }) => {}
+            response => panic!("invalid response: {response:?}"),
+        }
+    }
+
+    #[test]
     fn parse_sub_session_stream() {
         match SamCommand::parse::<MockRuntime>("SESSION ADD STYLE=STREAM ID=stream-sub-session") {
             Some(SamCommand::CreateSubSession {
