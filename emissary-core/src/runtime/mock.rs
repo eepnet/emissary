@@ -180,6 +180,9 @@ thread_local! {
 
     /// Gauges and their values.
     static GAUGES: LazyLock<Arc<RwLock<HashMap<&'static str, usize>>>> = LazyLock::new(|| Default::default());
+
+    /// Custom timestamp for testing
+    static CUSTOM_TIME: LazyLock<Arc<RwLock<Option<Duration>>>> = LazyLock::new(|| Default::default());
 }
 
 pub struct MockMetricsCounter {
@@ -303,6 +306,13 @@ impl MockRuntime {
     pub fn get_gauge_value(name: &'static str) -> Option<usize> {
         GAUGES.with(|v| v.read().get(name).copied())
     }
+
+    /// Set a custom timestamp to be returned by `Runtime::time_since_epoch()`.
+    pub fn set_time(duration: Option<Duration>) {
+        CUSTOM_TIME.with(|v| {
+            *v.write() = duration;
+        });
+    }
 }
 
 impl Runtime for MockRuntime {
@@ -325,7 +335,11 @@ impl Runtime for MockRuntime {
 
     /// Return duration since Unix epoch.
     fn time_since_epoch() -> Duration {
-        SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("to succeed")
+        CUSTOM_TIME.with(|v| {
+            v.read().as_ref().copied().unwrap_or_else(|| {
+                SystemTime::now().duration_since(std::time::UNIX_EPOCH).expect("to succeed")
+            })
+        })
     }
 
     /// Get current time.
@@ -373,5 +387,26 @@ impl Runtime for MockRuntime {
         e.write_all(bytes.as_ref()).ok()?;
 
         e.finish().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_custom_time() {
+        // Default behavior returns system time
+        let system_time = MockRuntime::time_since_epoch();
+        assert!(system_time.as_secs() > 0);
+
+        // Set custom time
+        let custom_duration = Duration::from_secs(12345);
+        MockRuntime::set_time(Some(custom_duration));
+        assert_eq!(MockRuntime::time_since_epoch(), custom_duration);
+
+        // Clear custom time
+        MockRuntime::set_time(None);
+        assert!(MockRuntime::time_since_epoch() >= system_time);
     }
 }

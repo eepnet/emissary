@@ -32,7 +32,7 @@ use crate::{
     transport::ntcp2::{
         message::MessageBlock,
         options::{InitiatorOptions, ResponderOptions},
-        session::KeyContext,
+        session::{KeyContext, MAX_CLOCK_SKEW},
     },
     Error,
 };
@@ -42,7 +42,7 @@ use rand_core::RngCore;
 use zeroize::Zeroize;
 
 use alloc::{boxed::Box, vec::Vec};
-use core::fmt;
+use core::{fmt, time::Duration};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ntcp2::responder";
@@ -118,7 +118,7 @@ impl Responder {
     /// to be read from the socket in order for the session to make progress.
     ///
     /// <https://geti2p.net/spec/ntcp2#key-derivation-function-kdf-for-handshake-message-1>
-    pub fn new(
+    pub fn new<R: Runtime>(
         mut noise_ctx: NoiseContext,
         local_router_hash: Vec<u8>,
         local_static_key: StaticPrivateKey,
@@ -159,6 +159,24 @@ impl Responder {
                 local_net_id = ?net_id,
                 remote_net_id = ?options.network_id,
                 "network id mismatch",
+            );
+            return Err(Error::InvalidData);
+        }
+
+        // check clock skew
+        let now = R::time_since_epoch();
+        let remote_time = Duration::from_secs(options.timestamp as u64);
+        let future = remote_time.saturating_sub(now);
+        let past = now.saturating_sub(remote_time);
+
+        if past > MAX_CLOCK_SKEW || future > MAX_CLOCK_SKEW {
+            tracing::warn!(
+                target: LOG_TARGET,
+                our_time = ?now,
+                ?remote_time,
+                ?past,
+                ?future,
+                "excessive clock skew",
             );
             return Err(Error::InvalidData);
         }

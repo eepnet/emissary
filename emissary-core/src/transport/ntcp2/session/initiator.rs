@@ -31,7 +31,7 @@ use crate::{
     transport::ntcp2::{
         message::MessageBlock,
         options::{InitiatorOptions, ResponderOptions},
-        session::KeyContext,
+        session::{KeyContext, MAX_CLOCK_SKEW},
     },
     Error,
 };
@@ -41,7 +41,7 @@ use rand_core::RngCore;
 use zeroize::Zeroize;
 
 use alloc::{boxed::Box, vec::Vec};
-use core::fmt;
+use core::{fmt, time::Duration};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ntcp2::initiator";
@@ -205,7 +205,7 @@ impl Initiator {
     /// Decrypt `Y` and perform KDF for messages 2 and 3 part 1
     ///
     /// <https://geti2p.net/spec/ntcp2#key-derivation-function-kdf-for-handshake-message-2-and-message-3-part-1>
-    pub fn register_session_created(&mut self, bytes: &[u8]) -> crate::Result<usize> {
+    pub fn register_session_created<R: Runtime>(&mut self, bytes: &[u8]) -> crate::Result<usize> {
         let InitiatorState::SessionRequested {
             ephemeral_key,
             iv,
@@ -236,12 +236,31 @@ impl Initiator {
         let remote_key = noise_ctx.mix_key(&ephemeral_key, &responder_public);
 
         // decrypt the chacha20poly1305 frame with generated remote key, deserialize
-        // `ResponderOptions` and extract the padding length
+        // `ResponderOptions` and validate timestamp
         let padding = {
             let mut options = bytes[32..64].to_vec();
             ChaChaPoly::new(&remote_key).decrypt_with_ad(noise_ctx.state(), &mut options)?;
 
-            ResponderOptions::parse(&options).ok_or(Error::InvalidData)?.padding_length as usize
+            // check clock skew
+            let options = ResponderOptions::parse(&options).ok_or(Error::InvalidData)?;
+            let now = R::time_since_epoch();
+            let remote_time = Duration::from_secs(options.timestamp as u64);
+            let future = remote_time.saturating_sub(now);
+            let past = now.saturating_sub(remote_time);
+
+            if past > MAX_CLOCK_SKEW || future > MAX_CLOCK_SKEW {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    our_time = ?now,
+                    ?remote_time,
+                    ?past,
+                    ?future,
+                    "excessive clock skew",
+                );
+                return Err(Error::InvalidData);
+            }
+
+            options.padding_length as usize
         };
 
         // MixHash(ciphertext)

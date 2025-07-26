@@ -48,7 +48,7 @@ use crate::{
 use bytes::Bytes;
 
 use alloc::{vec, vec::Vec};
-use core::{future::Future, net::IpAddr};
+use core::{future::Future, net::IpAddr, time::Duration};
 
 mod active;
 mod initiator;
@@ -61,6 +61,9 @@ const LOG_TARGET: &str = "emissary::ntcp2::session";
 
 /// Noise protocol name;.
 const PROTOCOL_NAME: &str = "Noise_XKaesobfse+hs2+hs3_25519_ChaChaPoly_SHA256";
+
+/// Maximum allowed clock skew.
+const MAX_CLOCK_SKEW: Duration = Duration::from_secs(60);
 
 /// Role of the session.
 #[derive(Debug, Clone, Copy)]
@@ -248,7 +251,7 @@ impl<R: Runtime> SessionManager<R> {
         let mut reply = alloc::vec![0u8; 64];
         stream.read_exact::<R>(&mut reply).await?;
 
-        let padding_len = initiator.register_session_created(&reply)?;
+        let padding_len = initiator.register_session_created::<R>(&reply)?;
 
         // read padding and finalize session by sending `SessionConfirmed`
         let mut reply = alloc::vec![0u8; padding_len];
@@ -345,7 +348,7 @@ impl<R: Runtime> SessionManager<R> {
         let mut message = vec![0u8; 64];
         stream.read_exact::<R>(&mut message).await?;
 
-        let (mut responder, padding_len) = Responder::new(
+        let (mut responder, padding_len) = Responder::new::<R>(
             noise_ctx,
             local_router_hash,
             local_key.clone(),
@@ -990,5 +993,143 @@ mod tests {
         })
         .await
         .expect("no timeout");
+    }
+
+    #[tokio::test]
+    async fn clock_skew_too_far_in_the_future() {
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = Ntcp2Builder::new()
+            .with_router_address(listener.local_addr().unwrap().port())
+            .build();
+        let remote_manager = SessionManager::new(
+            remote.ntcp2_key,
+            remote.ntcp2_iv,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                ProfileStorage::<MockRuntime>::new(&[], &[]),
+                remote.router_info.identity.id(),
+                Bytes::from(remote.router_info.serialize(&remote.signing_key)),
+                remote.static_key,
+                remote.signing_key,
+                2u8,
+                event_handle.clone(),
+            ),
+            SubsystemHandle::new(),
+            true,
+        );
+
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                MockRuntime::set_time(Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("to succeed")
+                        + 2 * MAX_CLOCK_SKEW,
+                ));
+
+                let local = Ntcp2Builder::new().build();
+                let local_manager = SessionManager::new(
+                    local.ntcp2_key,
+                    local.ntcp2_iv,
+                    RouterContext::new(
+                        MockRuntime::register_metrics(Vec::new(), None),
+                        ProfileStorage::<MockRuntime>::new(&[], &[]),
+                        local.router_info.identity.id(),
+                        Bytes::from(local.router_info.serialize(&local.signing_key)),
+                        local.static_key,
+                        local.signing_key,
+                        2u8,
+                        event_handle.clone(),
+                    ),
+                    SubsystemHandle::new(),
+                    true,
+                );
+
+                local_manager.create_session(remote.router_info.clone()).await
+            })
+        });
+
+        let stream = MockTcpStream::new(
+            tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
+        );
+        let future = tokio::task::spawn_blocking(move || handle.join().unwrap());
+        let (res1, _res2) = tokio::join!(remote_manager.accept_session(stream), future);
+
+        assert!(res1.is_err());
+    }
+
+    #[tokio::test]
+    async fn clock_skew_too_far_in_the_past() {
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let remote = Ntcp2Builder::new()
+            .with_router_address(listener.local_addr().unwrap().port())
+            .build();
+        let remote_manager = SessionManager::new(
+            remote.ntcp2_key,
+            remote.ntcp2_iv,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                ProfileStorage::<MockRuntime>::new(&[], &[]),
+                remote.router_info.identity.id(),
+                Bytes::from(remote.router_info.serialize(&remote.signing_key)),
+                remote.static_key,
+                remote.signing_key,
+                2u8,
+                event_handle.clone(),
+            ),
+            SubsystemHandle::new(),
+            true,
+        );
+
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                MockRuntime::set_time(Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("to succeed")
+                        - 2 * MAX_CLOCK_SKEW,
+                ));
+
+                let local = Ntcp2Builder::new().build();
+                let local_manager = SessionManager::new(
+                    local.ntcp2_key,
+                    local.ntcp2_iv,
+                    RouterContext::new(
+                        MockRuntime::register_metrics(Vec::new(), None),
+                        ProfileStorage::<MockRuntime>::new(&[], &[]),
+                        local.router_info.identity.id(),
+                        Bytes::from(local.router_info.serialize(&local.signing_key)),
+                        local.static_key,
+                        local.signing_key,
+                        2u8,
+                        event_handle.clone(),
+                    ),
+                    SubsystemHandle::new(),
+                    true,
+                );
+
+                local_manager.create_session(remote.router_info.clone()).await
+            })
+        });
+
+        let stream = MockTcpStream::new(
+            tokio::time::timeout(Duration::from_secs(5), listener.accept())
+                .await
+                .unwrap()
+                .unwrap()
+                .0,
+        );
+        let future = tokio::task::spawn_blocking(move || handle.join().unwrap());
+        let (res1, _res2) = tokio::join!(remote_manager.accept_session(stream), future);
+
+        assert!(res1.is_err());
     }
 }
