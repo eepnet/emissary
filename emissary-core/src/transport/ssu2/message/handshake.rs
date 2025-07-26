@@ -945,6 +945,7 @@ mod tests {
                     .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
                     .build::<MockRuntime>();
 
+                pkt.encrypt_payload(&[1u8; 32], 1337, &[0u8; 32]);
                 pkt.encrypt_header([1u8; 32], [1u8; 32]);
                 pkt.build().to_vec()
             };
@@ -968,6 +969,7 @@ mod tests {
                     .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
                     .build::<MockRuntime>();
 
+                pkt.encrypt_payload(&[1u8; 32], 1337, &[0u8; 32]);
                 pkt.encrypt_header([1u8; 32], [1u8; 32]);
                 pkt.build().to_vec()
             };
