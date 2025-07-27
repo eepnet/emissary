@@ -62,7 +62,7 @@ mod transit;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub use pool::TunnelMessage;
+pub use pool::{TunnelMessage, TunnelMessageRecycle};
 
 pub use garlic::{DeliveryInstructions, GarlicHandler};
 pub use handle::TunnelManagerHandle;

@@ -1569,3 +1569,643 @@ impl<R: Runtime> Future for SamSession<R> {
         Poll::Pending
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        crypto::{SigningPrivateKey, StaticPrivateKey},
+        events::{EventManager, EventSubscriber},
+        netdb::{NetDbAction, NetDbActionRecycle, NetDbHandle},
+        primitives::Destination,
+        profile::ProfileStorage,
+        runtime::{
+            mock::{MockRuntime, MockTcpStream},
+            TcpStream,
+        },
+        sam::{parser::SessionKind, socket::SamSocket},
+        tunnel::{TunnelMessage, TunnelMessageRecycle, TunnelPoolEvent, TunnelPoolHandle},
+    };
+    use thingbuf::mpsc;
+    use tokio::{
+        io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+        net,
+    };
+
+    #[allow(unused)]
+    struct TestSessionContext {
+        client_socket: net::TcpStream,
+        datagram_rx: Receiver<(u16, Vec<u8>)>,
+        event_manager: EventManager<MockRuntime>,
+        event_subscriber: EventSubscriber,
+        netdb_rx: mpsc::Receiver<NetDbAction, NetDbActionRecycle>,
+        shutdown_rx: futures_channel::oneshot::Receiver<()>,
+        sub_rx: Receiver<SubSessionCommand>,
+        tm_recv: mpsc::Receiver<TunnelMessage, TunnelMessageRecycle>,
+        tp_event: mpsc::Sender<TunnelPoolEvent>,
+        tx: Sender<SamSessionCommand<MockRuntime>, SamSessionCommandRecycle>,
+    }
+
+    async fn create_session() -> (SamSession<MockRuntime>, TestSessionContext) {
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let signing_key = SigningPrivateKey::random(rand::thread_rng());
+        let encryption_key = StaticPrivateKey::random(rand::thread_rng());
+        let destination = Destination::new::<MockRuntime>(signing_key.public());
+
+        let (datagram_tx, datagram_rx) = mpsc::channel(10);
+        let (sub_tx, sub_rx) = mpsc::channel(10);
+        let (netdb_handle, netdb_rx) = NetDbHandle::create();
+        let (event_manager, event_subscriber, event_handle) = EventManager::new(None);
+        let (tunnel_pool_handle, tm_recv, tp_event, shutdown_rx) = TunnelPoolHandle::create();
+        let (tx, rx) = mpsc::with_recycle(64, SamSessionCommandRecycle::default());
+
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (client_socket, _) = stream2.unwrap();
+
+        (
+            SamSession::new(SamSessionContext {
+                address_book: None,
+                datagram_tx,
+                destination: DestinationContext {
+                    destination,
+                    private_key: Box::new(encryption_key),
+                    signing_key: Box::new(signing_key),
+                },
+                event_handle,
+                inbound: Default::default(),
+                netdb_handle,
+                options: Default::default(),
+                outbound: Default::default(),
+                profile_storage: ProfileStorage::new(&[], &[]),
+                receiver: rx,
+                session_id: "test".into(),
+                session_kind: SessionKind::Stream,
+                socket,
+                sub_session_tx: Some(sub_tx),
+                tunnel_pool_handle,
+            }),
+            TestSessionContext {
+                client_socket,
+                datagram_rx,
+                event_manager,
+                event_subscriber,
+                netdb_rx,
+                shutdown_rx,
+                sub_rx,
+                tm_recv,
+                tp_event,
+                tx,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn create_stream_sub_session() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        let result =
+            session.on_create_sub_session("sub1".into(), SessionKind::Stream, HashMap::new());
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        if let SamSessionKind::Primary { sub_sessions } = &session.session_kind {
+            assert!(sub_sessions.contains_key("sub1"));
+            assert_eq!(sub_sessions.get("sub1"), Some(&SessionKind::Stream));
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_sub_session() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        // Create first sub-session
+        let _ = session.on_create_sub_session("sub1".into(), SessionKind::Stream, HashMap::new());
+
+        // Try to create duplicate
+        let result =
+            session.on_create_sub_session("sub1".into(), SessionKind::Stream, HashMap::new());
+        assert!(String::from_utf8_lossy(&result).contains("DUPLICATE_ID"));
+    }
+
+    #[tokio::test]
+    async fn non_primary_sub_session() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Stream;
+
+        let result =
+            session.on_create_sub_session("sub1".into(), SessionKind::Stream, HashMap::new());
+        assert!(String::from_utf8_lossy(&result).contains("not a primary session"));
+    }
+
+    #[tokio::test]
+    async fn create_datagram_sub_session() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        let mut options = HashMap::new();
+        options.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options.insert("PORT".to_string(), "1234".to_string());
+
+        let result = session.on_create_sub_session("sub1".into(), SessionKind::Datagram, options);
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        if let SamSessionKind::Primary { sub_sessions } = &session.session_kind {
+            assert!(sub_sessions.contains_key("sub1"));
+            assert_eq!(sub_sessions.get("sub1"), Some(&SessionKind::Datagram));
+        }
+    }
+
+    #[tokio::test]
+    async fn create_multiple_datagram_sub_sessions() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        // First subsession with default FROM_PORT (0)
+        let mut options1 = HashMap::new();
+        options1.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options1.insert("PORT".to_string(), "1234".to_string());
+
+        let result = session.on_create_sub_session("sub1".into(), SessionKind::Datagram, options1);
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        // Second subsession with explicit FROM_PORT
+        let mut options2 = HashMap::new();
+        options2.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options2.insert("PORT".to_string(), "5678".to_string());
+        options2.insert("FROM_PORT".to_string(), "9999".to_string());
+
+        let result = session.on_create_sub_session("sub2".into(), SessionKind::Datagram, options2);
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        // Third subsession with different FROM_PORT
+        let mut options3 = HashMap::new();
+        options3.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options3.insert("PORT".to_string(), "8080".to_string());
+        options3.insert("FROM_PORT".to_string(), "7777".to_string());
+
+        let result = session.on_create_sub_session("sub3".into(), SessionKind::Datagram, options3);
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        // Verify all subsessions were registered
+        if let SamSessionKind::Primary { sub_sessions } = &session.session_kind {
+            assert_eq!(sub_sessions.len(), 3);
+            assert_eq!(sub_sessions.get("sub1"), Some(&SessionKind::Datagram));
+            assert_eq!(sub_sessions.get("sub2"), Some(&SessionKind::Datagram));
+            assert_eq!(sub_sessions.get("sub3"), Some(&SessionKind::Datagram));
+        }
+
+        // Try to create subsession with duplicate FROM_PORT (should fail)
+        let mut options4 = HashMap::new();
+        options4.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options4.insert("PORT".to_string(), "4444".to_string());
+        options4.insert("FROM_PORT".to_string(), "9999".to_string());
+
+        let result = session.on_create_sub_session("sub4".into(), SessionKind::Datagram, options4);
+        assert!(String::from_utf8_lossy(&result).contains("invalid datagram configuration"));
+
+        // Verify the failed attempt didn't affect existing mappings
+        if let SamSessionKind::Primary { sub_sessions } = &session.session_kind {
+            assert_eq!(sub_sessions.len(), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn reject_datagram_sub_session_with_occupied_port() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        // Create first subsession with PORT 1234
+        let mut options1 = HashMap::new();
+        options1.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options1.insert("PORT".to_string(), "1234".to_string());
+        options1.insert("FROM_PORT".to_string(), "5555".to_string());
+
+        let result = session.on_create_sub_session("sub1".into(), SessionKind::Datagram, options1);
+        assert!(String::from_utf8_lossy(&result).contains("RESULT=OK"));
+
+        // Try to create another subsession with same PORT but different FROM_PORT
+        let mut options2 = HashMap::new();
+        options2.insert("HOST".to_string(), "127.0.0.1".to_string());
+        options2.insert("PORT".to_string(), "1234".to_string());
+        options2.insert("FROM_PORT".to_string(), "5555".to_string());
+
+        let result = session.on_create_sub_session("sub2".into(), SessionKind::Datagram, options2);
+        assert!(String::from_utf8_lossy(&result).contains("invalid datagram configuration"));
+
+        // Verify only the first subsession was registered
+        if let SamSessionKind::Primary { sub_sessions } = &session.session_kind {
+            assert_eq!(sub_sessions.len(), 1);
+            assert_eq!(sub_sessions.get("sub1"), Some(&SessionKind::Datagram));
+        }
+    }
+
+    #[tokio::test]
+    async fn register_sub_session_sam_server_exited() {
+        let (mut session, _) = create_session().await;
+        session.session_kind = SamSessionKind::Primary {
+            sub_sessions: HashMap::new(),
+        };
+
+        let result =
+            session.on_create_sub_session("sub1".into(), SessionKind::Stream, HashMap::new());
+        assert!(String::from_utf8_lossy(&result).contains("internal error"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_me() {
+        let (mut session, mut ctx) = create_session().await;
+        session.on_naming_lookup("ME".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify response contains base64 encoded destination
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        assert!(response.contains("NAMING REPLY RESULT=OK NAME=ME VALUE="));
+        assert!(response.ends_with("\n"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_b32_invalid() {
+        let (mut session, mut ctx) = create_session().await;
+        session.on_naming_lookup("invalid.b32.i2p".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify response contains base64 encoded destination
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+        assert!(response.contains("RESULT=INVALID_KEY"));
+        assert!(response.ends_with("\n"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_b32_with_http() {
+        let (mut session, mut ctx) = create_session().await;
+
+        // test with http:// prefix
+        session.on_naming_lookup("http://abcdef.b32.i2p".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response when no address book exists
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+        assert!(response.contains("RESULT=INVALID_KEY"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_b32_with_https() {
+        let (mut session, mut ctx) = create_session().await;
+
+        // test with https:// prefix
+        session.on_naming_lookup("https://abcdef.b32.i2p".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response when no address book exists
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+        assert!(response.contains("RESULT=INVALID_KEY"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_i2p_no_addressbook() {
+        let (mut session, mut ctx) = create_session().await;
+        session.on_naming_lookup("example.i2p".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response when no address book exists
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        assert!(response.contains("RESULT=KEY_NOT_FOUND"));
+        assert!(response.ends_with("\n"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_invalid_name() {
+        let (mut session, mut ctx) = create_session().await;
+        session.on_naming_lookup("invalid-name-without-tld".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response for invalid hostname
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        assert!(response.contains("RESULT=INVALID_KEY"));
+        assert!(response.ends_with("\n"));
+    }
+
+    #[tokio::test]
+    async fn naming_lookup_clearnet() {
+        let (mut session, mut ctx) = create_session().await;
+        session.on_naming_lookup("https://google.com".to_string());
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response for invalid hostname
+        let mut reader = BufReader::new(&mut ctx.client_socket);
+        let mut response = String::new();
+
+        // discard `SESSION STATUS` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        assert!(response.contains("RESULT=INVALID_KEY"));
+        assert!(response.ends_with("\n"));
+    }
+
+    #[tokio::test]
+    async fn stream_connect_for_repliable() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Datagram,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_connect(
+            socket,
+            DestinationId::random(),
+            HashMap::new(),
+            Arc::from("hello"),
+        );
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_connect_for_anonymous() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Anonymous,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_connect(
+            socket,
+            DestinationId::random(),
+            HashMap::new(),
+            Arc::from("hello"),
+        );
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_connect_for_self() {
+        let (mut session, _ctx) = create_session().await;
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_connect(
+            socket,
+            session.dest.id(),
+            HashMap::new(),
+            Arc::from("hello"),
+        );
+        tokio::spawn(async move { session.socket.as_mut().expect("to exist").next().await });
+
+        // verify error response for invalid hostname
+        let mut reader = BufReader::new(&mut client_socket);
+        let mut response = String::new();
+
+        // read `NAMING LOOKUP` message
+        reader.read_line(&mut response).await.expect("to succeed");
+
+        assert!(response.contains("STREAM STATUS RESULT=CANT_REACH_PEER"));
+    }
+
+    #[tokio::test]
+    async fn stream_accept_for_repliable() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Datagram,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_accept(socket, HashMap::new(), Arc::from("hello"));
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_accept_for_anonymous() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Anonymous,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_accept(socket, HashMap::new(), Arc::from("hello"));
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_forward_for_repliable() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Datagram,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_forward(socket, 8888, HashMap::new(), Arc::from("hello"));
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_forward_for_anonymous() {
+        let (mut session, _ctx) = create_session().await;
+        session.session_kind = SamSessionKind::Datagram {
+            kind: SessionKind::Anonymous,
+        };
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_forward(socket, 8888, HashMap::new(), Arc::from("hello"));
+
+        let mut buf = vec![0u8; 128];
+        match client_socket.read(&mut buf).await {
+            Err(_) | Ok(0) => {}
+            _ => panic!("invalid response"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_accept_then_forward() {
+        let (mut session, _ctx) = create_session().await;
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_accept(socket, HashMap::new(), Arc::from("hello"));
+
+        // read `STREAM ACCEPT` response
+        let future = async {
+            let mut reader = BufReader::new(&mut client_socket);
+            let mut response = String::new();
+            reader.read_line(&mut response).await.expect("to succeed");
+            assert!(response.contains("STREAM STATUS RESULT=OK"));
+        };
+        assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_ok());
+
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_forward(socket, 8888, HashMap::new(), Arc::from("hello"));
+
+        // read `STREAM FORWARD` response
+        let future = async {
+            let mut reader = BufReader::new(&mut client_socket);
+            let mut response = String::new();
+            reader.read_line(&mut response).await.expect("to succeed");
+            assert!(response.contains("STREAM STATUS RESULT=I2P_ERROR"));
+        };
+        assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn stream_forward_then_accept() {
+        let (mut session, _ctx) = create_session().await;
+
+        let listener = net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_forward(socket, address.port(), HashMap::new(), Arc::from("hello"));
+
+        // read `STREAM FORWARD` response
+        let future = async {
+            let mut reader = BufReader::new(&mut client_socket);
+            let mut response = String::new();
+            reader.read_line(&mut response).await.expect("to succeed");
+            assert!(response.contains("STREAM STATUS RESULT=OK"));
+        };
+        assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_ok());
+
+        let (stream1, stream2) = tokio::join!(MockTcpStream::connect(address), listener.accept());
+        let socket = SamSocket::<MockRuntime>::new(stream1.unwrap());
+        let (mut client_socket, _) = stream2.unwrap();
+
+        session.on_stream_accept(socket, HashMap::new(), Arc::from("hello"));
+
+        // read `STREAM ACCEPT` response
+        let future = async {
+            let mut reader = BufReader::new(&mut client_socket);
+            let mut response = String::new();
+            reader.read_line(&mut response).await.expect("to succeed");
+            assert!(response.contains("STREAM STATUS RESULT=I2P_ERROR"));
+        };
+        assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_ok());
+    }
+}

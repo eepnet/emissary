@@ -32,7 +32,7 @@ use crate::{
         tunnel::gateway::TunnelGateway,
         Message, MessageBuilder, MessageType, I2NP_MESSAGE_EXPIRATION,
     },
-    netdb::{handle::NetDbActionRecycle, metrics::*, query::*},
+    netdb::{metrics::*, query::*},
     primitives::{LeaseSet2, RouterId, RouterInfo},
     profile::Bucket,
     router::context::RouterContext,
@@ -63,9 +63,9 @@ pub use dht::Dht;
 pub use handle::NetDbHandle;
 
 #[cfg(test)]
-pub use handle::NetDbAction;
+pub use handle::{NetDbAction, NetDbActionRecycle};
 #[cfg(not(test))]
-use handle::NetDbAction;
+use handle::{NetDbAction, NetDbActionRecycle};
 
 mod bucket;
 mod dht;

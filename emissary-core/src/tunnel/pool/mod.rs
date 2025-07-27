@@ -68,6 +68,9 @@ pub use context::{
 pub use handle::{TunnelMessageSender, TunnelPoolEvent, TunnelPoolHandle};
 pub use selector::{ClientSelector, ExploratorySelector};
 
+#[cfg(test)]
+pub use context::TunnelMessageRecycle;
+
 mod context;
 mod handle;
 mod listener;
