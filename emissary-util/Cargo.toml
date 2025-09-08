@@ -18,7 +18,7 @@ metrics-exporter-prometheus = { version = "0.17.2", optional = true }
 pem = { version = "3.0.5", default-features = false }
 rsa = { version = "0.9.8", features = ["sha2"] }
 x509-parser = "0.17.0"
-zip = { version = "4.2.0", default-features = false, features = ["deflate-flate2-zlib"] }
+zip = { version = "5.0.0", default-features = false, features = ["deflate-flate2-zlib"] }
 
 # workspace dependencies
 anyhow = { workspace = true }
