@@ -35,6 +35,7 @@ use nom::{
 };
 
 use alloc::{
+    borrow::ToOwned,
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
@@ -768,7 +769,7 @@ impl Datagram {
     pub fn parse(input: &[u8]) -> Option<Self> {
         let pos = input.iter().position(|&b| b == b'\n')?;
         let (info, datagram) = input.split_at(pos);
-        let info = core::str::from_utf8(&info).ok()?;
+        let info = core::str::from_utf8(info).ok()?;
 
         let (_, (_, _, session_id, _, destination, options)) = tuple((
             Self::parse_version,
