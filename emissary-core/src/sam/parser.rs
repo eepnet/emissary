@@ -1526,8 +1526,6 @@ mod tests {
 
     #[test]
     fn parse_datagram_with_all_options() {
-        crate::util::init_logger();
-
         let destination = {
             let rng = MockRuntime::rng();
             let signing_key = SigningPrivateKey::random(rng);
