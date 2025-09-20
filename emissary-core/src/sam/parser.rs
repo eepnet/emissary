@@ -734,39 +734,62 @@ pub struct Datagram {
 
     /// Datagram.
     pub datagram: Vec<u8>,
+
+    /// Options.
+    #[allow(unused)]
+    pub options: HashMap<String, String>,
 }
 
 impl Datagram {
+    fn parse_version(input: &str) -> IResult<&str, ()> {
+        let (input, _) = tag("3.")(input)?;
+        let (input, _) = take_while1(|c: char| c.is_ascii_digit())(input)?;
+
+        Ok((input, ()))
+    }
+
+    fn parse_session_id(input: &str) -> IResult<&str, Arc<str>> {
+        let (input, id) = take_while1(|c| c != ' ')(input)?;
+
+        Ok((input, Arc::from(id)))
+    }
+
+    fn parse_destination(input: &str) -> IResult<&str, Destination> {
+        let (input, dest_b64) = take_while1(|c| c != ' ')(input)?;
+        let decoded = base64_decode(dest_b64)
+            .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Char)))?;
+        let destination = Destination::parse(&decoded)
+            .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Char)))?;
+
+        Ok((input, destination))
+    }
+
     /// Attempt to parse `input` into `Datagram`.
     pub fn parse(input: &[u8]) -> Option<Self> {
-        // TODO: reimplement using nom
-        // TODO: add support for options
-        //
-        // the datagram starts with `3.x ` sequence which is skipped
-        //
-        // after it follows the nickname of the session, followed by `Destination` of remote peer
-        //
-        // the "header" ends in `\n`, followed by the actual datagram
-        let nickname_end = input[4..].iter().position(|byte| byte == &b' ')?;
-        let dgram_start = input[nickname_end + 5..].iter().position(|byte| byte == &b'\n')?;
+        let pos = input.iter().position(|&b| b == b'\n')?;
+        let (info, datagram) = input.split_at(pos);
+        let info = core::str::from_utf8(&info).ok()?;
 
-        let session_id: Arc<str> =
-            Arc::from(core::str::from_utf8(&input[4..nickname_end + 4]).ok()?);
+        let (_, (_, _, session_id, _, destination, options)) = tuple((
+            Self::parse_version,
+            char(' '),
+            Self::parse_session_id,
+            char(' '),
+            Self::parse_destination,
+            opt(parse_key_value_pairs),
+        ))(info)
+        .ok()?;
 
-        let destination = {
-            let destination =
-                core::str::from_utf8(&input[nickname_end + 5..dgram_start + nickname_end + 5])
-                    .ok()?;
-            let decoded = base64_decode(destination)?;
-
-            Destination::parse(&decoded)?
-        };
-        let datagram = input[nickname_end + dgram_start + 6..].to_vec();
+        let options = options?
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect();
 
         Some(Self {
             session_id,
             destination,
-            datagram,
+            options,
+            datagram: datagram[1..].to_vec(),
         })
     }
 }
@@ -1470,17 +1493,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_datagram() {
+    fn parse_datagram_basic() {
         let destination = {
             let rng = MockRuntime::rng();
             let signing_key = SigningPrivateKey::random(rng);
-
             Destination::new::<MockRuntime>(signing_key.public())
         };
         let serialized = {
             let mut out = BytesMut::with_capacity(destination.serialized_len());
             out.put_slice(&destination.serialize());
-
             base64_encode(out)
         };
 
@@ -1491,36 +1512,119 @@ mod tests {
             Some(Datagram {
                 session_id,
                 datagram,
+                options,
                 ..
             }) => {
                 assert_eq!(*session_id, *"test");
                 assert_eq!(datagram, b"hello, world");
+                assert!(options.is_empty());
             }
             _ => panic!("invalid datagram"),
         }
+    }
 
-        {
-            let datagram = "3.0 12OzbmMqo3bdv3w8 Mja~hsQgYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-Gx\
-            CBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEIGFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQ\
-            gYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEI\
-            GFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQgYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCB\
-            hVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEIGFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQgY\
-            VQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkQL4ggEoB~o\
-            SzcMX2fuc~MDG6lmUbi6G9sfRnscl9uh4BQAEAAcAAA==\nhello, world 1"
-                .as_bytes()
-                .to_vec();
+    #[test]
+    fn parse_datagram_with_all_options() {
+        crate::util::init_logger();
 
-            match Datagram::parse(&datagram) {
-                Some(Datagram {
-                    session_id,
-                    datagram,
-                    ..
-                }) => {
-                    assert_eq!(*session_id, *"12OzbmMqo3bdv3w8");
-                    assert_eq!(datagram, b"hello, world 1");
-                }
-                _ => panic!("invalid datagram"),
+        let destination = {
+            let rng = MockRuntime::rng();
+            let signing_key = SigningPrivateKey::random(rng);
+            Destination::new::<MockRuntime>(signing_key.public())
+        };
+        let serialized = {
+            let mut out = BytesMut::with_capacity(destination.serialized_len());
+            out.put_slice(&destination.serialize());
+            base64_encode(out)
+        };
+
+        let mut datagram = format!(
+            "3.0 test {serialized} FROM_PORT=1234 TO_PORT=5678 PROTOCOL=17 \
+            SEND_TAGS=2 TAG_THRESHOLD=3 EXPIRES=3600 SEND_LEASESET=true\n"
+        )
+        .as_bytes()
+        .to_vec();
+        datagram.extend_from_slice(b"hello with options");
+
+        match Datagram::parse(&datagram) {
+            Some(Datagram {
+                session_id,
+                datagram,
+                options,
+                ..
+            }) => {
+                assert_eq!(*session_id, *"test");
+                assert_eq!(datagram, b"hello with options");
+                assert_eq!(options.get("FROM_PORT"), Some(&String::from("1234")));
+                assert_eq!(options.get("TO_PORT"), Some(&String::from("5678")));
+                assert_eq!(options.get("PROTOCOL"), Some(&String::from("17")));
+                assert_eq!(options.get("SEND_TAGS"), Some(&String::from("2")));
+                assert_eq!(options.get("TAG_THRESHOLD"), Some(&String::from("3")));
+                assert_eq!(options.get("EXPIRES"), Some(&String::from("3600")));
+                assert_eq!(options.get("SEND_LEASESET"), Some(&String::from("true")));
             }
+            _ => panic!("invalid datagram"),
+        }
+    }
+
+    #[test]
+    fn parse_datagram_with_port_options() {
+        let destination = {
+            let rng = MockRuntime::rng();
+            let signing_key = SigningPrivateKey::random(rng);
+            Destination::new::<MockRuntime>(signing_key.public())
+        };
+        let serialized = {
+            let mut out = BytesMut::with_capacity(destination.serialized_len());
+            out.put_slice(&destination.serialize());
+            base64_encode(out)
+        };
+
+        let mut datagram = format!("3.0 test {serialized} FROM_PORT=1234 TO_PORT=5678\n")
+            .as_bytes()
+            .to_vec();
+        datagram.extend_from_slice(b"hello with ports");
+
+        match Datagram::parse(&datagram) {
+            Some(Datagram {
+                session_id,
+                datagram,
+                options,
+                ..
+            }) => {
+                assert_eq!(*session_id, *"test");
+                assert_eq!(datagram, b"hello with ports");
+                assert_eq!(options.get("FROM_PORT"), Some(&String::from("1234")));
+                assert_eq!(options.get("TO_PORT"), Some(&String::from("5678")));
+            }
+            _ => panic!("invalid datagram"),
+        }
+    }
+
+    #[test]
+    fn parse_datagram_real_destination() {
+        let datagram = "3.0 12OzbmMqo3bdv3w8 Mja~hsQgYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-Gx\
+        CBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEIGFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQ\
+        gYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEI\
+        GFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQgYVQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCB\
+        hVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkTI2v4bEIGFUG5bIrm7Zyx5GfFC0D9UclVJ2QoXrx4GRMja~hsQgY\
+        VQblsiubtnLHkZ8ULQP1RyVUnZChevHgZEyNr-GxCBhVBuWyK5u2cseRnxQtA~VHJVSdkKF68eBkQL4ggEoB~o\
+        SzcMX2fuc~MDG6lmUbi6G9sfRnscl9uh4BQAEAAcAAA==\nhello, world 1"
+            .as_bytes()
+            .to_vec();
+
+        match Datagram::parse(&datagram) {
+            Some(Datagram {
+                session_id,
+                datagram,
+                options,
+                ..
+            }) => {
+                assert_eq!(*session_id, *"12OzbmMqo3bdv3w8");
+                assert_eq!(datagram, b"hello, world 1");
+                assert!(options.is_empty());
+            }
+            _ => panic!("invalid datagram"),
         }
     }
 

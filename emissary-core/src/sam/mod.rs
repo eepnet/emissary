@@ -382,6 +382,7 @@ impl<R: Runtime> Future for SamServer<R> {
                         session_id,
                         destination,
                         datagram,
+                        ..
                     }) = Datagram::parse(&this.read_buffer[..nread])
                     else {
                         tracing::warn!(
