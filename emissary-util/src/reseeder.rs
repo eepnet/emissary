@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    certificates::{CREATIVECOWPAT_SSL, CUBICCHAOS_SSL},
+    certificates::CREATIVECOWPAT_SSL,
     su3::{ReseedRouterInfo, Su3},
 };
 
@@ -45,7 +45,6 @@ const MIN_ROUTER_INFOS_TO_DOWNLOAD: usize = 100usize;
 /// Reseed servers.
 const RESEED_SERVERS: &[&str] = &[
     "https://reseed.stormycloud.org/",
-    "https://i2p.ghativega.in/",
     "https://reseed-pl.i2pd.xyz/",
     "https://reseed-fr.i2pd.xyz/",
     "https://www2.mk16.de/",
@@ -57,7 +56,6 @@ const RESEED_SERVERS: &[&str] = &[
     "https://reseed.onion.im/",
     "https://reseed.memcpy.io/",
     "https://i2pseed.creativecowpat.net:8443/",
-    "https://cubicchaos.net:8443/",
 ];
 
 /// HTTPS reseeder.
@@ -76,12 +74,6 @@ impl Reseeder {
         }
         .add_root_certificate(
             Certificate::from_pem_bundle(CREATIVECOWPAT_SSL.as_bytes())
-                .expect("to succeed")
-                .pop()
-                .expect("to exist"),
-        )
-        .add_root_certificate(
-            Certificate::from_pem_bundle(CUBICCHAOS_SSL.as_bytes())
                 .expect("to succeed")
                 .pop()
                 .expect("to exist"),
