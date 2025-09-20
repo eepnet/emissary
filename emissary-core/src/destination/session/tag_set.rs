@@ -423,7 +423,7 @@ impl TagSet {
                 // until a new key is received and once it's received, do a dh ratchet
                 //
                 // https://geti2p.net/spec/ecies#dh-ratchet-message-flow
-                match self.tag_set_id % 2 != 0 {
+                match !self.tag_set_id.is_multiple_of(2) {
                     true => {
                         let private_key = StaticPrivateKey::random(R::rng());
                         let public_key = private_key.public();

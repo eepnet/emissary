@@ -467,7 +467,7 @@ impl<T: Tunnel> PendingTunnel<T> {
 
                 // length + at least one real record + local fake record
                 if message.payload.len() < 1 + 2 * SHORT_RECORD_LEN
-                    || message.payload[1..].len() % SHORT_RECORD_LEN != 0
+                    || !message.payload[1..].len().is_multiple_of(SHORT_RECORD_LEN)
                 {
                     tracing::warn!(
                         target: LOG_TARGET,

@@ -1337,7 +1337,7 @@ mod tests {
         {
             let port = config.ntcp2_config.as_ref().unwrap().port;
 
-            assert!(port >= 9151 && port <= 30777);
+            assert!((9151..=30777).contains(&port));
             assert!(!RESERVED_PORTS.iter().any(|p| p == &port));
         }
 

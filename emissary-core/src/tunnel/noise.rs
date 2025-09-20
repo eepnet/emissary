@@ -347,7 +347,7 @@ impl ShortInboundSession {
     ) -> crate::Result<()> {
         match mem::replace(&mut self.state, ShortInboundSessionState::Poisoned) {
             ShortInboundSessionState::TunnelKeysDerived { state, tunnel_keys } => {
-                debug_assert!(payload.len() > 218 && (payload.len() - 1) % 218 == 0);
+                debug_assert!(payload.len() > 218 && (payload.len() - 1).is_multiple_of(218));
 
                 // encrypt our record with chachapoly, using the associated data derived in
                 // `Self::decrypt_build_record()` and encrypt the other records with

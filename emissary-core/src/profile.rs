@@ -543,7 +543,7 @@ impl<R: Runtime> ProfileStorage<R> {
     }
 
     /// Get [`Reader`].
-    pub fn reader(&self) -> Reader {
+    pub fn reader(&self) -> Reader<'_> {
         Reader {
             router_infos: self.routers.read(),
             profiles: self.profiles.read(),

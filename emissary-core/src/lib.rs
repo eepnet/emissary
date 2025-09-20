@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![cfg_attr(test, allow(clippy::all))]
 #![allow(clippy::wrong_self_convention)]
 #![allow(clippy::manual_async_fn)]
 #![allow(clippy::type_complexity)]

@@ -319,7 +319,7 @@ impl<'a> Su3<'a> {
 mod tests {
     use super::*;
 
-    const SU3: &'static [u8] = include_bytes!("../assets/i2pseeds.su3");
+    const SU3: &[u8] = include_bytes!("../assets/i2pseeds.su3");
 
     #[test]
     fn parse_su3() {

@@ -208,7 +208,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
         &self,
         payload: &'a mut [u8],
     ) -> Option<(usize, &'a mut [u8])> {
-        (payload.len() > RECORD_SIZE && (payload.len() - 1) % RECORD_SIZE == 0)
+        (payload.len() > RECORD_SIZE && (payload.len() - 1).is_multiple_of(RECORD_SIZE))
             .then(|| {
                 payload[1..].chunks_mut(RECORD_SIZE).enumerate().find(|(_, chunk)| {
                     chunk[..16] == self.router_ctx.noise().local_router_hash()[..16]

@@ -201,7 +201,7 @@ impl RouterUi {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         let sidebar = column![
             button("Overview").on_press(Message::ButtonPressed(View::Overview)),
             button("Destinations").on_press(Message::ButtonPressed(View::Destinations)),
