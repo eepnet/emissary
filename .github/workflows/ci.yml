@@ -39,6 +39,8 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: clippy
 
     - name: cargo-clippy emissary-core
       working-directory: emissary-core
