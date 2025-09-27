@@ -84,6 +84,60 @@ pub trait SecretKey {
     fn diffie_hellman<T: AsRef<x25519_dalek::PublicKey>>(&self, public_key: &T) -> [u8; 32];
 }
 
+/// Signing key kind.
+///
+/// https://geti2p.net/spec/common-structures#key-certificates
+pub enum SigningKeyKind {
+    /// DSA-SHA1
+    DsaSha1(usize),
+
+    /// ECDSA-SHA256-P256
+    EcDsaSha256P256(usize),
+
+    /// EdDSA-SHA512-Ed25519
+    EdDsaSha512Ed25519(usize),
+}
+
+impl TryFrom<u16> for SigningKeyKind {
+    type Error = ();
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SigningKeyKind::DsaSha1(128)),
+            1 => Ok(SigningKeyKind::EcDsaSha256P256(64)),
+            7 => Ok(SigningKeyKind::EdDsaSha512Ed25519(32)),
+            _ => return Err(()),
+        }
+    }
+}
+
+/// Private key kind.
+///
+/// https://geti2p.net/spec/common-structures#key-certificates
+pub enum PrivateKeyKind {
+    /// ElGamal.
+    ElGamal(usize),
+
+    /// P256.
+    P256(usize),
+
+    /// X25519
+    X25519(usize),
+}
+
+impl TryFrom<u16> for PrivateKeyKind {
+    type Error = ();
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(PrivateKeyKind::ElGamal(256)),
+            1 => Ok(PrivateKeyKind::P256(64)),
+            4 => Ok(PrivateKeyKind::X25519(32)),
+            _ => return Err(()),
+        }
+    }
+}
+
 /// Static public key.
 #[derive(Debug, Clone)]
 pub enum StaticPublicKey {

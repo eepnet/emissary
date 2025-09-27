@@ -21,7 +21,10 @@
 //! https://geti2p.net/spec/common-structures#destination
 
 use crate::{
-    crypto::{base64_decode, base64_encode, sha256::Sha256, SigningPublicKey},
+    crypto::{
+        base64_decode, base64_encode, sha256::Sha256, PrivateKeyKind, SigningKeyKind,
+        SigningPublicKey,
+    },
     primitives::LOG_TARGET,
     runtime::Runtime,
 };
@@ -57,11 +60,6 @@ const PADDING_LEN: usize = 320usize + 32usize;
 ///
 /// https://geti2p.net/spec/common-structures#key-certificates
 const KEY_KIND_EDDSA_SHA512_ED25519: u16 = 0x0007;
-
-/// Key kind for `ECDSA_SHA256_P256`.
-///
-/// https://geti2p.net/spec/common-structures#key-certificates
-const KEY_KIND_ECDSA_SHA256_P256: u16 = 0x0001;
 
 /// Serialized [`Destination`] length with key certificate
 const DESTINATION_WITH_KEY_CERT_LEN: usize = 391usize;
@@ -114,8 +112,14 @@ pub struct Destination {
     /// Destinations' identity hash.
     identity_hash: Bytes,
 
+    /// Private key length.
+    private_key_len: usize,
+
     /// Serialized destination.
     serialized: Bytes,
+
+    /// Signing key length.
+    signing_key_len: usize,
 
     /// Destination's verifying key.
     verifying_key: SigningPublicKey,
@@ -140,7 +144,7 @@ impl Destination {
             out.put_u8(KEY_CERTIFICATE);
             out.put_u16(KEY_CERTIFICATE_LEN);
             out.put_u16(KEY_KIND_EDDSA_SHA512_ED25519);
-            out.put_u16(0u16); // public key type
+            out.put_u16(4u16); // public key type for x25519
 
             out.freeze()
         };
@@ -149,7 +153,9 @@ impl Destination {
         Self {
             destination_id: DestinationId::from(identity_hash.clone()),
             identity_hash: Bytes::from(identity_hash),
+            private_key_len: 32, // x25519
             serialized,
+            signing_key_len: 32, // ed25519
             verifying_key,
         }
     }
@@ -174,59 +180,92 @@ impl Destination {
         let (rest, certificate_kind) = be_u8(rest)?;
         let (rest, certificate_len) = be_u16(rest)?;
 
-        let (rest, verifying_key, destination_len) = match (certificate_kind, certificate_len) {
-            (NULL_CERTIFICATE, _) => (
-                rest,
-                SigningPublicKey::dsa_sha1(&initial_bytes[384 - 128..384])
-                    .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?,
-                DESTINATION_WITH_NULL_CERT_LEN,
-            ),
-            (KEY_CERTIFICATE, KEY_CERTIFICATE_LEN) => {
-                let (rest, signing_key_kind) = be_u16(rest)?;
-                let (rest, _public_key_type) = be_u16(rest)?;
+        let (rest, verifying_key, signing_key_len, private_key_len, destination_len) =
+            match (certificate_kind, certificate_len) {
+                (NULL_CERTIFICATE, _) => (
+                    rest,
+                    SigningPublicKey::dsa_sha1(&initial_bytes[384 - 128..384])
+                        .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?,
+                    256, // elgamal
+                    128, // dsa-sha1
+                    DESTINATION_WITH_NULL_CERT_LEN,
+                ),
+                (KEY_CERTIFICATE, KEY_CERTIFICATE_LEN) => {
+                    let (rest, signing_key_kind) = be_u16(rest)?;
+                    let (rest, private_key_kind) = be_u16(rest)?;
 
-                match signing_key_kind {
-                    KEY_KIND_EDDSA_SHA512_ED25519 => (
-                        rest,
-                        {
-                            // call must succeed as the slice into `initial_bytes`
-                            // and `public_key` are the same size
-                            let public_key = TryInto::<[u8; 32]>::try_into(
-                                initial_bytes[384 - 32..384].to_vec(),
-                            )
-                            .expect("to succeed");
+                    let (verifying_key, signing_key_len) =
+                        match SigningKeyKind::try_from(signing_key_kind) {
+                            Ok(SigningKeyKind::DsaSha1(_)) => {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    "dsa-sha1 signing key but not null certificate",
+                                );
+                                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                            }
+                            Ok(SigningKeyKind::EcDsaSha256P256(size)) => (
+                                SigningPublicKey::p256(&initial_bytes[384 - 64..384]).ok_or_else(
+                                    || Err::Error(make_error(input, ErrorKind::Fail)),
+                                )?,
+                                size,
+                            ),
+                            Ok(SigningKeyKind::EdDsaSha512Ed25519(size)) => {
+                                // call must succeed as the slice into `initial_bytes`
+                                // and `public_key` are the same size
+                                let public_key = TryInto::<[u8; 32]>::try_into(
+                                    initial_bytes[384 - 32..384].to_vec(),
+                                )
+                                .expect("to succeed");
 
-                            SigningPublicKey::from_bytes(&public_key)
-                                .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?
-                        },
-                        DESTINATION_WITH_KEY_CERT_LEN,
-                    ),
-                    KEY_KIND_ECDSA_SHA256_P256 => (
+                                (
+                                    SigningPublicKey::from_bytes(&public_key).ok_or_else(|| {
+                                        Err::Error(make_error(input, ErrorKind::Fail))
+                                    })?,
+                                    size,
+                                )
+                            }
+                            Err(()) => {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?signing_key_kind,
+                                    "unsupported signing key kind for destination",
+                                );
+                                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                            }
+                        };
+
+                    let public_key_len = match PrivateKeyKind::try_from(private_key_kind) {
+                        Ok(PrivateKeyKind::ElGamal(size)) => size,
+                        Ok(PrivateKeyKind::P256(size)) => size,
+                        Ok(PrivateKeyKind::X25519(size)) => size,
+                        Err(()) => {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                ?private_key_kind,
+                                "unsupported private key kind for destination",
+                            );
+                            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                        }
+                    };
+
+                    (
                         rest,
-                        SigningPublicKey::p256(&initial_bytes[384 - 64..384])
-                            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?,
+                        verifying_key,
+                        signing_key_len,
+                        public_key_len,
                         DESTINATION_WITH_KEY_CERT_LEN,
-                    ),
-                    key_kind => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?key_kind,
-                            "unsupported key kind for destination",
-                        );
-                        return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                    }
+                    )
                 }
-            }
-            (certificate_kind, certificate_len) => {
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    ?certificate_kind,
-                    ?certificate_len,
-                    "unsupported certificate type for destination",
-                );
-                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-            }
-        };
+                (certificate_kind, certificate_len) => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        ?certificate_kind,
+                        ?certificate_len,
+                        "unsupported certificate type for destination",
+                    );
+                    return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                }
+            };
 
         let identity_hash = Bytes::from(Sha256::new().update(&input[..destination_len]).finalize());
         let serialized = Bytes::from(input[..destination_len].to_vec());
@@ -238,6 +277,8 @@ impl Destination {
                 identity_hash,
                 serialized,
                 verifying_key,
+                private_key_len,
+                signing_key_len,
             },
         ))
     }
@@ -275,6 +316,16 @@ impl Destination {
     /// Get reference to `SigningPublicKey` of the [`Destination`].
     pub fn verifying_key(&self) -> &SigningPublicKey {
         &self.verifying_key
+    }
+
+    // Get length of the private key.
+    pub fn private_key_length(&self) -> usize {
+        self.private_key_len
+    }
+
+    // Get length of the signing key.
+    pub fn signing_key_length(&self) -> usize {
+        self.signing_key_len
     }
 
     /// Get reference to serialized [`Destination`].

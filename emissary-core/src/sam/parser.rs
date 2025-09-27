@@ -419,19 +419,23 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     Some(destination) => {
                         let decoded = base64_decode(destination).ok_or(())?;
                         let (rest, destination) =
-                            Destination::parse_frame(&decoded).map_err(|_| ())?;
-                        let (rest, private_key) =
-                            take::<_, _, ()>(32usize)(rest).map_err(|_| ())?;
-                        let (_, signing_key) = take::<_, _, ()>(32usize)(rest).map_err(|_| ())?;
+                            Destination::parse_frame(&decoded).map_err(|_| ()).unwrap();
+
+                        let (rest, _private_key) =
+                            take::<_, _, ()>(destination.private_key_length())(rest)
+                                .map_err(|_| ())
+                                .unwrap();
+                        let (_, signing_key) =
+                            take::<_, _, ()>(destination.signing_key_length())(rest)
+                                .map_err(|_| ())
+                                .unwrap();
 
                         // conversions are expected to succeed since the client is interacting with
                         // a local router and would only crash their onw router if they provided
                         // invalid keying material
                         DestinationContext {
                             destination,
-                            private_key: Box::new(
-                                StaticPrivateKey::from_bytes(private_key).expect("to succeed"),
-                            ),
+                            private_key: Box::new(StaticPrivateKey::random(R::rng())),
                             signing_key: Box::new(
                                 SigningPrivateKey::from_bytes(signing_key).expect("to succeed"),
                             ),
@@ -1727,5 +1731,20 @@ mod tests {
     #[test]
     fn parse_sub_session_id_missing() {
         assert!(SamCommand::parse::<MockRuntime>("SESSION ADD STYLE=STREAM").is_none());
+    }
+
+    #[test]
+    fn parse_elgamal_destination() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/test-vectors/elgamal.b64");
+        let test = std::fs::read_to_string(path).unwrap();
+        let decoded = base64_decode(&test).unwrap();
+        let (rest, destination) = Destination::parse_frame(&decoded).unwrap();
+
+        let (rest, _private_key) =
+            take::<_, _, ()>(destination.private_key_length())(rest).unwrap();
+        let (_, signing_key) = take::<_, _, ()>(destination.signing_key_length())(rest).unwrap();
+        let sk = SigningPrivateKey::from_bytes(signing_key).unwrap();
+
+        assert_eq!(sk.public(), destination.verifying_key().clone());
     }
 }
