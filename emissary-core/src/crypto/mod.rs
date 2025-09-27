@@ -106,7 +106,7 @@ impl TryFrom<u16> for SigningKeyKind {
             0 => Ok(SigningKeyKind::DsaSha1(128)),
             1 => Ok(SigningKeyKind::EcDsaSha256P256(64)),
             7 => Ok(SigningKeyKind::EdDsaSha512Ed25519(32)),
-            _ => return Err(()),
+            _ => Err(()),
         }
     }
 }
@@ -133,7 +133,7 @@ impl TryFrom<u16> for PrivateKeyKind {
             0 => Ok(PrivateKeyKind::ElGamal(256)),
             1 => Ok(PrivateKeyKind::P256(64)),
             4 => Ok(PrivateKeyKind::X25519(32)),
-            _ => return Err(()),
+            _ => Err(()),
         }
     }
 }
