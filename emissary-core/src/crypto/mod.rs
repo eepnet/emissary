@@ -88,10 +88,10 @@ pub trait SecretKey {
 ///
 /// https://geti2p.net/spec/common-structures#key-certificates
 pub enum SigningKeyKind {
-    /// DSA-SHA1
+    /// DSA-SHA1.
     DsaSha1(usize),
 
-    /// ECDSA-SHA256-P256
+    /// ECDSA-SHA256-P256.
     EcDsaSha256P256(usize),
 
     /// EdDSA-SHA512-Ed25519
@@ -121,7 +121,7 @@ pub enum PrivateKeyKind {
     /// P256.
     P256(usize),
 
-    /// X25519
+    /// X25519.
     X25519(usize),
 }
 
