@@ -27,6 +27,7 @@ use crate::{
     port_mapper::PortMapper,
     proxy::{http::HttpProxy, socks::SocksProxy},
     storage::RouterStorage,
+    tools::RouterCommand,
     tunnel::{client::ClientTunnelManager, server::ServerTunnelManager},
 };
 
@@ -47,6 +48,7 @@ mod logger;
 mod port_mapper;
 mod proxy;
 mod storage;
+mod tools;
 mod tunnel;
 mod ui;
 
@@ -78,10 +80,51 @@ struct RouterContext {
     router_ui_config: Option<RouterUiConfig>,
 }
 
-/// Setup router and related subsystems.
-async fn setup_router() -> anyhow::Result<RouterContext> {
+/// Parse `Arguments` and if no subcommand has been specified, return `Arguments`, allowing the
+/// caller to setup the router.
+///
+/// If subcommand has been specified, execute the command and exit.
+fn parse_arguments() -> Arguments {
     let arguments = Arguments::parse();
 
+    let Some(command) = arguments.command else {
+        return arguments;
+    };
+
+    match command {
+        RouterCommand::Base64Encode {
+            string,
+            file,
+            output,
+        } =>
+            if let Err(error) = tools::base64::encode(string, file, output) {
+                tracing::error!(
+                    target: LOG_TARGET,
+                    ?error,
+                    "failed to base64-encode input",
+                );
+                std::process::exit(1);
+            },
+        RouterCommand::Base64Decode {
+            string,
+            file,
+            output,
+        } =>
+            if let Err(error) = tools::base64::decode(string, file, output) {
+                tracing::error!(
+                    target: LOG_TARGET,
+                    ?error,
+                    "failed to base64-decode input",
+                );
+                std::process::exit(1);
+            },
+    }
+
+    std::process::exit(0);
+}
+
+/// Setup router and related subsystems.
+async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
     // initialize logger with any logging directive given as a cli argument
     let handle = init_logger!(arguments.log.clone());
 
@@ -346,11 +389,12 @@ async fn router_event_loop(
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (_tx, shutdown_rx) = channel(1);
+    let arguments = parse_arguments();
     let RouterContext {
         port_mapper,
         router,
         ..
-    } = runtime.block_on(setup_router())?;
+    } = runtime.block_on(setup_router(arguments))?;
 
     runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
 
@@ -361,13 +405,14 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (shutdown_tx, shutdown_rx) = channel(1);
+    let arguments = parse_arguments();
     let RouterContext {
         events,
         port_mapper,
         router,
         router_ui_config,
         ..
-    } = runtime.block_on(setup_router())?;
+    } = runtime.block_on(setup_router(arguments))?;
 
     match router_ui_config {
         None => {
@@ -392,12 +437,13 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (shutdown_tx, shutdown_rx) = channel(1);
+    let arguments = parse_arguments();
     let RouterContext {
         router,
         port_mapper,
         events,
         router_ui_config,
-    } = runtime.block_on(setup_router())?;
+    } = runtime.block_on(setup_router(arguments))?;
 
     match router_ui_config {
         None => {

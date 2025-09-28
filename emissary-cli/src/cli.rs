@@ -18,7 +18,7 @@
 
 use clap::{Args, Parser};
 
-use crate::config::Theme;
+use crate::{config::Theme, tools::RouterCommand};
 
 #[derive(Args)]
 pub struct TunnelOptions {
@@ -242,4 +242,10 @@ pub struct Arguments {
     /// Port forwarding options.
     #[clap(flatten)]
     pub router_ui: RouterUiOptions,
+
+    /// Optional router command.
+    ///
+    /// Router is started normally if no command is specified.
+    #[command(subcommand)]
+    pub command: Option<RouterCommand>,
 }

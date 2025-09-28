@@ -21,6 +21,7 @@ export default defineConfig({
           { text: "Eepsites", link: "/eepsite.md" },
           { text: "Torrents", link: "/torrents.md" },
           { text: "IRC and Email", link: "/irc-email.md" },
+          { text: "Built-in tools", link: "/tooling.md" },
         ]
       },
     ],

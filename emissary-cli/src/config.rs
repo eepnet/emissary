@@ -1268,6 +1268,7 @@ mod tests {
     fn make_arguments() -> Arguments {
         Arguments {
             base_path: None,
+            command: None,
             log: None,
             #[cfg(any(
                 all(feature = "native-ui", not(feature = "web-ui")),
