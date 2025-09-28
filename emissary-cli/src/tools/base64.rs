@@ -54,7 +54,7 @@ pub fn encode(
 }
 
 /// Base64-decode data from `string`, `file` or stdin based on which is specified and write the
-/// Base64-encoded string to `output` (if specified) or to stdout.
+/// Base64-decoded string to `output` (if specified) or to stdout.
 pub fn decode(
     string: Option<String>,
     file: Option<String>,
