@@ -89,8 +89,8 @@ impl ClientTunnelManager {
             publish: false,
             samv3_tcp_port: self.sam_tcp_port,
             nickname: "i2p-tunnel".to_string(),
-            num_inbound: 4,
-            num_outbound: 4,
+            inbound_quantity: 4,
+            outbound_quantity: 4,
             ..Default::default()
         })
         .await
