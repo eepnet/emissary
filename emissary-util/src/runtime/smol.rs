@@ -243,68 +243,13 @@ impl UdpSocket for SmolUdpSocket {
     }
 
     #[inline]
-    fn poll_send_to(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> Poll<Option<usize>> {
-        loop {
-            match ready!(self.0.poll_writable(cx)) {
-                Ok(()) => match self.0.get_ref().send_to(buf, target) {
-                    Ok(n) => return Poll::Ready(Some(n)),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?error,
-                            "failed to send datagram",
-                        );
-                        return Poll::Ready(None);
-                    }
-                },
-                Err(error) => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?error,
-                        "failed to poll socket writability",
-                    );
-                    return Poll::Ready(None);
-                }
-            }
-        }
+    fn send_to(&mut self, buf: &[u8], target: SocketAddr) -> impl Future<Output = Option<usize>> {
+        async move { self.0.send_to(buf, target).await.ok() }
     }
 
     #[inline]
-    fn poll_recv_from(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Option<(usize, SocketAddr)>> {
-        loop {
-            match ready!(self.0.poll_readable(cx)) {
-                Ok(()) => match self.0.get_ref().recv_from(buf) {
-                    Ok((n, addr)) => return Poll::Ready(Some((n, addr))),
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(error) => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?error,
-                            "failed to receive datagram",
-                        );
-                        return Poll::Ready(None);
-                    }
-                },
-                Err(error) => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?error,
-                        "failed to poll socket readability",
-                    );
-                    return Poll::Ready(None);
-                }
-            }
-        }
+    fn recv_from(&mut self, buf: &mut [u8]) -> impl Future<Output = Option<(usize, SocketAddr)>> {
+        async move { self.0.recv_from(buf).await.ok() }
     }
 
     fn local_address(&self) -> Option<SocketAddr> {
@@ -569,6 +514,7 @@ impl RuntimeT for Runtime {
         smol::Timer::after(duration).await;
     }
 
+    #[inline]
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
         let mut e = GzEncoder::new(Vec::new(), Compression::default());
         e.write_all(bytes.as_ref()).ok()?;
@@ -576,6 +522,7 @@ impl RuntimeT for Runtime {
         e.finish().ok()
     }
 
+    #[inline]
     fn gzip_decompress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
         let mut e = GzDecoder::new(Vec::new());
         e.write_all(bytes.as_ref()).ok()?;

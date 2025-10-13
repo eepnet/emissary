@@ -26,7 +26,7 @@ use flate2::{
 };
 use futures::{AsyncRead as _, AsyncWrite as _, Stream};
 use rand_core::{CryptoRng, RngCore};
-use tokio::{io::ReadBuf, net, task, time::Sleep};
+use tokio::{net, task, time::Sleep};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[cfg(feature = "metrics")]
@@ -209,30 +209,13 @@ impl UdpSocket for TokioUdpSocket {
     }
 
     #[inline]
-    fn poll_send_to(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> Poll<Option<usize>> {
-        Poll::Ready(futures::ready!(self.0.poll_send_to(cx, buf, target)).ok())
+    fn send_to(&mut self, buf: &[u8], target: SocketAddr) -> impl Future<Output = Option<usize>> {
+        async move { self.0.send_to(buf, target).await.ok() }
     }
 
     #[inline]
-    fn poll_recv_from(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<Option<(usize, SocketAddr)>> {
-        let mut buf = ReadBuf::new(buf);
-
-        match futures::ready!(self.0.poll_recv_from(cx, &mut buf)) {
-            Err(_) => Poll::Ready(None),
-            Ok(from) => {
-                let nread = buf.filled().len();
-                Poll::Ready(Some((nread, from)))
-            }
-        }
+    fn recv_from(&mut self, buf: &mut [u8]) -> impl Future<Output = Option<(usize, SocketAddr)>> {
+        async move { self.0.recv_from(buf).await.ok() }
     }
 
     fn local_address(&self) -> Option<SocketAddr> {
@@ -466,6 +449,7 @@ impl RuntimeT for Runtime {
         tokio::time::sleep(duration).await
     }
 
+    #[inline]
     fn gzip_compress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
         let mut e = GzEncoder::new(Vec::new(), Compression::default());
         e.write_all(bytes.as_ref()).ok()?;
@@ -473,6 +457,7 @@ impl RuntimeT for Runtime {
         e.finish().ok()
     }
 
+    #[inline]
     fn gzip_decompress(bytes: impl AsRef<[u8]>) -> Option<Vec<u8>> {
         let mut e = GzDecoder::new(Vec::new());
         e.write_all(bytes.as_ref()).ok()?;

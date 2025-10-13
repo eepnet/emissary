@@ -21,7 +21,7 @@ use crate::{
     error::{ChannelError, Ssu2Error},
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
-    runtime::{Counter, Gauge, Histogram, JoinSet, MetricsHandle, Runtime, UdpSocket},
+    runtime::{Counter, Gauge, Histogram, JoinSet, MetricsHandle, Runtime},
     subsystem::SubsystemHandle,
     transport::{
         ssu2::{
@@ -40,6 +40,7 @@ use crate::{
         },
         Direction, TransportEvent,
     },
+    util::udp::{UdpSocket, UdpSocketHandle},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -48,7 +49,7 @@ use hashbrown::HashMap;
 use rand_core::RngCore;
 use thingbuf::mpsc::{channel, errors::TrySendError, Receiver, Sender};
 
-use alloc::{collections::VecDeque, vec, vec::Vec};
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     fmt, mem,
     net::SocketAddr,
@@ -61,9 +62,6 @@ const LOG_TARGET: &str = "emissary::ssu2::socket";
 
 /// Protocol name.
 const PROTOCOL_NAME: &str = "Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA256";
-
-/// Read buffer length.
-const READ_BUFFER_LEN: usize = 2048usize;
 
 /// SSU2 session channel size.
 ///
@@ -165,9 +163,6 @@ pub struct Ssu2Socket<R: Runtime> {
     /// The session returns a `(RouterId, destination connection ID)` tuple when it exits.
     active_sessions: R::JoinSet<TerminationContext>,
 
-    /// Receive buffer.
-    buffer: Vec<u8>,
-
     /// Chaining key.
     chaining_key: Bytes,
 
@@ -203,8 +198,8 @@ pub struct Ssu2Socket<R: Runtime> {
     /// SSU2 sessions.
     sessions: HashMap<u64, Sender<Packet>>,
 
-    /// UDP socket.
-    socket: R::UdpSocket,
+    /// UDP socket handle.
+    socket_handle: UdpSocketHandle,
 
     /// Static key.
     static_key: StaticPrivateKey,
@@ -248,9 +243,11 @@ impl<R: Runtime> Ssu2Socket<R> {
         // TODO: implement `Clone` for `R::UdpSocket`
         let (pkt_tx, pkt_rx) = channel(PKT_CHANNEL_SIZE);
 
+        let (socket, socket_handle) = UdpSocket::<R>::new(socket);
+        R::spawn(socket.run());
+
         Self {
             active_sessions: R::join_set(),
-            buffer: vec![0u8; READ_BUFFER_LEN],
             chaining_key: Bytes::from(chaining_key),
             inbound_state: Bytes::from(inbound_state),
             intro_key,
@@ -262,7 +259,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             pkt_tx,
             router_ctx,
             sessions: HashMap::new(),
-            socket,
+            socket_handle,
             static_key,
             subsystem_handle,
             terminating_session: R::join_set(),
@@ -276,13 +273,17 @@ impl<R: Runtime> Ssu2Socket<R> {
     //
     // TODO: needs as lot of refactoring
     // TODO: explain what happens here
-    fn handle_packet(&mut self, nread: usize, address: SocketAddr) -> Result<(), Ssu2Error> {
-        let mut reader = HeaderReader::new(self.intro_key, &mut self.buffer[..nread])?;
+    fn handle_packet(
+        &mut self,
+        mut datagram: Vec<u8>,
+        address: SocketAddr,
+    ) -> Result<(), Ssu2Error> {
+        let mut reader = HeaderReader::new(self.intro_key, &mut datagram)?;
         let connection_id = reader.dst_id();
 
         if let Some(tx) = self.sessions.get_mut(&connection_id) {
             match tx.try_send(Packet {
-                pkt: self.buffer[..nread].to_vec(),
+                pkt: datagram,
                 address,
             }) {
                 Ok(()) => return Ok(()),
@@ -325,7 +326,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                     intro_key: self.intro_key,
                     net_id: self.router_ctx.net_id(),
                     pkt_num,
-                    pkt: self.buffer[..nread].to_vec(),
+                    pkt: datagram,
                     pkt_tx: self.pkt_tx.clone(),
                     rx,
                     src_id,
@@ -343,7 +344,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                     match self.sessions.get_mut(&reader.reset_key(*intro_key).dst_id()) {
                         Some(tx) => tx
                             .try_send(Packet {
-                                pkt: self.buffer[..nread].to_vec(),
+                                pkt: datagram,
                                 address,
                             })
                             .map_err(From::from),
@@ -359,7 +360,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 None => {
                     tracing::trace!(
                         target: LOG_TARGET,
-                        message_type = ?self.buffer[12],
+                        message_type = ?datagram.get(12),
                         "unrecognized message type",
                     );
                     Err(Ssu2Error::Malformed)
@@ -543,7 +544,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
         let this = &mut *self;
 
         loop {
-            match Pin::new(&mut this.socket).poll_recv_from(cx, this.buffer.as_mut()) {
+            match this.socket_handle.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => {
                     tracing::warn!(
@@ -552,15 +553,18 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     );
                     return Poll::Ready(None);
                 }
-                Poll::Ready(Some((nread, from))) => {
-                    this.router_ctx.metrics_handle().counter(INBOUND_BANDWIDTH).increment(nread);
+                Poll::Ready(Some((datagram, from))) => {
+                    this.router_ctx
+                        .metrics_handle()
+                        .counter(INBOUND_BANDWIDTH)
+                        .increment(datagram.len());
                     this.router_ctx.metrics_handle().counter(INBOUND_PKT_COUNT).increment(1);
                     this.router_ctx
                         .metrics_handle()
                         .histogram(INBOUND_PKT_SIZES)
-                        .record(nread as f64);
+                        .record(datagram.len() as f64);
 
-                    match this.handle_packet(nread, from) {
+                    match this.handle_packet(datagram, from) {
                         Err(Ssu2Error::Channel(ChannelError::Full)) => {
                             tracing::debug!(
                                 target: LOG_TARGET,
@@ -802,24 +806,26 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                         this.write_state = WriteState::SendPacket { pkt, target };
                     }
                 },
-                WriteState::SendPacket { pkt, target } => match Pin::new(&mut this.socket)
-                    .poll_send_to(cx, &pkt, target)
-                {
-                    Poll::Ready(Some(nwritten)) => {
-                        this.router_ctx
-                            .metrics_handle()
-                            .counter(OUTBOUND_BANDWIDTH)
-                            .increment(nwritten);
-                        this.router_ctx.metrics_handle().counter(OUTBOUND_PKT_COUNT).increment(1);
+                WriteState::SendPacket { pkt, target } => {
+                    let nwritten = pkt.len();
 
-                        this.write_state = WriteState::GetPacket;
+                    match this.socket_handle.try_send_to(pkt.to_vec(), target) {
+                        Ok(()) => {
+                            this.router_ctx
+                                .metrics_handle()
+                                .counter(OUTBOUND_BANDWIDTH)
+                                .increment(nwritten);
+                            this.router_ctx
+                                .metrics_handle()
+                                .counter(OUTBOUND_PKT_COUNT)
+                                .increment(1);
+
+                            this.write_state = WriteState::GetPacket;
+                        }
+                        Err(ChannelError::Closed) => return Poll::Ready(None),
+                        Err(ChannelError::DoesntExist | ChannelError::Full) => {}
                     }
-                    Poll::Ready(None) => return Poll::Ready(None),
-                    Poll::Pending => {
-                        this.write_state = WriteState::SendPacket { pkt, target };
-                        break;
-                    }
-                },
+                }
                 WriteState::Poisoned => unreachable!(),
             }
         }

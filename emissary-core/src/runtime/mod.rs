@@ -67,17 +67,15 @@ pub trait TcpListener<TcpStream>: Unpin + Send + Sized + 'static {
 
 pub trait UdpSocket: Unpin + Send + Sized + Clone {
     fn bind(address: SocketAddr) -> impl Future<Output = Option<Self>>;
-    fn poll_send_to(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+    fn send_to(
+        &mut self,
         buf: &[u8],
         target: SocketAddr,
-    ) -> Poll<Option<usize>>;
-    fn poll_recv_from(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
+    ) -> impl Future<Output = Option<usize>> + Send;
+    fn recv_from(
+        &mut self,
         buf: &mut [u8],
-    ) -> Poll<Option<(usize, SocketAddr)>>;
+    ) -> impl Future<Output = Option<(usize, SocketAddr)>> + Send;
     fn local_address(&self) -> Option<SocketAddr>;
 }
 

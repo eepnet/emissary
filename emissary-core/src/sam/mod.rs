@@ -27,7 +27,7 @@ use crate::{
     netdb::NetDbHandle,
     primitives::{DestinationId, Str},
     profile::ProfileStorage,
-    runtime::{AddressBook, JoinSet, Runtime, TcpListener, UdpSocket},
+    runtime::{AddressBook, JoinSet, Runtime, TcpListener, UdpSocket as _},
     sam::{
         parser::{Datagram, HostKind, SessionKind},
         pending::{
@@ -38,6 +38,7 @@ use crate::{
         socket::SamSocket,
     },
     tunnel::{TunnelManagerHandle, TunnelPoolConfig},
+    util::udp::{UdpSocket, UdpSocketHandle},
 };
 
 use futures::{future::Either, Stream, StreamExt};
@@ -48,7 +49,6 @@ use alloc::{
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
-    vec,
     vec::Vec,
 };
 use core::{
@@ -265,14 +265,11 @@ pub struct SamServer<R: Runtime> {
     /// Profile storage.
     profile_storage: ProfileStorage<R>,
 
-    /// Datagram read buffer.
-    read_buffer: Vec<u8>,
-
     /// Session ID to `DestinationId` mappings.
     session_id_destinations: HashMap<Arc<str>, DestinationId>,
 
-    /// SAMv3 datagram socket.
-    socket: R::UdpSocket,
+    /// SAMv3 datagram socket handle.
+    socket_handle: UdpSocketHandle,
 
     /// RX channel for receiving session IDs of subsessions.
     sub_session_rx: Receiver<SubSessionCommand>,
@@ -304,6 +301,9 @@ impl<R: Runtime> SamServer<R> {
         .await
         .ok_or(Error::Connection(ConnectionError::BindFailure))?;
 
+        // create runtime udp socket for the sam server
+        //
+        // this socket is used to receive datagrams across all sam sessions
         let socket = R::UdpSocket::bind(SocketAddr::new(
             host.parse::<IpAddr>().expect("valid address"),
             udp_port,
@@ -311,11 +311,15 @@ impl<R: Runtime> SamServer<R> {
         .await
         .ok_or(Error::Connection(ConnectionError::BindFailure))?;
 
+        // create udp socket object and spawn the even loop in a background task
+        let (socket, socket_handle) = UdpSocket::<R>::new(socket);
+        R::spawn(socket.run());
+
         tracing::info!(
             target: LOG_TARGET,
             %host,
             tcp_port = ?listener.local_address().map(|address| address.port()),
-            udp_port = ?socket.local_address().map(|address| address.port()),
+            udp_port = ?socket_handle.local_address().map(|address| address.port()),
             "starting sam server",
         );
 
@@ -337,9 +341,8 @@ impl<R: Runtime> SamServer<R> {
             pending_inbound_connections: R::join_set(),
             pending_sessions: SessionContext::new(),
             profile_storage,
-            read_buffer: vec![0u8; 0xfff],
             session_id_destinations: HashMap::new(),
-            socket,
+            socket_handle,
             sub_session_rx,
             sub_session_tx,
             tunnel_manager_handle,
@@ -353,7 +356,7 @@ impl<R: Runtime> SamServer<R> {
 
     /// Get address of the SAMv3 UDP socket.
     pub fn udp_local_address(&self) -> Option<SocketAddr> {
-        self.socket.local_address()
+        self.socket_handle.local_address()
     }
 }
 
@@ -374,16 +377,16 @@ impl<R: Runtime> Future for SamServer<R> {
         }
 
         loop {
-            match Pin::new(&mut this.socket).poll_recv_from(cx, &mut this.read_buffer) {
+            match this.socket_handle.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some((nread, _))) => {
+                Poll::Ready(Some((datagram, _))) => {
                     let Some(Datagram {
                         session_id,
                         destination,
                         datagram,
                         ..
-                    }) = Datagram::parse(&this.read_buffer[..nread])
+                    }) = Datagram::parse(&datagram)
                     else {
                         tracing::warn!(
                             target: LOG_TARGET,
@@ -427,19 +430,22 @@ impl<R: Runtime> Future for SamServer<R> {
                     }
                 },
                 DatagramWriterState::WriteMessage { target, datagram } => {
-                    match Pin::new(&mut this.socket).poll_send_to(cx, &datagram, target) {
-                        Poll::Pending => {
-                            this.datagram_writer_state =
-                                DatagramWriterState::WriteMessage { target, datagram };
-                            break;
-                        }
-                        Poll::Ready(Some(_)) => {
+                    match this.socket_handle.try_send_to(datagram, target) {
+                        Ok(()) => {
                             this.datagram_writer_state = DatagramWriterState::GetMessage;
                         }
-                        Poll::Ready(None) => tracing::warn!(
+                        Err(ChannelError::Full) => tracing::warn!(
                             target: LOG_TARGET,
-                            "failed to write to socket",
+                            "datagram channel is full",
                         ),
+                        Err(ChannelError::Closed) => {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                "datagram channel is closed",
+                            );
+                            return Poll::Ready(());
+                        }
+                        Err(ChannelError::DoesntExist) => {}
                     }
                 }
             }
