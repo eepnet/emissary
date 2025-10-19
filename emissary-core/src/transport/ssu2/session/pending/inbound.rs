@@ -1072,8 +1072,6 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_session_request() {
-        crate::util::init_logger();
-
         let (
             InboundContext {
                 mut inbound_session,
