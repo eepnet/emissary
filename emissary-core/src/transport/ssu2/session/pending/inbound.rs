@@ -636,7 +636,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     "inbound session state is poisoned",
                 );
                 debug_assert!(false);
-                Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
+                Ok(Some(PendingSsu2SessionStatus::SessionTerminated {
                     connection_id: self.dst_id,
                     started: self.started,
                     router_id: None,
@@ -678,7 +678,7 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
                         "failed to handle packet",
                     );
 
-                    return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
+                    return Poll::Ready(PendingSsu2SessionStatus::SessionTerminated {
                         connection_id: self.dst_id,
                         router_id: None,
                         started: self.started,
@@ -752,6 +752,12 @@ mod tests {
         let dst_id = MockRuntime::rng().next_u64();
 
         let outbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
+        let outbound_intro_key = {
+            let mut key = [0u8; 32];
+            MockRuntime::rng().fill_bytes(&mut key);
+
+            key
+        };
         let inbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
         let inbound_intro_key = {
             let mut key = [0u8; 32];
@@ -782,12 +788,7 @@ mod tests {
                 publish: true,
                 static_key: TryInto::<[u8; 32]>::try_into(outbound_static_key.as_ref().to_vec())
                     .unwrap(),
-                intro_key: {
-                    let mut key = [0u8; 32];
-                    MockRuntime::rng().fill_bytes(&mut key);
-
-                    key
-                },
+                intro_key: outbound_intro_key,
             })
             .build();
 
@@ -795,7 +796,8 @@ mod tests {
             address,
             chaining_key: Bytes::from(chaining_key.clone()),
             dst_id,
-            intro_key: inbound_intro_key,
+            remote_intro_key: inbound_intro_key,
+            local_intro_key: outbound_intro_key,
             net_id: 2u8,
             local_static_key: outbound_static_key,
             pkt_tx: outbound_socket_tx,
@@ -973,7 +975,7 @@ mod tests {
         loop {
             tokio::select! {
                 status = &mut inbound_session => match status {
-                    PendingSsu2SessionStatus::SessionTermianted { .. } => break,
+                    PendingSsu2SessionStatus::SessionTerminated { .. } => break,
                     _ => panic!("invalid status"),
                 },
                 pkt = outbound_socket_rx.recv() => {

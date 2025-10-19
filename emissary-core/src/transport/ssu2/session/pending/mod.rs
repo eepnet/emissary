@@ -27,6 +27,7 @@ use futures::FutureExt;
 
 use alloc::{collections::VecDeque, vec::Vec};
 use core::{
+    fmt,
     future::Future,
     net::SocketAddr,
     pin::Pin,
@@ -73,7 +74,7 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
     },
 
     /// Pending session terminated due to fatal error, e.g., decryption error.
-    SessionTermianted {
+    SessionTerminated {
         /// Connection ID.
         ///
         /// Either destination or source connection ID, depending on whether the session
@@ -113,13 +114,63 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
     },
 }
 
+impl<R: Runtime> fmt::Debug for PendingSsu2SessionStatus<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PendingSsu2SessionStatus::NewInboundSession {
+                dst_id,
+                target,
+                started,
+                ..
+            } => f
+                .debug_struct("PendingSsu2SessionStatus::NewInboundSession")
+                .field("dst_id", &dst_id)
+                .field("target", &target)
+                .field("started", &started)
+                .finish_non_exhaustive(),
+            PendingSsu2SessionStatus::NewOutboundSession {
+                src_id, started, ..
+            } => f
+                .debug_struct("PendingSsu2SessionStatus::NewOutboundSession")
+                .field("src_id", &src_id)
+                .field("started", &started)
+                .finish_non_exhaustive(),
+            PendingSsu2SessionStatus::SessionTerminated {
+                connection_id,
+                router_id,
+                started,
+                ..
+            } => f
+                .debug_struct("PendingSsu2SessionStatus::SessionTerminated")
+                .field("connection_id", &connection_id)
+                .field("router_id", &router_id)
+                .field("started", &started)
+                .finish_non_exhaustive(),
+            PendingSsu2SessionStatus::Timeout {
+                connection_id,
+                router_id,
+                started,
+            } => f
+                .debug_struct("PendingSsu2SessionStatus::Timeout")
+                .field("connection_id", &connection_id)
+                .field("router_id", &router_id)
+                .field("started", &started)
+                .finish_non_exhaustive(),
+            PendingSsu2SessionStatus::SocketClosed { started } => f
+                .debug_struct("PendingSsu2SessionStatus::SocketClosed")
+                .field("started", &started)
+                .finish(),
+        }
+    }
+}
+
 impl<R: Runtime> PendingSsu2SessionStatus<R> {
     /// Return duration of the handshake in milliseconds.
     pub fn duration(&self) -> f64 {
         match self {
             Self::NewInboundSession { started, .. } => started.elapsed().as_millis() as f64,
             Self::NewOutboundSession { started, .. } => started.elapsed().as_millis() as f64,
-            Self::SessionTermianted { started, .. } => started.elapsed().as_millis() as f64,
+            Self::SessionTerminated { started, .. } => started.elapsed().as_millis() as f64,
             Self::Timeout { started, .. } => started.elapsed().as_millis() as f64,
             Self::SocketClosed { started, .. } => started.elapsed().as_millis() as f64,
         }

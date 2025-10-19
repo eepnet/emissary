@@ -406,10 +406,11 @@ impl<R: Runtime> Ssu2Socket<R> {
                 address,
                 chaining_key: self.chaining_key.clone(),
                 dst_id,
-                intro_key,
+                local_intro_key: self.intro_key,
                 local_static_key: self.static_key.clone(),
                 net_id: self.router_ctx.net_id(),
                 pkt_tx: self.pkt_tx.clone(),
+                remote_intro_key: intro_key,
                 router_id,
                 router_info,
                 rx,
@@ -729,7 +730,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                                 router_id,
                             }));
                         }
-                        PendingSsu2SessionStatus::SessionTermianted {
+                        PendingSsu2SessionStatus::SessionTerminated {
                             connection_id,
                             router_id,
                             started: _,

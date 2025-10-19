@@ -68,8 +68,8 @@ pub struct OutboundSsu2Context {
     /// Destination connection ID.
     pub dst_id: u64,
 
-    /// Remote router's intro key.
-    pub intro_key: [u8; 32],
+    /// Local router intro key.
+    pub local_intro_key: [u8; 32],
 
     /// Local static key.
     pub local_static_key: StaticPrivateKey,
@@ -79,6 +79,9 @@ pub struct OutboundSsu2Context {
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     pub pkt_tx: Sender<Packet>,
+
+    /// Remote router intro key.
+    pub remote_intro_key: [u8; 32],
 
     /// ID of the remote router.
     pub router_id: RouterId,
@@ -159,8 +162,8 @@ pub struct OutboundSsu2Session<R: Runtime> {
     /// Destination connection ID.
     dst_id: u64,
 
-    /// Intro key.
-    intro_key: [u8; 32],
+    /// Local router intro key.
+    local_intro_key: [u8; 32],
 
     /// Network ID.
     net_id: u8,
@@ -173,6 +176,9 @@ pub struct OutboundSsu2Session<R: Runtime> {
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     pkt_tx: Sender<Packet>,
+
+    /// Remote router intro key.
+    remote_intro_key: [u8; 32],
 
     /// ID of the remote router.
     router_id: RouterId,
@@ -200,10 +206,11 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             address,
             chaining_key,
             dst_id,
-            intro_key,
+            local_intro_key,
             local_static_key,
             net_id,
             pkt_tx,
+            remote_intro_key,
             router_id,
             router_info,
             rx,
@@ -224,7 +231,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         let pkt = TokenRequestBuilder::default()
             .with_dst_id(dst_id)
             .with_src_id(src_id)
-            .with_intro_key(intro_key)
+            .with_intro_key(remote_intro_key)
             .with_net_id(net_id)
             .build::<R>()
             .to_vec();
@@ -244,7 +251,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         Self {
             address,
             dst_id,
-            intro_key,
+            local_intro_key,
             net_id,
             noise_ctx: NoiseContext::new(
                 TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
@@ -252,6 +259,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             ),
             pkt_retransmitter: PacketRetransmitter::token_request(pkt),
             pkt_tx,
+            remote_intro_key,
             router_id,
             rx: Some(rx),
             src_id,
@@ -281,31 +289,32 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         router_info: Bytes,
         static_key: StaticPublicKey,
     ) -> Result<Option<PendingSsu2SessionStatus<R>>, Ssu2Error> {
-        let (pkt_num, token) =
-            match HeaderReader::new(self.intro_key, &mut pkt)?.parse(self.intro_key)? {
-                HeaderKind::Retry {
-                    net_id,
-                    pkt_num,
-                    token,
-                } => {
-                    if self.net_id != net_id {
-                        return Err(Ssu2Error::NetworkMismatch);
-                    }
+        let (pkt_num, token) = match HeaderReader::new(self.remote_intro_key, &mut pkt)?
+            .parse(self.remote_intro_key)?
+        {
+            HeaderKind::Retry {
+                net_id,
+                pkt_num,
+                token,
+            } => {
+                if self.net_id != net_id {
+                    return Err(Ssu2Error::NetworkMismatch);
+                }
 
-                    (pkt_num, token)
-                }
-                kind => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        router_id = %self.router_id,
-                        dst_id = ?self.dst_id,
-                        src_id = ?self.src_id,
-                        ?kind,
-                        "unexpected message, expected `Retry`",
-                    );
-                    return Err(Ssu2Error::UnexpectedMessage);
-                }
-            };
+                (pkt_num, token)
+            }
+            kind => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    dst_id = ?self.dst_id,
+                    src_id = ?self.src_id,
+                    ?kind,
+                    "unexpected message, expected `Retry`",
+                );
+                return Err(Ssu2Error::UnexpectedMessage);
+            }
+        };
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -318,7 +327,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         );
 
         let mut payload = pkt[32..].to_vec();
-        ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
+        ChaChaPoly::with_nonce(&self.remote_intro_key, pkt_num as u64)
             .decrypt_with_ad(&pkt[..32], &mut payload)?;
 
         // MixKey(DH())
@@ -337,7 +346,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         self.noise_ctx.mix_hash(message.header()).mix_hash(ephemeral_key.public());
 
         message.encrypt_payload(&cipher_key, 0u64, self.noise_ctx.state());
-        message.encrypt_header(self.intro_key, self.intro_key);
+        message.encrypt_header(self.remote_intro_key, self.remote_intro_key);
 
         // MixHash(ciphertext)
         self.noise_ctx.mix_hash(message.payload());
@@ -391,7 +400,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             Hmac::new(&temp_key).update(b"SessCreateHeader").update([0x01]).finalize_new();
 
         let remote_ephemeral_key =
-            match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2)? {
+            match HeaderReader::new(self.remote_intro_key, &mut pkt)?.parse(k_header_2)? {
                 HeaderKind::SessionCreated {
                     ephemeral_key,
                     net_id,
@@ -469,7 +478,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         let mut cipher_key = self.noise_ctx.mix_key(&local_static_key, &remote_ephemeral_key);
 
         message.encrypt_payload(&cipher_key, 0u64, self.noise_ctx.state());
-        message.encrypt_header(self.intro_key, k_header_2);
+        message.encrypt_header(self.remote_intro_key, k_header_2);
         cipher_key.zeroize();
 
         // reset packet retransmitter to track `SessionConfirmed` and send the message to remote
@@ -532,8 +541,31 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .update([0x02])
             .finalize_new();
 
-        match HeaderReader::new(self.intro_key, &mut pkt)?.parse(k_header_2_ba) {
-            Ok(HeaderKind::Data { .. }) => {}
+        match HeaderReader::new(self.local_intro_key, &mut pkt)?.parse(k_header_2_ba) {
+            Ok(HeaderKind::Data { pkt_num, .. }) => {
+                // ensure the data packet decrypts correctly
+                //
+                // failure to decrypt the payload could indicate that an incorrect packet was
+                // received and that `OutboundSession` should resend `SessionConfirmed`
+                //
+                // TODO: unneeded clone
+                let mut payload = pkt[16..].to_vec();
+                if ChaChaPoly::with_nonce(&k_data_ba, pkt_num as u64)
+                    .decrypt_with_ad(&pkt[..16], &mut payload)
+                    .is_err()
+                {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        dst_id = ?self.dst_id,
+                        src_id = ?self.src_id,
+                        "failed to decrypt `Data` message, ignoring",
+                    );
+
+                    self.state = PendingSessionState::AwaitingFirstAck;
+                    return Ok(None);
+                }
+            }
             kind => {
                 tracing::debug!(
                     target: LOG_TARGET,
@@ -547,7 +579,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 self.state = PendingSessionState::AwaitingFirstAck;
                 return Ok(None);
             }
-        };
+        }
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -561,7 +593,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             context: Ssu2SessionContext {
                 address: self.address,
                 dst_id: self.dst_id,
-                intro_key: self.intro_key,
+                intro_key: self.remote_intro_key,
                 recv_key_ctx: KeyContext::new(k_data_ba, k_header_2_ba),
                 send_key_ctx: KeyContext::new(k_data_ab, k_header_2_ab),
                 router_id: self.router_id.clone(),
@@ -606,7 +638,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                     "outbound session state is poisoned",
                 );
                 debug_assert!(false);
-                Ok(Some(PendingSsu2SessionStatus::SessionTermianted {
+                Ok(Some(PendingSsu2SessionStatus::SessionTerminated {
                     connection_id: self.src_id,
                     router_id: Some(self.router_id.clone()),
                     started: self.started,
@@ -625,7 +657,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
 
         if core::matches!(
             status,
-            PendingSsu2SessionStatus::SessionTermianted { .. }
+            PendingSsu2SessionStatus::SessionTerminated { .. }
                 | PendingSsu2SessionStatus::Timeout { .. }
                 | PendingSsu2SessionStatus::SocketClosed { .. }
         ) {
@@ -669,7 +701,7 @@ impl<R: Runtime> Future for OutboundSsu2Session<R> {
                         "failed to handle packet",
                     );
 
-                    return Poll::Ready(PendingSsu2SessionStatus::SessionTermianted {
+                    return Poll::Ready(PendingSsu2SessionStatus::SessionTerminated {
                         connection_id: self.src_id,
                         router_id: None,
                         started: self.started,
@@ -749,6 +781,12 @@ mod tests {
         let dst_id = MockRuntime::rng().next_u64();
 
         let outbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
+        let outbound_intro_key = {
+            let mut key = [0u8; 32];
+            MockRuntime::rng().fill_bytes(&mut key);
+
+            key
+        };
         let inbound_static_key = StaticPrivateKey::random(MockRuntime::rng());
         let inbound_intro_key = {
             let mut key = [0u8; 32];
@@ -786,12 +824,7 @@ mod tests {
                 publish: true,
                 static_key: TryInto::<[u8; 32]>::try_into(outbound_static_key.as_ref().to_vec())
                     .unwrap(),
-                intro_key: {
-                    let mut key = [0u8; 32];
-                    MockRuntime::rng().fill_bytes(&mut key);
-
-                    key
-                },
+                intro_key: outbound_intro_key,
             })
             .build();
 
@@ -799,7 +832,8 @@ mod tests {
             address,
             chaining_key: Bytes::from(chaining_key.clone()),
             dst_id,
-            intro_key: inbound_intro_key,
+            remote_intro_key: inbound_intro_key,
+            local_intro_key: outbound_intro_key,
             local_static_key: outbound_static_key,
             net_id: 2u8,
             pkt_tx: outbound_socket_tx,
@@ -911,7 +945,7 @@ mod tests {
             },
         ) = create_session();
 
-        let intro_key = outbound_session.intro_key;
+        let intro_key = outbound_session.remote_intro_key;
         let router_id = outbound_session.router_id.clone();
         let outbound_session = tokio::spawn(outbound_session.run());
 
@@ -965,7 +999,7 @@ mod tests {
             },
         ) = create_session();
 
-        let intro_key = outbound_session.intro_key;
+        let intro_key = outbound_session.remote_intro_key;
         let router_id = outbound_session.router_id.clone();
         let outbound_session = tokio::spawn(outbound_session.run());
         let _inbound_session = tokio::spawn(inbound_session);
@@ -1037,7 +1071,8 @@ mod tests {
             },
         ) = create_session();
 
-        let intro_key = outbound_session.intro_key;
+        let intro_key = outbound_session.remote_intro_key;
+        let outbound_intro_key = outbound_session.local_intro_key;
         let inbound_session = tokio::spawn(inbound_session);
 
         // send retry message to outbound session
@@ -1124,7 +1159,7 @@ mod tests {
             PendingSsu2SessionStatus::NewInboundSession {
                 mut pkt, target, ..
             } => {
-                let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                let mut reader = HeaderReader::new(outbound_intro_key, &mut pkt).unwrap();
                 let _connection_id = reader.dst_id();
                 ob_sess_tx
                     .send(Packet {
