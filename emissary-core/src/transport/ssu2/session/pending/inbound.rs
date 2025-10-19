@@ -741,6 +741,7 @@ mod tests {
     }
 
     struct OutboundContext {
+        outbound_intro_key: [u8; 32],
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
@@ -846,6 +847,7 @@ mod tests {
                 inbound_session: inbound,
             },
             OutboundContext {
+                outbound_intro_key,
                 outbound_socket_rx,
                 outbound_session_tx,
                 outbound_session: outbound,
@@ -898,6 +900,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: _ob_sess_tx,
                 outbound_socket_rx,
+                ..
             },
         ) = create_session();
         let intro_key = inbound_session.intro_key;
@@ -954,6 +957,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                ..
             },
         ) = create_session();
         let intro_key = inbound_session.intro_key;
@@ -1016,6 +1020,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                ..
             },
         ) = create_session();
         let intro_key = inbound_session.intro_key;
@@ -1067,6 +1072,8 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_session_request() {
+        crate::util::init_logger();
+
         let (
             InboundContext {
                 mut inbound_session,
@@ -1074,6 +1081,7 @@ mod tests {
                 inbound_session_tx: ib_sess_tx,
             },
             OutboundContext {
+                outbound_intro_key,
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
@@ -1156,7 +1164,7 @@ mod tests {
             Ok(PendingSsu2SessionStatus::NewInboundSession {
                 mut pkt, target, ..
             }) => {
-                let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+                let mut reader = HeaderReader::new(outbound_intro_key, &mut pkt).unwrap();
                 let _connection_id = reader.dst_id();
 
                 ob_sess_tx
@@ -1188,6 +1196,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                ..
             },
         ) = create_session();
 
