@@ -2623,6 +2623,8 @@ mod tests {
         let destination = Destination::new::<MockRuntime>(signing_key.public());
         let mut manager = StreamManager::<MockRuntime>::new(destination, signing_key);
 
+        MockRuntime::set_time(Some(Duration::from_secs(1741910700)));
+
         let input = vec![
             226, 27, 26, 214, 19, 0, 72, 226, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 233, 2, 49, 0, 0,
             24, 166, 169, 39, 201, 40, 81, 192, 99, 254, 57, 144, 204, 123, 19, 99, 16, 224, 218,
