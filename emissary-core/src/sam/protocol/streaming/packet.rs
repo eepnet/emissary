@@ -21,6 +21,7 @@
 use crate::{
     crypto::{SigningPrivateKey, SigningPublicKey},
     primitives::{Destination, DestinationId, OfflineSignature},
+    runtime::Runtime,
     sam::protocol::streaming::LOG_TARGET,
 };
 
@@ -140,7 +141,7 @@ impl fmt::Display for Flags<'_> {
 }
 
 impl<'a> Flags<'a> {
-    fn new(flags: u16, options: &'a [u8]) -> IResult<&'a [u8], Self> {
+    fn new<R: Runtime>(flags: u16, options: &'a [u8]) -> IResult<&'a [u8], Self> {
         let (rest, requested_delay) = match (flags >> 6) & 1 == 1 {
             true => be_u16(options).map(|(rest, requested_delay)| (rest, Some(requested_delay)))?,
             false => (options, None),
@@ -169,7 +170,7 @@ impl<'a> Flags<'a> {
                 }
                 Some(destination) => {
                     let (rest, verifying_key) =
-                        OfflineSignature::parse_frame(rest, destination.verifying_key())?;
+                        OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())?;
 
                     (rest, Some(verifying_key))
                 }
@@ -364,7 +365,7 @@ impl<'a> Packet<'a> {
     /// Attempt to parse [`Packet`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    fn parse_frame(input: &'a [u8]) -> IResult<&'a [u8], Self> {
+    fn parse_frame<R: Runtime>(input: &'a [u8]) -> IResult<&'a [u8], Self> {
         let (rest, send_stream_id) = be_u32(input)?;
         let (rest, recv_stream_id) = be_u32(rest)?;
         let (rest, seq_nro) = be_u32(rest)?;
@@ -391,7 +392,7 @@ impl<'a> Packet<'a> {
         let (rest, flags) = be_u16(rest)?;
         let (rest, options_size) = be_u16(rest)?;
         let (rest, options) = take(options_size)(rest)?;
-        let (_, flags) = Flags::new(flags, options)?;
+        let (_, flags) = Flags::new::<R>(flags, options)?;
 
         Ok((
             &[],
@@ -409,8 +410,8 @@ impl<'a> Packet<'a> {
     }
 
     /// Attempt to parse `input` into [`Packet`].
-    pub fn parse(input: &'a [u8]) -> Option<Self> {
-        Some(Self::parse_frame(input).ok()?.1)
+    pub fn parse<R: Runtime>(input: &'a [u8]) -> Option<Self> {
+        Some(Self::parse_frame::<R>(input).ok()?.1)
     }
 
     /// Inner implementation of [`Packet::peek()`].
@@ -834,7 +835,7 @@ mod tests {
 
         assert!(options.is_some());
 
-        let (rest, flags) = Flags::new(flags, options.as_ref().unwrap()).unwrap();
+        let (rest, flags) = Flags::new::<MockRuntime>(flags, options.as_ref().unwrap()).unwrap();
 
         assert!(rest.is_empty());
         assert!(flags.synchronize());
@@ -856,7 +857,7 @@ mod tests {
 
         assert!(options.is_none());
 
-        let (rest, flags) = Flags::new(flags, &[]).unwrap();
+        let (rest, flags) = Flags::new::<MockRuntime>(flags, &[]).unwrap();
 
         assert!(rest.is_empty());
         assert!(flags.synchronize());
@@ -891,7 +892,7 @@ mod tests {
 
         assert!(options.is_some());
 
-        let (rest, flags) = Flags::new(flags, options.as_ref().unwrap()).unwrap();
+        let (rest, flags) = Flags::new::<MockRuntime>(flags, options.as_ref().unwrap()).unwrap();
 
         assert!(rest.is_empty());
         assert!(flags.synchronize());
@@ -929,7 +930,7 @@ mod tests {
             .with_payload(&payload)
             .build_and_sign(&signing_key);
 
-        let packet = Packet::parse(&serialized).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&serialized).unwrap();
 
         assert!(packet.flags.synchronize());
         assert!(packet.flags.signature().is_some());
@@ -973,7 +974,7 @@ mod tests {
             .with_nacks(vec![1, 3, 5, 7, 9])
             .build();
 
-        let packet = Packet::parse(&serialized).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&serialized).unwrap();
 
         assert!(!packet.flags.synchronize());
         assert!(!packet.flags.close());

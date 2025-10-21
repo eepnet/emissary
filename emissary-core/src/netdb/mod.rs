@@ -2989,7 +2989,7 @@ mod tests {
                 }
                 .serialize(&sgk),
             );
-            let expires = LeaseSet2::parse(&lease_set).unwrap().expires();
+            let expires = LeaseSet2::parse::<MockRuntime>(&lease_set).unwrap().expires();
 
             (Bytes::from(id.to_vec()), lease_set, expires)
         };

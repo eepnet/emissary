@@ -283,7 +283,7 @@ impl<R: Runtime> DatabaseStore<R> {
                 ))
             }
             StoreType::LeaseSet2 => {
-                let (rest, lease_set) = LeaseSet2::parse_frame(rest)?;
+                let (rest, lease_set) = LeaseSet2::parse_frame::<R>(rest)?;
 
                 Ok((
                     rest,
@@ -569,7 +569,7 @@ mod tests {
         let _ = DatabaseStore::<MockRuntime>::parse(&buffer).unwrap();
         let raw_lease_set = DatabaseStore::<MockRuntime>::extract_raw_lease_set(&buffer);
 
-        assert!(LeaseSet2::parse(&raw_lease_set).is_some());
+        assert!(LeaseSet2::parse::<MockRuntime>(&raw_lease_set).is_some());
     }
 
     #[test]

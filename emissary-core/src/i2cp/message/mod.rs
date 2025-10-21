@@ -20,6 +20,7 @@ use crate::{
     crypto::StaticPrivateKey,
     i2cp::payload::I2cpParameters,
     primitives::{Date, Destination, LeaseSet2, Mapping, Str},
+    runtime::Runtime,
 };
 
 use bytes::Bytes;
@@ -524,7 +525,7 @@ impl Message {
     /// Attempt to parse [`Message::CreateLeaseSet2`] from `input`.
     ///
     /// https://geti2p.net/spec/i2cp#createleaseset2message
-    fn parse_create_leaseset2(input: impl AsRef<[u8]>) -> Option<Self> {
+    fn parse_create_leaseset2<R: Runtime>(input: impl AsRef<[u8]>) -> Option<Self> {
         let (rest, session_id) = be_u16::<_, ()>(input.as_ref()).ok()?;
         let (rest, kind) = be_u8::<_, ()>(rest).ok()?;
 
@@ -540,7 +541,7 @@ impl Message {
                 // in order to keep the `LeaseSet2` publishable, parse the raw byte vector from
                 // input and return that in `Message::CreateLeaseSet2` so it can be published
                 // unmodified to `NetDb`
-                let (rest, parsed) = LeaseSet2::parse_frame(rest).ok()?;
+                let (rest, parsed) = LeaseSet2::parse_frame::<R>(rest).ok()?;
 
                 (
                     rest,
@@ -659,7 +660,7 @@ impl Message {
     }
 
     /// Attempt to parse `input` into [`Message`].
-    pub fn parse(msg_type: MessageType, input: impl AsRef<[u8]>) -> Option<Self> {
+    pub fn parse<R: Runtime>(msg_type: MessageType, input: impl AsRef<[u8]>) -> Option<Self> {
         match msg_type {
             MessageType::GetDate => Self::parse_get_date(input),
             MessageType::SetDate => Self::parse_set_date(input),
@@ -667,7 +668,7 @@ impl Message {
             MessageType::DestroySession => Self::parse_destroy_session(input),
             MessageType::CreateSession => Self::parse_create_session(input),
             MessageType::HostLookup => Self::parse_host_lookup(input),
-            MessageType::CreateLeaseSet2 => Self::parse_create_leaseset2(input),
+            MessageType::CreateLeaseSet2 => Self::parse_create_leaseset2::<R>(input),
             MessageType::SendMessageExpires => Self::parse_send_message_expires(input),
             msg_type => {
                 tracing::warn!(
@@ -684,6 +685,8 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
+    use crate::runtime::mock::MockRuntime;
+
     use super::*;
 
     #[test]
@@ -723,6 +726,6 @@ mod tests {
             26, 115, 111, 255, 68,
         ];
 
-        assert!(Message::parse(MessageType::CreateLeaseSet2, &message).is_some());
+        assert!(Message::parse::<MockRuntime>(MessageType::CreateLeaseSet2, &message).is_some());
     }
 }

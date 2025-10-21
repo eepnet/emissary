@@ -49,14 +49,14 @@ impl SetDate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::i2cp::message::Message;
+    use crate::{i2cp::message::Message, runtime::mock::MockRuntime};
     use std::str::FromStr;
 
     #[test]
     fn serialize_deserialize() {
         let message = SetDate::new(Date::new(1337u64), Str::from_str("0.9.68").unwrap());
 
-        match Message::parse(MessageType::SetDate, &message[5..]) {
+        match Message::parse::<MockRuntime>(MessageType::SetDate, &message[5..]) {
             Some(Message::SetDate { date, version }) => {
                 assert_eq!(date, Date::new(1337u64));
                 assert_eq!(version, Str::from_str("0.9.68").unwrap());
@@ -80,7 +80,7 @@ mod tests {
             out
         };
 
-        match Message::parse(MessageType::SetDate, &message[5..]) {
+        match Message::parse::<MockRuntime>(MessageType::SetDate, &message[5..]) {
             None => {}
             Some(_) => panic!("invalid message received"),
         }

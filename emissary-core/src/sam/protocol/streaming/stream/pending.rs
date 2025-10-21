@@ -142,7 +142,7 @@ impl<R: Runtime> PendingStream<R> {
             flags,
             payload,
             ..
-        } = Packet::parse(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -205,7 +205,7 @@ impl<R: Runtime> PendingStream<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::noop::NoopRuntime;
+    use crate::runtime::{mock::MockRuntime, noop::NoopRuntime};
 
     #[test]
     fn ignore_duplicate_ack() {
@@ -299,7 +299,7 @@ mod tests {
 
             match stream.on_packet(packet) {
                 PendingStreamResult::Send { packet } => {
-                    let Packet { ack_through, .. } = Packet::parse(&packet).unwrap();
+                    let Packet { ack_through, .. } = Packet::parse::<MockRuntime>(&packet).unwrap();
                     assert_eq!(ack_through, i as u32);
                 }
                 _ => panic!("invalid result"),
@@ -362,7 +362,7 @@ mod tests {
 
             match stream.on_packet(packet) {
                 PendingStreamResult::Send { packet } => {
-                    let Packet { ack_through, .. } = Packet::parse(&packet).unwrap();
+                    let Packet { ack_through, .. } = Packet::parse::<MockRuntime>(&packet).unwrap();
                     assert_eq!(ack_through, i as u32);
                 }
                 _ => panic!("invalid result"),
@@ -383,7 +383,7 @@ mod tests {
 
         match stream.on_packet(packet) {
             PendingStreamResult::SendAndDestroy { packet } => {
-                assert!(Packet::parse(&packet).unwrap().flags.reset());
+                assert!(Packet::parse::<MockRuntime>(&packet).unwrap().flags.reset());
             }
             _ => panic!("invalid result"),
         }

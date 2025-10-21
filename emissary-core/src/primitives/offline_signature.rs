@@ -16,7 +16,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{crypto::SigningPublicKey, primitives::LOG_TARGET};
+use crate::{crypto::SigningPublicKey, primitives::LOG_TARGET, runtime::Runtime};
 
 use nom::{
     bytes::complete::take,
@@ -40,14 +40,25 @@ pub struct OfflineSignature;
 
 impl OfflineSignature {
     /// Attempt to parse [`OfflineSignature`] from `input` and verify the signature using `key`
-    pub fn parse_frame<'a>(
+    pub fn parse_frame<'a, R: Runtime>(
         input: &'a [u8],
         key: &SigningPublicKey,
     ) -> IResult<&'a [u8], SigningPublicKey> {
         // save start of the signed segment so the offline signature can be verified
         let signed_segment = input;
 
-        let (rest, _expires) = be_u32(input)?;
+        let (rest, expires) = be_u32(input)?;
+
+        if R::time_since_epoch().as_secs() > expires as u64 {
+            tracing::trace!(
+                target: LOG_TARGET,
+                expired_at = ?expires,
+                "offline signature expired",
+            );
+
+            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+        }
+
         let (rest, signature_kind) = be_u16(rest)?;
 
         // extract verifying key from the offline signature

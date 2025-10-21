@@ -63,7 +63,7 @@ impl LeaseSet2Header {
     /// Attempt to parse [`LeaseSet2Header`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self> {
         let (rest, destination) = Destination::parse_frame(input)?;
         let (rest, published) = be_u32(rest)?;
         let (rest, expires) = be_u16(rest)?;
@@ -85,7 +85,7 @@ impl LeaseSet2Header {
 
         // parse and verify offline signature and get key for verifying the lease set's signature
         let (rest, verifying_key) =
-            OfflineSignature::parse_frame(rest, destination.verifying_key())?;
+            OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())?;
 
         Ok((
             rest,
@@ -259,8 +259,8 @@ impl LeaseSet2 {
     /// Attempt to parse [`LeaseSet2`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
-        let (rest, header) = LeaseSet2Header::parse_frame(input)?;
+    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self> {
+        let (rest, header) = LeaseSet2Header::parse_frame::<R>(input)?;
         let (rest, _) = Mapping::parse_frame(rest)?;
         let (rest, num_key_types) = be_u8(rest)?;
 
@@ -397,8 +397,8 @@ impl LeaseSet2 {
     }
 
     /// Attempt to parse `input` into [`LeaseSet2`].
-    pub fn parse(input: &[u8]) -> Option<Self> {
-        Some(Self::parse_frame(input).ok()?.1)
+    pub fn parse<R: Runtime>(input: &[u8]) -> Option<Self> {
+        Some(Self::parse_frame::<R>(input).ok()?.1)
     }
 
     /// Get serialized length of [`LeaseSet2`].
@@ -586,7 +586,7 @@ mod tests {
         }
         .serialize(&sgk);
 
-        let leaseset = LeaseSet2::parse(&serialized).unwrap();
+        let leaseset = LeaseSet2::parse::<MockRuntime>(&serialized).unwrap();
 
         assert_eq!(leaseset.public_keys.len(), 1);
         assert_eq!(leaseset.public_keys[0].to_vec(), sk.public().to_vec());
@@ -618,7 +618,7 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse(&serialized).is_none());
+        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
     }
 
     #[test]
@@ -675,13 +675,13 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse(&serialized).is_none());
+        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
     }
 
     #[test]
     fn serialize_and_parse_random() {
         let (random, signing_key) = LeaseSet2::random();
-        assert!(LeaseSet2::parse(&random.serialize(&signing_key)).is_some());
+        assert!(LeaseSet2::parse::<MockRuntime>(&random.serialize(&signing_key)).is_some());
     }
 
     #[test]
@@ -713,7 +713,7 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse(&serialized).is_none());
+        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
     }
 
     #[test]
@@ -769,7 +769,7 @@ mod tests {
             46, 214, 11,
         ];
 
-        let leaseset2 = LeaseSet2::parse_frame(&buffer).unwrap().1;
+        let leaseset2 = LeaseSet2::parse_frame::<MockRuntime>(&buffer).unwrap().1;
 
         assert_eq!(leaseset2.public_keys.len(), 1);
         assert_eq!(leaseset2.leases.len(), 3);
@@ -810,7 +810,7 @@ mod tests {
                 leases: vec![lease1.clone(), lease2.clone()],
             }
             .serialize(&sgk);
-            let lease_set = LeaseSet2::parse(&lease_set).unwrap();
+            let lease_set = LeaseSet2::parse::<MockRuntime>(&lease_set).unwrap();
 
             assert!(lease_set.is_expired::<MockRuntime>());
             assert_eq!(
@@ -852,7 +852,7 @@ mod tests {
                 leases: vec![lease1.clone(), lease2.clone()],
             }
             .serialize(&sgk);
-            let lease_set = LeaseSet2::parse(&lease_set).unwrap();
+            let lease_set = LeaseSet2::parse::<MockRuntime>(&lease_set).unwrap();
 
             assert!(lease_set.is_expired::<MockRuntime>());
             assert_eq!(
@@ -892,7 +892,7 @@ mod tests {
                 leases: vec![lease1.clone(), lease2.clone()],
             }
             .serialize(&sgk);
-            let lease_set = LeaseSet2::parse(&serialized).unwrap();
+            let lease_set = LeaseSet2::parse::<MockRuntime>(&serialized).unwrap();
 
             assert!(!lease_set.is_expired::<MockRuntime>());
             assert_eq!(
@@ -958,7 +958,7 @@ mod tests {
         }
         .serialize(&wrong_sgk);
 
-        assert!(LeaseSet2::parse(&serialized).is_none());
+        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
     }
 
     #[test]
@@ -1013,7 +1013,7 @@ mod tests {
             52, 251, 199, 89, 220, 21, 209, 37, 158, 59, 195, 58, 40, 19, 70,
         ];
 
-        let _ = LeaseSet2::parse(&input).unwrap();
+        let _ = LeaseSet2::parse::<MockRuntime>(&input).unwrap();
     }
 
     #[test]
@@ -1058,7 +1058,7 @@ mod tests {
             41, 207, 20, 11,
         ];
 
-        let _ = LeaseSet2::parse(&input).unwrap();
+        let _ = LeaseSet2::parse::<MockRuntime>(&input).unwrap();
     }
 
     #[test]
@@ -1117,7 +1117,7 @@ mod tests {
         }
         .serialize(&sgk);
 
-        let leaseset = LeaseSet2::parse(&serialized).unwrap();
+        let leaseset = LeaseSet2::parse::<MockRuntime>(&serialized).unwrap();
 
         assert_eq!(leaseset.public_keys.len(), 1);
         assert_eq!(leaseset.public_keys[0].to_vec(), sk.public().to_vec());
@@ -1163,6 +1163,6 @@ mod tests {
             94,
         ];
 
-        let _ = LeaseSet2::parse(&input).unwrap();
+        let _ = LeaseSet2::parse::<MockRuntime>(&input).unwrap();
     }
 }

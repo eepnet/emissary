@@ -334,7 +334,7 @@ impl<R: Runtime> StreamManager<R> {
             flags,
             payload,
             ..
-        } = Packet::parse(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
 
         // verify signature
         let signature = flags.signature().ok_or_else(|| {
@@ -876,7 +876,7 @@ impl<R: Runtime> StreamManager<R> {
             resend_delay,
             flags,
             payload,
-        } = Packet::parse(&payload).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&payload).ok_or(StreamingError::Malformed)?;
 
         tracing::debug!(
             target: LOG_TARGET,
@@ -1491,7 +1491,7 @@ mod tests {
                     recv_stream_id,
                     flags,
                     ..
-                } = Packet::parse(&packet).unwrap();
+                } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
                 assert_eq!(delivery_style.destination_id(), &remote_destination_id);
                 assert_eq!(send_stream_id, 1337u32);
@@ -1564,7 +1564,7 @@ mod tests {
                     recv_stream_id,
                     flags,
                     ..
-                } = Packet::parse(&packet).unwrap();
+                } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
                 assert_eq!(delivery_style.destination_id(), &remote_destination_id);
                 assert_eq!(send_stream_id, 1337u32);
@@ -1639,7 +1639,7 @@ mod tests {
                     recv_stream_id,
                     flags,
                     ..
-                } = Packet::parse(&packet).unwrap();
+                } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
                 assert_eq!(delivery_style.destination_id(), &remote_destination_id);
                 assert_eq!(send_stream_id, 1337u32);
@@ -1702,7 +1702,7 @@ mod tests {
                     recv_stream_id,
                     flags,
                     ..
-                } = Packet::parse(&packet).unwrap();
+                } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
                 assert_eq!(delivery_style.destination_id(), &remote_destination_id);
                 assert_eq!(send_stream_id, 1337u32);
@@ -1756,7 +1756,7 @@ mod tests {
                             recv_stream_id,
                             ack_through,
                             ..
-                        } = Packet::parse(&packet).unwrap();
+                        } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
                         assert_eq!(delivery_style.destination_id(), &remote_destination_id);
                         assert_eq!(send_stream_id, 1337u32);
@@ -1960,7 +1960,7 @@ mod tests {
                     packet,
                     ..
                 } if delivery_style.destination_id() == &remote => {
-                    assert!(Packet::parse(&packet).unwrap().flags.synchronize());
+                    assert!(Packet::parse::<MockRuntime>(&packet).unwrap().flags.synchronize());
                 }
                 _ => panic!("invalid event"),
             }
@@ -2906,7 +2906,7 @@ mod tests {
                 packet,
                 ..
             } if delivery_style.destination_id() == &remote => {
-                assert!(Packet::parse(&packet).unwrap().flags.synchronize());
+                assert!(Packet::parse::<MockRuntime>(&packet).unwrap().flags.synchronize());
 
                 match delivery_style {
                     DeliveryStyle::ViaRoute { routing_path } => {
@@ -2929,7 +2929,7 @@ mod tests {
                 packet,
                 ..
             } if delivery_style.destination_id() == &remote => {
-                assert!(Packet::parse(&packet).unwrap().flags.synchronize());
+                assert!(Packet::parse::<MockRuntime>(&packet).unwrap().flags.synchronize());
 
                 match delivery_style {
                     DeliveryStyle::ViaRoute { routing_path } => {

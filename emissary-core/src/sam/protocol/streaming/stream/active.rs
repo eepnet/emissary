@@ -783,7 +783,7 @@ impl<R: Runtime> Stream<R> {
             flags,
             payload,
             ..
-        } = Packet::parse(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
 
         if flags.synchronize() {
             tracing::warn!(
@@ -1734,7 +1734,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 4u32);
             assert_eq!(seq_nro, 0u32);
@@ -1766,7 +1766,7 @@ mod tests {
             nacks,
             payload,
             ..
-        } = Packet::parse(&packet).unwrap();
+        } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
         assert_eq!(ack_through, 5u32);
         assert_eq!(seq_nro, 0u32);
@@ -1839,7 +1839,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 4u32);
             assert_eq!(seq_nro, 0u32);
@@ -1882,7 +1882,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 6u32);
             assert_eq!(seq_nro, 0u32);
@@ -1928,7 +1928,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 6u32);
             assert_eq!(seq_nro, 0u32);
@@ -1972,7 +1972,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 6u32);
             assert_eq!(seq_nro, 0u32);
@@ -2016,7 +2016,7 @@ mod tests {
                 nacks,
                 payload,
                 ..
-            } = Packet::parse(&packet).unwrap();
+            } = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(ack_through, 6u32);
             assert_eq!(seq_nro, 0u32);
@@ -2269,7 +2269,7 @@ mod tests {
             prev = packet;
         }
 
-        let packet = Packet::parse(&prev).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&prev).unwrap();
         assert!(packet.flags.close());
     }
 
@@ -2359,7 +2359,7 @@ mod tests {
                 .await
                 .expect("no timeout")
                 .expect("to succeed");
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             if packet.flags.delay_requested() == Some(CHOKING_REQUEST) {
                 break;
@@ -2401,7 +2401,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
         assert_eq!(
             packet.payload,
             b"hello, world\ntesting 123\ngoodbye, world\n"
@@ -2468,7 +2468,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let packet = Packet::parse(&first_packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
         assert_eq!(
             packet.payload,
             b"hello, world\ntesting 123\ngoodbye, world\n"
@@ -2538,7 +2538,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let packet = Packet::parse(&first_packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
         assert_eq!(
             packet.payload,
             b"hello, world\ntesting 123\ngoodbye, world\n"
@@ -2574,7 +2574,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let packet = Packet::parse(&first_packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
         assert_eq!(packet.payload, b"dropped packet\n");
 
         // verify there's one pending packet and that the rto timer is active
@@ -2650,7 +2650,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let packet = Packet::parse(&first_packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
         assert_eq!(packet.payload, vec![1u8; MTU_SIZE]);
         assert_eq!(stream.window_size, 1);
         assert_eq!(stream.unacked.len(), INITIAL_WINDOW_SIZE);
@@ -2697,10 +2697,10 @@ mod tests {
         let packets =
             tokio::time::timeout(Duration::from_secs(2), future).await.expect("no timeout");
 
-        let first = Packet::parse(&packets[0].1).unwrap();
+        let first = Packet::parse::<MockRuntime>(&packets[0].1).unwrap();
         assert_eq!(first.payload, vec![2u8; MTU_SIZE]);
 
-        let second = Packet::parse(&packets[1].1).unwrap();
+        let second = Packet::parse::<MockRuntime>(&packets[1].1).unwrap();
         assert_eq!(second.payload, vec![3u8; MTU_SIZE]);
 
         assert!(stream.pending.is_empty());
@@ -2733,7 +2733,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed");
 
-        let third = Packet::parse(&third_packet).unwrap();
+        let third = Packet::parse::<MockRuntime>(&third_packet).unwrap();
         assert_eq!(third.payload, vec![4u8; MTU_SIZE]);
     }
 
@@ -2785,7 +2785,7 @@ mod tests {
                 .expect("to succeed")
                 .1;
 
-            let packet = Packet::parse(&first_packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
 
             cmd_tx
                 .send(StreamEvent::Packet {
@@ -2818,7 +2818,7 @@ mod tests {
 
             let packets =
                 tokio::time::timeout(Duration::from_secs(2), future).await.expect("no timeout");
-            let packet = Packet::parse(&packets[1].1).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packets[1].1).unwrap();
 
             cmd_tx
                 .send(StreamEvent::Packet {
@@ -2851,7 +2851,7 @@ mod tests {
 
             let packets =
                 tokio::time::timeout(Duration::from_secs(2), future).await.expect("no timeout");
-            let packet = Packet::parse(&packets[1].1).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packets[1].1).unwrap();
 
             cmd_tx
                 .send(StreamEvent::Packet {
@@ -2904,7 +2904,7 @@ mod tests {
 
         let packets =
             tokio::time::timeout(Duration::from_secs(2), future).await.expect("no timeout");
-        let packet = Packet::parse(&packets[5].1).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packets[5].1).unwrap();
 
         cmd_tx
             .send(StreamEvent::Packet {
@@ -2941,8 +2941,8 @@ mod tests {
 
         let packets =
             tokio::time::timeout(Duration::from_secs(12), future).await.expect("no timeout");
-        let first_missing = Packet::parse(&packets[0].1).unwrap();
-        let second_missing = Packet::parse(&packets[1].1).unwrap();
+        let first_missing = Packet::parse::<MockRuntime>(&packets[0].1).unwrap();
+        let second_missing = Packet::parse::<MockRuntime>(&packets[1].1).unwrap();
 
         assert_eq!(first_missing.payload, vec![8u8; MTU_SIZE]);
         assert_eq!(second_missing.payload, vec![0xau8; MTU_SIZE]);
@@ -2978,7 +2978,7 @@ mod tests {
             client.write_all(&vec![i as u8; 256]).await.unwrap();
 
             let (_, packet, _, _) = event_rx.recv().await.unwrap();
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -3038,7 +3038,7 @@ mod tests {
                 .expect("no timeout")
                 .expect("to succeed");
 
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -3095,7 +3095,7 @@ mod tests {
             // verify that window size is decreased back to 1
             assert_eq!(stream.window_size, INITIAL_WINDOW_SIZE);
 
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
             cmd_tx
                 .send(StreamEvent::Packet {
                     packet: PacketBuilder::new(1338u32)
@@ -3129,7 +3129,7 @@ mod tests {
                 .expect("no timeout")
                 .expect("to succeed");
 
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             cmd_tx
                 .send(StreamEvent::Packet {
@@ -3161,7 +3161,7 @@ mod tests {
             client.write_all(&vec![i as u8; 256]).await.unwrap();
 
             let (_, packet, _, _) = event_rx.recv().await.unwrap();
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             cmd_tx
                 .send(StreamEvent::Packet {
@@ -3254,7 +3254,7 @@ mod tests {
                 .expect("to succeed")
                 .1;
 
-            let packet = Packet::parse(&packet).unwrap();
+            let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
             assert_eq!(packet.payload, vec![i as u8; MTU_SIZE]);
 
@@ -3278,7 +3278,7 @@ mod tests {
             .expect("to succeed")
             .1;
 
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
         let _ = cmd_tx
             .send(StreamEvent::Packet {
                 packet: PacketBuilder::new(1338u32)
@@ -3336,7 +3336,7 @@ mod tests {
             .expect("to succeed")
             .1;
 
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
         assert_eq!(packet.payload, vec![1u8; MTU_SIZE]);
 
@@ -3369,7 +3369,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
             .1;
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
         assert!(packet.flags.close());
 
         // verify that the stream is not shut down because ack hasn't been received
@@ -3432,7 +3432,7 @@ mod tests {
             .expect("to succeed")
             .1;
 
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
 
         assert_eq!(packet.payload, vec![1u8; MTU_SIZE]);
 
@@ -3464,7 +3464,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
             .1;
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
         assert!(!packet.flags.close());
 
         // send close
@@ -3486,7 +3486,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
             .1;
-        let packet = Packet::parse(&packet).unwrap();
+        let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
         assert!(packet.flags.close());
 
         let _ = tokio::time::timeout(Duration::from_secs(5), handle)
