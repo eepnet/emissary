@@ -2619,11 +2619,12 @@ mod tests {
     // TODO: add better test
     #[tokio::test]
     async fn offline() {
+        // set runtime unix time clock to 0 to pass the offline signature expiration check
+        MockRuntime::set_time(Some(Duration::from_nanos(0)));
+
         let signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let destination = Destination::new::<MockRuntime>(signing_key.public());
         let mut manager = StreamManager::<MockRuntime>::new(destination, signing_key);
-
-        MockRuntime::set_time(Some(Duration::from_secs(1741910700)));
 
         let input = vec![
             226, 27, 26, 214, 19, 0, 72, 226, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 8, 233, 2, 49, 0, 0,
