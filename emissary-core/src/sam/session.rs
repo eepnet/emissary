@@ -1579,7 +1579,7 @@ impl<R: Runtime> Future for SamSession<R> {
 mod tests {
     use super::*;
     use crate::{
-        crypto::{SigningPrivateKey, StaticPrivateKey},
+        crypto::SigningPrivateKey,
         events::{EventManager, EventSubscriber},
         netdb::{NetDbAction, NetDbActionRecycle, NetDbHandle},
         primitives::Destination,
