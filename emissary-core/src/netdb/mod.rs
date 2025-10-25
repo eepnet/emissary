@@ -18,7 +18,10 @@
 
 use crate::{
     crypto::{base32_encode, base64_encode, StaticPublicKey},
-    error::{Error, QueryError},
+    error::{
+        parser::{DatabaseStoreParseError, RouterIdentityParseError, RouterInfoParseError},
+        Error, QueryError,
+    },
     i2np::{
         database::{
             lookup::{DatabaseLookup, LookupType, ReplyType},
@@ -1039,12 +1042,21 @@ impl<R: Runtime> NetDb<R> {
             reply,
             ..
         } = DatabaseStore::<R>::parse(&message.payload).map_err(|error| {
-            tracing::warn!(
-                target: LOG_TARGET,
-                ?error,
-                ?sender,
-                "malformed database store received",
-            );
+            match error {
+                DatabaseStoreParseError::RouterInfo(RouterInfoParseError::InvalidIdentity(
+                    RouterIdentityParseError::InvalidPublicKey(0),
+                )) => tracing::debug!(
+                    ?sender,
+                    "ignoring database store for router info with elgamal encryption key",
+                ),
+                error => tracing::warn!(
+                    target: LOG_TARGET,
+                    ?error,
+                    ?sender,
+                    "malformed database store received",
+                ),
+            }
+
             Error::InvalidData
         })?;
 
