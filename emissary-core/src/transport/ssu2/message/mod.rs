@@ -22,7 +22,7 @@
 
 use crate::{
     crypto::{chachapoly::ChaCha, EphemeralPublicKey},
-    error::Ssu2Error,
+    error::{parser::Ssu2ParseError, Ssu2Error},
     i2np::{Message, MessageType as I2npMessageType},
     primitives::{MessageId, RouterInfo},
 };
@@ -30,7 +30,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     Err, IResult,
 };
@@ -429,7 +428,7 @@ impl fmt::Debug for Block {
 
 impl Block {
     /// Attempt to parse [`Block::DateTime`] from `input`.
-    fn parse_date_time(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_date_time(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, timestamp) = be_u32(rest)?;
 
@@ -437,7 +436,7 @@ impl Block {
     }
 
     /// Attempt to parse [`Block::Options`] from `input`.
-    fn parse_options(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_options(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, t_min) = be_u8(rest)?;
         let (rest, t_max) = be_u8(rest)?;
@@ -471,14 +470,10 @@ impl Block {
     }
 
     /// Attempt to parse [`Block::RouterInfo`] from `input`.
-    fn parse_router_info(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_router_info(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         if size == 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "received empty `RouterInfo` message",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::EmptyRouterInfo));
         }
         let (rest, flag) = be_u8(rest)?;
         let (rest, _frag) = be_u8(rest)?;
@@ -490,22 +485,14 @@ impl Block {
                 "ignoring flood request for received router info",
             );
         }
+
         // TODO: implement
         if (flag >> 1) & 1 == 1 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "ignoring gzip-compressed router info",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::CompressedRouterInfo));
         }
 
-        let router_info = RouterInfo::parse(router_info).ok_or_else(|| {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "malformed router info",
-            );
-            Err::Error(make_error(input, ErrorKind::Fail))
-        })?;
+        let router_info = RouterInfo::parse(router_info)
+            .map_err(|error| Err::Error(Ssu2ParseError::RouterInfo(error)))?;
 
         Ok((
             rest,
@@ -516,14 +503,14 @@ impl Block {
     }
 
     /// Attempt to parse [`Block::I2Np`] from `input`.
-    fn parse_i2np(input: &[u8]) -> IResult<&[u8], Block> {
-        let (rest, message) = Message::parse_frame_short(input)?;
+    fn parse_i2np(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
+        let (rest, message) = Message::parse_frame_short(input).map_err(Err::convert)?;
 
         Ok((rest, Block::I2Np { message }))
     }
 
     /// Attempt to parse [`Block::Termination`] from `input`.
-    fn parse_termination(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_termination(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, num_valid_pkts) = be_u64(rest)?;
         let (rest, reason) = be_u8(rest)?;
@@ -545,7 +532,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::Padding`].
-    fn parse_padding(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_padding(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, padding) = take(size)(rest)?;
 
@@ -558,35 +545,21 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::FirstFragment`].
-    fn parse_first_fragment(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_first_fragment(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, message_type) = be_u8(rest)?;
         let (rest, message_id) = be_u32(rest)?;
         let (rest, expiration) = be_u32(rest)?;
         let fragment_len = size.saturating_sub(9) as usize; // type + id + size + expiration
-        let message_type = I2npMessageType::from_u8(message_type).ok_or_else(|| {
-            tracing::warn!(
-                target: LOG_TARGET,
-                ?message_type,
-                "invalid message type for first fragment",
-            );
-            Err::Error(make_error(input, ErrorKind::Fail))
-        })?;
+        let message_type = I2npMessageType::from_u8(message_type)
+            .ok_or_else(|| Err::Error(Ssu2ParseError::InvalidMessageTypeFirstFrag(message_type)))?;
 
         if fragment_len == 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "first fragment is empty",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::EmptyFirstFragment));
         }
 
         if rest.len() < fragment_len {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "first fragment message is too short",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::FirstFragmentTooShort));
         }
         let (rest, fragment) = take(fragment_len)(rest)?;
 
@@ -602,26 +575,18 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::FollowOnFragment`].
-    fn parse_follow_on_fragment(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_follow_on_fragment(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, frag) = be_u8(rest)?;
         let (rest, message_id) = be_u32(rest)?;
         let fragment_len = size.saturating_sub(5) as usize; // frag + id
 
         if fragment_len == 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "follow-on fragment is empty",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::EmptyFollowOnFragment));
         }
 
         if rest.len() < fragment_len {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "follow-on fragment message is too short",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ssu2ParseError::FollowOnFragmentTooShort));
         }
         let (rest, fragment) = take(fragment_len)(rest)?;
 
@@ -637,7 +602,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::Ack`].
-    fn parse_ack(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_ack(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, ack_through) = be_u32(rest)?;
         let (rest, num_acks) = be_u8(rest)?;
@@ -675,7 +640,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::NewToken`].
-    fn parse_new_token(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_new_token(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, expires) = be_u32(rest)?;
         let (rest, token) = be_u64(rest)?;
@@ -684,7 +649,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::PathChallenge`].
-    fn parse_path_challenge(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_path_challenge(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, data) = take(size)(rest)?;
 
@@ -697,7 +662,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::PathResponse`].
-    fn parse_path_response(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_path_response(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, data) = take(size)(rest)?;
 
@@ -710,7 +675,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::FirstPacketNumber`].
-    fn parse_first_packet_number(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_first_packet_number(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, first_pkt_num) = be_u32(rest)?;
 
@@ -718,7 +683,7 @@ impl Block {
     }
 
     /// Parse [`MessageBlock::Congestion`].
-    fn parse_congestion(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_congestion(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, flag) = be_u8(rest)?;
 
@@ -726,7 +691,7 @@ impl Block {
     }
 
     /// Attempt to parse unsupported block from `input`
-    fn parse_unsupported_block(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_unsupported_block(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, _bytes) = take(size)(rest)?;
 
@@ -735,7 +700,7 @@ impl Block {
 
     /// Attempt to parse [`Block`] from `input`, returning the parsed block
     // and the rest of `input` to caller.
-    fn parse_inner(input: &[u8]) -> IResult<&[u8], Block> {
+    fn parse_inner(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, block_type) = be_u8(input)?;
 
         match BlockType::from_u8(block_type) {
@@ -761,31 +726,27 @@ impl Block {
                 );
                 Self::parse_unsupported_block(rest)
             }
-            None => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?block_type,
-                    "unrecognized ssu2 block type",
-                );
-                Err(Err::Error(make_error(input, ErrorKind::Fail)))
-            }
+            None => Err(Err::Error(Ssu2ParseError::InvalidBlock(block_type))),
         }
     }
 
     /// Attempt to parse `input` into an SSU2 message [`Block`] and recursive call
     /// `Block::parse_multiple()` until there are no bytes or an error was encountered.
-    fn parse_multiple(input: &[u8], mut messages: Vec<Block>) -> Option<Vec<Block>> {
-        let (rest, message) = Self::parse_inner(input).ok()?;
+    fn parse_multiple(
+        input: &[u8],
+        mut messages: Vec<Block>,
+    ) -> Result<Vec<Block>, Ssu2ParseError> {
+        let (rest, message) = Self::parse_inner(input)?;
         messages.push(message);
 
         match rest.is_empty() {
-            true => Some(messages),
+            true => Ok(messages),
             false => Self::parse_multiple(rest, messages),
         }
     }
 
     /// Attempt to parse `input` into one or more SSU2 message [`Block`]s.
-    pub fn parse(input: &[u8]) -> Option<Vec<Block>> {
+    pub fn parse(input: &[u8]) -> Result<Vec<Block>, Ssu2ParseError> {
         Self::parse_multiple(input, Vec::new())
     }
 

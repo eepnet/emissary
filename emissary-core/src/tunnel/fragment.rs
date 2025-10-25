@@ -161,7 +161,9 @@ impl<R: Runtime> Fragment<R> {
             },
         );
 
-        Message::parse_standard(&message).map(|message| (message, delivery_instructions))
+        Message::parse_standard(&message)
+            .map(|message| (message, delivery_instructions))
+            .ok()
     }
 }
 

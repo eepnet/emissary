@@ -552,15 +552,19 @@ impl<T: Tunnel> PendingTunnel<T> {
                     return Err(hop_results);
                 }
 
-                let Some(message) = GarlicMessage::parse(&record) else {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        tunnel_id = %self.tunnel_id,
-                        "malformed garlic message as tunnel build reply",
-                    );
+                let message = match GarlicMessage::parse(&record) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            tunnel_id = %self.tunnel_id,
+                            ?error,
+                            "malformed garlic message as tunnel build reply",
+                        );
 
-                    hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
-                    return Err(hop_results);
+                        hop_results[0].1 = Some(Err(TunnelError::InvalidMessage));
+                        return Err(hop_results);
+                    }
                 };
 
                 // try to locate a garlic glove containing `OutboundTunnelBuildReply`

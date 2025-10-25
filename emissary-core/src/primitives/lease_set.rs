@@ -18,6 +18,7 @@
 
 use crate::{
     crypto::{SigningPrivateKey, SigningPublicKey, StaticPublicKey},
+    error::parser::LeaseSetParseError,
     primitives::{Destination, Mapping, OfflineSignature, RouterId, TunnelId, LOG_TARGET},
     runtime::Runtime,
 };
@@ -25,7 +26,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     Err, IResult,
 };
@@ -63,8 +63,8 @@ impl LeaseSet2Header {
     /// Attempt to parse [`LeaseSet2Header`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self> {
-        let (rest, destination) = Destination::parse_frame(input)?;
+    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self, LeaseSetParseError> {
+        let (rest, destination) = Destination::parse_frame(input).map_err(Err::convert)?;
         let (rest, published) = be_u32(rest)?;
         let (rest, expires) = be_u16(rest)?;
         let (rest, flags) = be_u16(rest)?;
@@ -85,7 +85,8 @@ impl LeaseSet2Header {
 
         // parse and verify offline signature and get key for verifying the lease set's signature
         let (rest, verifying_key) =
-            OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())?;
+            OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())
+                .map_err(Err::convert)?;
 
         Ok((
             rest,
@@ -155,7 +156,7 @@ impl Lease {
     /// Attempt to parse `Lease2` from `input`.
     ///
     /// Returns the parsed lease and rest of `input` on success.
-    pub fn parse_frame_lease2(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame_lease2(input: &[u8]) -> IResult<&[u8], Self, LeaseSetParseError> {
         let (rest, tunnel_gateway) = take(32usize)(input)?;
         let (rest, tunnel_id) = be_u32(rest)?;
         let (rest, expires) = be_u32(rest)?;
@@ -173,7 +174,7 @@ impl Lease {
     /// Attempt to parse `Lease` from `input`.
     ///
     /// Returns the parsed lease and rest of `input` on success.
-    pub fn parse_frame_lease(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame_lease(input: &[u8]) -> IResult<&[u8], Self, LeaseSetParseError> {
         let (rest, tunnel_gateway) = take(32usize)(input)?;
         let (rest, tunnel_id) = be_u32(rest)?;
         let (rest, expires) = be_u64(rest)?;
@@ -243,7 +244,7 @@ impl Lease {
 /// Parse lease set is guaranteed to contain at least one lease.
 ///
 /// https://geti2p.net/spec/common-structures#struct-leaseset2
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct LeaseSet2 {
     /// Header.
     pub header: LeaseSet2Header,
@@ -259,9 +260,9 @@ impl LeaseSet2 {
     /// Attempt to parse [`LeaseSet2`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self> {
-        let (rest, header) = LeaseSet2Header::parse_frame::<R>(input)?;
-        let (rest, _) = Mapping::parse_frame(rest)?;
+    pub fn parse_frame<R: Runtime>(input: &[u8]) -> IResult<&[u8], Self, LeaseSetParseError> {
+        let (rest, header) = LeaseSet2Header::parse_frame::<R>(input).map_err(Err::convert)?;
+        let (rest, _) = Mapping::parse_frame(rest).map_err(Err::convert)?;
         let (rest, num_key_types) = be_u8(rest)?;
 
         let (rest, public_keys) = (0..num_key_types)
@@ -292,35 +293,19 @@ impl LeaseSet2 {
                     }
                 },
             )
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse public key list",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(LeaseSetParseError::InvalidBitstream))?;
 
         // for now, emissary only supports curve25519-based crypto
         if public_keys.is_empty() {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "destination uses unsupported crypto",
-            );
-
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(LeaseSetParseError::NoSupportedPublicKey));
         }
 
         let (rest, num_leases) = be_u8(rest)?;
 
         if num_leases > 16 || num_leases == 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                ?num_leases,
-                "invalid number of leases",
-            );
-
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(LeaseSetParseError::InvalidLeaseCount(
+                num_leases,
+            )));
         }
 
         let (rest, leases) = (0..num_leases)
@@ -330,24 +315,12 @@ impl LeaseSet2 {
 
                 Some((rest, leases))
             })
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse lease2 list",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(LeaseSetParseError::InvalidLeaseList))?;
 
         // ensure that lease set contains at least one valid lease
         // before returning so the caller doesn't have make this check.
         if leases.is_empty() {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "lease set didn't contain any (valid) leases",
-            );
-
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(LeaseSetParseError::NoValidLeases));
         }
 
         // verify signature
@@ -363,26 +336,16 @@ impl LeaseSet2 {
 
         match &header.offline_signature {
             None => {
-                header.destination.verifying_key().verify(&bytes, signature).map_err(|error| {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?error,
-                        "invalid signature for lease set",
-                    );
-
-                    Err::Error(make_error(input, ErrorKind::Fail))
-                })?;
+                header
+                    .destination
+                    .verifying_key()
+                    .verify(&bytes, signature)
+                    .map_err(|_| Err::Error(LeaseSetParseError::InvalidSignature))?;
             }
             Some(verifying_key) => {
-                verifying_key.verify(&bytes, signature).map_err(|error| {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        ?error,
-                        "invalid signature for lease set with offline key",
-                    );
-
-                    Err::Error(make_error(input, ErrorKind::Fail))
-                })?;
+                verifying_key
+                    .verify(&bytes, signature)
+                    .map_err(|_| Err::Error(LeaseSetParseError::InvalidOfflineSignature))?;
             }
         }
 
@@ -397,8 +360,8 @@ impl LeaseSet2 {
     }
 
     /// Attempt to parse `input` into [`LeaseSet2`].
-    pub fn parse<R: Runtime>(input: &[u8]) -> Option<Self> {
-        Some(Self::parse_frame::<R>(input).ok()?.1)
+    pub fn parse<R: Runtime>(input: &[u8]) -> Result<Self, LeaseSetParseError> {
+        Ok(Self::parse_frame::<R>(input)?.1)
     }
 
     /// Get serialized length of [`LeaseSet2`].
@@ -528,6 +491,7 @@ mod tests {
     use super::*;
     use crate::{
         crypto::StaticPrivateKey,
+        error::parser::OfflineSignatureParseError,
         runtime::{mock::MockRuntime, Runtime},
     };
     use rand_core::RngCore;
@@ -620,7 +584,10 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
+        assert_eq!(
+            LeaseSet2::parse::<MockRuntime>(&serialized).unwrap_err(),
+            LeaseSetParseError::InvalidLeaseCount(0)
+        );
     }
 
     #[test]
@@ -677,13 +644,16 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
+        assert_eq!(
+            LeaseSet2::parse::<MockRuntime>(&serialized).unwrap_err(),
+            LeaseSetParseError::NoSupportedPublicKey
+        );
     }
 
     #[test]
     fn serialize_and_parse_random() {
         let (random, signing_key) = LeaseSet2::random();
-        assert!(LeaseSet2::parse::<MockRuntime>(&random.serialize(&signing_key)).is_some());
+        assert!(LeaseSet2::parse::<MockRuntime>(&random.serialize(&signing_key)).is_ok());
     }
 
     #[test]
@@ -715,7 +685,10 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
+        assert_eq!(
+            LeaseSet2::parse::<MockRuntime>(&serialized).unwrap_err(),
+            LeaseSetParseError::InvalidLeaseCount(17)
+        );
     }
 
     #[test]
@@ -960,7 +933,10 @@ mod tests {
         }
         .serialize(&wrong_sgk);
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&serialized).is_none());
+        assert_eq!(
+            LeaseSet2::parse::<MockRuntime>(&serialized).unwrap_err(),
+            LeaseSetParseError::InvalidSignature
+        );
     }
 
     #[test]
@@ -1114,7 +1090,10 @@ mod tests {
             41, 207, 20, 11,
         ];
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&input).is_none());
+        assert_eq!(
+            LeaseSet2::parse::<MockRuntime>(&input).unwrap_err(),
+            LeaseSetParseError::OfflineSignature(OfflineSignatureParseError::Expired)
+        );
     }
 
     #[test]

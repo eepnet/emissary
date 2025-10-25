@@ -21,14 +21,13 @@ use crate::{
         base64_decode, base64_encode, sha256::Sha256, SigningPrivateKey, SigningPublicKey,
         StaticPrivateKey, StaticPublicKey,
     },
-    primitives::LOG_TARGET,
+    error::parser::RouterIdentityParseError,
     runtime::Runtime,
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u8},
     sequence::tuple,
     Err, IResult,
@@ -150,14 +149,11 @@ impl RouterIdentity {
     }
 
     /// Parse [`RouterIdentity`] from `input`, returning rest of `input` and parsed router identity.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterIdentity> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterIdentity, RouterIdentityParseError> {
         if input.len() < SERIALIZED_LEN {
-            tracing::warn!(
-                target: LOG_TARGET,
-                len = ?input.len(),
-                "router identity is too short"
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(RouterIdentityParseError::InvalidLength(
+                input.len(),
+            )));
         }
 
         let (_, (initial_bytes, rest)) = tuple((take(384usize), take(input.len() - 384)))(input)?;
@@ -168,27 +164,16 @@ impl RouterIdentity {
         let (rest, pub_key_type) = be_u16(rest)?;
 
         let (KEY_CERTIFICATE, KEY_CERTIFICATE_LEN) = (cert_type, cert_len) else {
-            tracing::debug!(
-                target: LOG_TARGET,
-                ?cert_len,
-                ?cert_type,
-                "unsupported certificate type",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(RouterIdentityParseError::InvalidCertificate((
+                cert_type, cert_len,
+            ))));
         };
 
         let static_key = match pub_key_type {
-            KEY_KIND_X25519 => StaticPublicKey::from_bytes(&initial_bytes[..32]),
-            kind => {
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    ?kind,
-                    "unsupported static key kind",
-                );
-                None
-            }
-        }
-        .ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
+            KEY_KIND_X25519 => StaticPublicKey::from_bytes(&initial_bytes[..32])
+                .ok_or(Err::Error(RouterIdentityParseError::InvalidBitstream)),
+            kind => Err(Err::Error(RouterIdentityParseError::InvalidPublicKey(kind))),
+        }?;
 
         let signing_key = match sig_key_type {
             KEY_KIND_EDDSA_SHA512_ED25519 => Some({
@@ -199,18 +184,13 @@ impl RouterIdentity {
                         .expect("to succeed");
 
                 SigningPublicKey::from_bytes(&public_key)
-                    .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?
+                    .ok_or_else(|| Err::Error(RouterIdentityParseError::InvalidBitstream))?
             }),
-            kind => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?kind,
-                    "unsupported signing key kind",
-                );
-                None
-            }
+            _ => None,
         }
-        .ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
+        .ok_or(Err::Error(RouterIdentityParseError::InvalidSigningKey(
+            sig_key_type,
+        )))?;
 
         let identity_hash = Bytes::from(Sha256::new().update(&input[..391]).finalize());
 
@@ -228,8 +208,8 @@ impl RouterIdentity {
 
     /// Try to parse router information from `bytes`.
     #[allow(unused)]
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<Self> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Self, RouterIdentityParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Serialize [`RouterIdentity`] into a byte vector.
@@ -322,7 +302,10 @@ mod tests {
 
     #[test]
     fn too_short_router_identity() {
-        assert!(RouterIdentity::parse(vec![1, 2, 3, 4]).is_none());
+        assert_eq!(
+            RouterIdentity::parse(vec![1, 2, 3, 4]).unwrap_err(),
+            RouterIdentityParseError::InvalidLength(4)
+        );
     }
 
     #[test]

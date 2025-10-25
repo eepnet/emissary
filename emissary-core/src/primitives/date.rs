@@ -16,6 +16,8 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+use crate::error::parser::DateParseError;
+
 use nom::{number::complete::be_u64, IResult};
 
 use alloc::vec::Vec;
@@ -39,15 +41,15 @@ impl Date {
     }
 
     /// Parse [`Date`] from `input`, returning rest of `input` and parsed date.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Date> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Date, DateParseError> {
         let (rest, date) = be_u64(input)?;
 
         Ok((rest, Date { date }))
     }
 
     /// Try to convert `bytes` into a [`Date`].
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<Date> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Date, DateParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Get reference to inner date.
@@ -59,7 +61,6 @@ impl Date {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     use std::time::SystemTime;
 
     #[test]
@@ -79,7 +80,7 @@ mod tests {
 
         assert_eq!(
             Date::parse(time),
-            Some(Date {
+            Ok(Date {
                 date: 1719940343u64
             })
         );
@@ -96,7 +97,7 @@ mod tests {
 
         assert_eq!(
             Date::parse(time),
-            Some(Date {
+            Ok(Date {
                 date: 1719940343u64
             })
         );
@@ -124,14 +125,20 @@ mod tests {
 
     #[test]
     fn empty_date() {
-        assert!(Date::parse(Vec::<u8>::new()).is_none());
+        assert_eq!(
+            Date::parse(Vec::<u8>::new()).unwrap_err(),
+            DateParseError::InvalidBitstream
+        );
     }
 
     #[test]
     fn incomplete_date() {
         for i in 0..7 {
             let empty = vec![1 as u8; i];
-            assert!(Date::parse(empty).is_none());
+            assert_eq!(
+                Date::parse(empty).unwrap_err(),
+                DateParseError::InvalidBitstream
+            );
         }
     }
 }

@@ -19,6 +19,7 @@
 use crate::{
     config::Config,
     crypto::{base64_decode, SigningPrivateKey, StaticPrivateKey, StaticPublicKey},
+    error::parser::RouterInfoParseError,
     primitives::{
         router_address::TransportKind, Capabilities, Date, Mapping, RouterAddress, RouterIdentity,
         Str, LOG_TARGET,
@@ -28,11 +29,7 @@ use crate::{
 
 use bytes::{BufMut, BytesMut};
 use hashbrown::HashMap;
-use nom::{
-    error::{make_error, ErrorKind},
-    number::complete::be_u8,
-    Err, IResult,
-};
+use nom::{number::complete::be_u8, Err, IResult};
 
 use alloc::{string::ToString, vec::Vec};
 
@@ -133,9 +130,9 @@ impl RouterInfo {
         }
     }
 
-    fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterInfo> {
-        let (rest, identity) = RouterIdentity::parse_frame(input)?;
-        let (rest, published) = Date::parse_frame(rest)?;
+    fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterInfo, RouterInfoParseError> {
+        let (rest, identity) = RouterIdentity::parse_frame(input).map_err(Err::convert)?;
+        let (rest, published) = Date::parse_frame(rest).map_err(Err::convert)?;
         let (rest, num_addresses) = be_u8(rest)?;
         let (rest, addresses) = (0..num_addresses)
             .try_fold(
@@ -157,72 +154,35 @@ impl RouterInfo {
                     Some((rest, addresses))
                 },
             )
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse router addresses",
-                );
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(RouterInfoParseError::InvalidBitstream))?;
 
         // ignore `peer_size`
         let (rest, _) = be_u8(rest)?;
-        let (rest, options) = Mapping::parse_frame(rest)?;
+        let (rest, options) = Mapping::parse_frame(rest).map_err(Err::convert)?;
 
         let capabilities = match options.get(&Str::from("caps")) {
-            None => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "router capabilities missing",
-                );
-                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-            }
+            None => return Err(Err::Error(RouterInfoParseError::CapabilitiesMissing)),
             Some(caps) => match Capabilities::parse(caps) {
                 Some(caps) => caps,
                 None => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        %caps,
-                        "invalid capabilities",
-                    );
-                    return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                    return Err(Err::Error(RouterInfoParseError::InvalidCapabilities(
+                        caps.clone(),
+                    )));
                 }
             },
         };
 
         let net_id = match options.get(&Str::from("netId")) {
-            None => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "network id not specified",
-                );
-                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-            }
-            Some(net_id) => match net_id.parse::<u8>() {
-                Ok(net_id) => net_id,
-                Err(error) => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        %net_id,
-                        ?error,
-                        "failed to parse net id",
-                    );
-                    return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                }
-            },
+            None => return Err(Err::Error(RouterInfoParseError::NetIdMissing)),
+            Some(net_id) => net_id
+                .parse::<u8>()
+                .map_err(|_| Err::Error(RouterInfoParseError::NetIdMissing))?,
         };
 
         identity
             .signing_key()
             .verify(&input[..input.len() - SIGNATURE_LEN], rest)
-            .map_err(|error| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "invalid signature for router info",
-                );
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .map_err(|_| Err::Error(RouterInfoParseError::InvalidSignature))?;
 
         Ok((
             rest,
@@ -285,8 +245,8 @@ impl RouterInfo {
     }
 
     /// Try to parse router information from `bytes`.
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<Self> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Self, RouterInfoParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Returns `true` if the router is a floodfill router.
@@ -546,7 +506,10 @@ impl RouterInfoBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::{mock::MockRuntime, Runtime};
+    use crate::{
+        error::parser::RouterIdentityParseError,
+        runtime::{mock::MockRuntime, Runtime},
+    };
     use std::{str::FromStr, time::Duration};
 
     #[test]
@@ -674,7 +637,10 @@ mod tests {
     #[test]
     fn parse_router_3() {
         let router_info_bytes = include_bytes!("../../test-vectors/router3.dat");
-        assert!(RouterInfo::parse(router_info_bytes).is_none());
+        assert_eq!(
+            RouterInfo::parse(router_info_bytes).unwrap_err(),
+            RouterInfoParseError::InvalidIdentity(RouterIdentityParseError::InvalidPublicKey(0))
+        );
     }
 
     #[test]
@@ -715,7 +681,10 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(RouterInfo::parse(&serialized).is_none());
+        assert_eq!(
+            RouterInfo::parse(&serialized).unwrap_err(),
+            RouterInfoParseError::NetIdMissing
+        );
     }
 
     #[test]
@@ -742,7 +711,10 @@ mod tests {
         }
         .serialize(&sgk);
 
-        assert!(RouterInfo::parse(&serialized).is_none());
+        assert_eq!(
+            RouterInfo::parse(&serialized).unwrap_err(),
+            RouterInfoParseError::CapabilitiesMissing
+        );
     }
 
     #[test]

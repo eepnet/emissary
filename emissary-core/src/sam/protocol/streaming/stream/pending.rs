@@ -142,7 +142,7 @@ impl<R: Runtime> PendingStream<R> {
             flags,
             payload,
             ..
-        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet)?;
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -196,7 +196,7 @@ impl<R: Runtime> PendingStream<R> {
                     .to_vec(),
             },
             Err(StreamingError::Closed) => PendingStreamResult::Destroy,
-            Err(StreamingError::Malformed) => PendingStreamResult::DoNothing,
+            Err(StreamingError::Malformed(_)) => PendingStreamResult::DoNothing,
             Err(_) => unreachable!(),
         }
     }

@@ -20,20 +20,16 @@
 //!
 //! https://geti2p.net/spec/ntcp2#unencrypted-data
 
-use crate::i2np::Message;
+use crate::{error::parser::Ntcp2ParseError, i2np::Message};
 
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     Err, IResult,
 };
 
 use alloc::{vec, vec::Vec};
 use core::fmt;
-
-/// Logging target for the file.
-const LOG_TARGET: &str = "emissary::ntcp2::message";
 
 /// Minimum size for options message.
 const OPTIONS_MIN_SIZE: u16 = 12u16;
@@ -223,7 +219,7 @@ impl fmt::Debug for MessageBlock<'_> {
 
 impl<'a> MessageBlock<'a> {
     /// Parse [`MessageBlock::DateTime`].
-    fn parse_date_time(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_date_time(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, timestamp) = be_u32(rest)?;
 
@@ -231,7 +227,7 @@ impl<'a> MessageBlock<'a> {
     }
 
     /// Parse [`MessageBlock::Options`].
-    fn parse_options(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_options(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, t_min) = be_u8(rest)?;
         let (rest, t_max) = be_u8(rest)?;
@@ -265,14 +261,10 @@ impl<'a> MessageBlock<'a> {
     }
 
     /// Parse [`MessageBlock::RouterInfo`].
-    fn parse_router_info(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_router_info(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, size) = be_u16(input)?;
         if size == 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "received empty `RouterInfo` message",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(Ntcp2ParseError::EmptyRouterInfo));
         }
         let (rest, flag) = be_u8(rest)?;
         let (rest, router_info) = take(size - 1)(rest)?;
@@ -287,15 +279,14 @@ impl<'a> MessageBlock<'a> {
     }
 
     /// Parse [`MessageBlock::I2Np`].
-    fn parse_i2np(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
-        // TODO: only parse message type!
-        let (rest, message) = Message::parse_frame_short(input)?;
+    fn parse_i2np(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
+        let (rest, message) = Message::parse_frame_short(input).map_err(Err::convert)?;
 
         Ok((rest, MessageBlock::I2Np { message }))
     }
 
     /// Parse [`MessageBlock::Termination`].
-    fn parse_termination(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_termination(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, valid_frames) = be_u64(rest)?;
         let (rest, reason) = be_u8(rest)?;
@@ -317,14 +308,14 @@ impl<'a> MessageBlock<'a> {
     }
 
     /// Parse [`MessageBlock::Padding`].
-    fn parse_padding(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_padding(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, padding) = take(size)(rest)?;
 
         Ok((rest, MessageBlock::Padding { padding }))
     }
 
-    fn parse_inner(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>> {
+    fn parse_inner(input: &'a [u8]) -> IResult<&'a [u8], MessageBlock<'a>, Ntcp2ParseError> {
         let (rest, block_type) = be_u8(input)?;
 
         match BlockType::from_u8(block_type) {
@@ -334,33 +325,33 @@ impl<'a> MessageBlock<'a> {
             Some(BlockType::I2Np) => Self::parse_i2np(rest),
             Some(BlockType::Termination) => Self::parse_termination(rest),
             Some(BlockType::Padding) => Self::parse_padding(rest),
-            None => Err(Err::Error(make_error(input, ErrorKind::Fail))),
+            None => Err(Err::Error(Ntcp2ParseError::InvalidBlock(block_type))),
         }
     }
 
     fn parse_multiple_inner(
         input: &'a [u8],
         mut messages: Vec<MessageBlock<'a>>,
-    ) -> Option<Vec<MessageBlock<'a>>> {
-        let (rest, message) = Self::parse_inner(input).ok()?;
+    ) -> Result<Vec<MessageBlock<'a>>, Ntcp2ParseError> {
+        let (rest, message) = Self::parse_inner(input)?;
         messages.push(message);
 
         match rest.is_empty() {
-            true => Some(messages),
+            true => Ok(messages),
             false => Self::parse_multiple_inner(rest, messages),
         }
     }
 
-    /// Try to parse `input` into an NTCP message block
-    pub fn parse_multiple(input: &'a [u8]) -> Option<Vec<MessageBlock<'a>>> {
+    /// Try to parse `input` into one or more NTCP2 message blocks.
+    pub fn parse_multiple(input: &'a [u8]) -> Result<Vec<MessageBlock<'a>>, Ntcp2ParseError> {
         MessageBlock::parse_multiple_inner(input, Vec::new())
     }
 
-    /// Try to parse `input` into an NTCP message block
-    pub fn parse(input: &'a [u8]) -> Option<MessageBlock<'a>> {
-        let (_rest, parsed) = MessageBlock::parse_inner(input).ok()?;
+    /// Try to parse `input` into an NTCP2 message block
+    pub fn parse(input: &'a [u8]) -> Result<MessageBlock<'a>, Ntcp2ParseError> {
+        let (_rest, parsed) = MessageBlock::parse_inner(input)?;
 
-        Some(parsed)
+        Ok(parsed)
     }
 
     /// Create new NTCP2 `RouterInfo` message block.

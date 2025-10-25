@@ -20,15 +20,10 @@
 //!
 //! https://geti2p.net/spec/common-structures#string
 
-use crate::{primitives::LOG_TARGET, Error};
+use crate::{error::parser::StrParseError, primitives::LOG_TARGET, Error};
 
 use bytes::{BufMut, BytesMut};
-use nom::{
-    bytes::complete::take,
-    error::{make_error, ErrorKind},
-    number::complete::be_u8,
-    Err, IResult,
-};
+use nom::{bytes::complete::take, number::complete::be_u8, Err, IResult};
 
 use alloc::{borrow::ToOwned, string::String, sync::Arc, vec::Vec};
 use core::{
@@ -73,18 +68,10 @@ impl From<Arc<str>> for Str {
 }
 
 impl TryFrom<&[u8]> for Str {
-    type Error = ();
+    type Error = StrParseError;
 
     fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let string = core::str::from_utf8(value)
-            .map_err(|error| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "failed to parse `Str`",
-                );
-            })?
-            .to_owned();
+        let string = core::str::from_utf8(value).map_err(StrParseError::Utf8)?.to_owned();
 
         Ok(Self::from(string))
     }
@@ -145,18 +132,17 @@ impl Str {
     }
 
     /// Parse [`Str`] from `input`, returning rest of `input` and parsed address.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, StrParseError> {
         let (rest, size) = be_u8(input)?;
         let (rest, string) = take(size)(rest)?;
-        let string =
-            Str::try_from(string).map_err(|()| Err::Error(make_error(input, ErrorKind::Fail)))?;
+        let string = Str::try_from(string).map_err(Err::Error)?;
 
         Ok((rest, string))
     }
 
     /// Try to convert `bytes` into a [`Str`].
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<Str> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Str, StrParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Get serialized length of [`Str`].
@@ -172,7 +158,10 @@ mod tests {
 
     #[test]
     fn empty_string() {
-        assert!(Str::parse(Vec::new()).is_none());
+        assert_eq!(
+            Str::parse(Vec::new()).unwrap_err(),
+            StrParseError::InvalidBitstream
+        );
     }
 
     #[test]
@@ -182,7 +171,7 @@ mod tests {
         string.push_front(string.len() as u8);
         let string: Vec<u8> = string.into();
 
-        assert_eq!(Str::parse(string), Some(Str::from("hello, world!")),);
+        assert_eq!(Str::parse(string), Ok(Str::from("hello, world!")),);
     }
 
     #[test]
@@ -196,7 +185,7 @@ mod tests {
         string.push_back(4);
         let string: Vec<u8> = string.into();
 
-        assert_eq!(Str::parse(string), Some(Str::from("hello, world!")));
+        assert_eq!(Str::parse(string), Ok(Str::from("hello, world!")));
     }
 
     #[test]
@@ -220,7 +209,7 @@ mod tests {
     fn serialize_works() {
         let bytes = Str::from("hello, world!").serialize();
 
-        assert_eq!(Str::parse(bytes), Some(Str::from("hello, world!")));
+        assert_eq!(Str::parse(bytes), Ok(Str::from("hello, world!")));
     }
 
     #[test]

@@ -20,12 +20,14 @@
 //!
 //! https://geti2p.net/spec/i2np
 
-use crate::{crypto::sha256::Sha256, runtime::Runtime, subsystem::SubsystemKind};
+use crate::{
+    crypto::sha256::Sha256, error::parser::I2npParseError, runtime::Runtime,
+    subsystem::SubsystemKind,
+};
 
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     Err, IResult,
 };
@@ -405,19 +407,19 @@ impl Message {
     /// Attempt to parse I2NP message with short header from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame_short(input: &[u8]) -> IResult<&[u8], Message> {
+    pub fn parse_frame_short(input: &[u8]) -> IResult<&[u8], Message, I2npParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, message_type) = be_u8(rest)?;
         let (rest, message_id) = be_u32(rest)?;
         let (rest, expiration) = be_u32(rest)?;
 
         if size as usize <= I2NP_SHORT_HEADER_LEN {
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(I2npParseError::TooShortHeader));
         }
 
         let (rest, payload) = take(size as usize - I2NP_SHORT_HEADER_LEN)(rest)?;
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+            .ok_or_else(|| Err::Error(I2npParseError::InvalidMessage(message_type)))?;
 
         Ok((
             rest,
@@ -433,7 +435,7 @@ impl Message {
     /// Attempt to parse I2NP message with standard header from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame_standard(input: &[u8]) -> IResult<&[u8], Message> {
+    pub fn parse_frame_standard(input: &[u8]) -> IResult<&[u8], Message, I2npParseError> {
         let (rest, message_type) = be_u8(input)?;
         let (rest, message_id) = be_u32(rest)?;
         let (rest, expiration) = be_u64(rest)?;
@@ -442,11 +444,11 @@ impl Message {
         let (rest, payload) = take(size as usize)(rest)?;
 
         if payload.is_empty() {
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(I2npParseError::EmptyPayload));
         }
 
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+            .ok_or_else(|| Err::Error(I2npParseError::InvalidMessage(message_type)))?;
 
         Ok((
             rest,
@@ -460,13 +462,13 @@ impl Message {
     }
 
     /// Attempt to parse I2NP message with short header from `input`.
-    pub fn parse_short(input: &[u8]) -> Option<Message> {
-        Some(Self::parse_frame_short(input).ok()?.1)
+    pub fn parse_short(input: &[u8]) -> Result<Message, I2npParseError> {
+        Ok(Self::parse_frame_short(input)?.1)
     }
 
     /// Attempt to parse I2NP message with standard header from `input`.
-    pub fn parse_standard(input: &[u8]) -> Option<Message> {
-        Some(Self::parse_frame_standard(input).ok()?.1)
+    pub fn parse_standard(input: &[u8]) -> Result<Message, I2npParseError> {
+        Ok(Self::parse_frame_standard(input)?.1)
     }
 
     /// Get destination subsystem of the message based on its message type.
@@ -529,7 +531,10 @@ mod tests {
             .with_payload(&vec![1, 2, 3, 4])
             .build();
 
-        assert!(Message::parse_standard(&message).is_none());
+        assert_eq!(
+            Message::parse_standard(&message).unwrap_err(),
+            I2npParseError::InvalidBitstream
+        );
     }
 
     #[test]
@@ -541,7 +546,10 @@ mod tests {
             .with_payload(&vec![1, 2, 3, 4])
             .build();
 
-        assert!(Message::parse_short(&message).is_none());
+        assert_eq!(
+            Message::parse_short(&message).unwrap_err(),
+            I2npParseError::InvalidBitstream
+        );
     }
 
     #[test]
@@ -555,17 +563,26 @@ mod tests {
         out.put_slice(&vec![1, 2, 3, 4]);
         let serialized = out.freeze().to_vec();
 
-        assert!(Message::parse_short(&serialized).is_none());
+        assert_eq!(
+            Message::parse_short(&serialized).unwrap_err(),
+            I2npParseError::InvalidMessage(252)
+        );
     }
 
     #[test]
     fn incomplete_short_header() {
-        assert!(Message::parse_short(&vec![1, 2, 3, 4]).is_none());
+        assert_eq!(
+            Message::parse_short(&vec![1, 2, 3, 4]).unwrap_err(),
+            I2npParseError::InvalidBitstream
+        );
     }
 
     #[test]
     fn incomplete_standard_header() {
-        assert!(Message::parse_standard(&vec![1, 2, 3, 4]).is_none());
+        assert_eq!(
+            Message::parse_standard(&vec![1, 2, 3, 4]).unwrap_err(),
+            I2npParseError::InvalidBitstream
+        );
     }
 
     #[test]
@@ -579,7 +596,10 @@ mod tests {
         out.put_slice(&vec![1, 2, 3, 4]);
         let serialized = out.freeze().to_vec();
 
-        assert!(Message::parse_short(&serialized).is_none());
+        assert_eq!(
+            Message::parse_short(&serialized).unwrap_err(),
+            I2npParseError::TooShortHeader
+        );
     }
 
     #[test]
@@ -592,7 +612,10 @@ mod tests {
         out.put_u32(0xdeadbeefu32);
         let serialized = out.freeze().to_vec();
 
-        assert!(Message::parse_short(&serialized).is_none());
+        assert_eq!(
+            Message::parse_short(&serialized).unwrap_err(),
+            I2npParseError::TooShortHeader
+        );
     }
 
     #[test]
@@ -605,7 +628,10 @@ mod tests {
         out.put_u32(0xdeadbeefu32);
         let serialized = out.freeze().to_vec();
 
-        assert!(Message::parse_short(&serialized).is_none());
+        assert_eq!(
+            Message::parse_short(&serialized).unwrap_err(),
+            I2npParseError::TooShortHeader
+        );
     }
 
     #[test]

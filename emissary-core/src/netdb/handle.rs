@@ -260,7 +260,7 @@ mod tests {
                 router_info,
             }) => {
                 assert_eq!(key, router_id);
-                assert!(RouterInfo::parse(router_info).is_some());
+                assert!(RouterInfo::parse(router_info).is_ok());
             }
             _ => panic!("invalid event"),
         }

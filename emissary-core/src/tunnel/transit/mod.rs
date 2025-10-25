@@ -240,10 +240,11 @@ impl<R: Runtime> TransitTunnelManager<R> {
             session.decrypt_build_record(record[RECORD_START_OFFSET].to_vec())?;
 
         let build_record =
-            variable::TunnelBuildRecord::parse(&decrypted_record).ok_or_else(|| {
+            variable::TunnelBuildRecord::parse(&decrypted_record).map_err(|error| {
                 tracing::warn!(
                     target: LOG_TARGET,
                     ?message_id,
+                    ?error,
                     "malformed variable tunnel build request",
                 );
 
@@ -488,10 +489,11 @@ impl<R: Runtime> TransitTunnelManager<R> {
         let decrypted_record =
             session.decrypt_build_record(record[RECORD_START_OFFSET].to_vec())?;
 
-        let build_record = short::TunnelBuildRecord::parse(&decrypted_record).ok_or_else(|| {
+        let build_record = short::TunnelBuildRecord::parse(&decrypted_record).map_err(|error| {
             tracing::debug!(
                 target: LOG_TARGET,
                 ?message_id,
+                ?error,
                 "malformed short tunnel build request",
             );
 

@@ -617,7 +617,13 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     let decoded = base64_decode(destination).ok_or(())?;
 
                     HostKind::Destination {
-                        destination: Box::new(Destination::parse(&decoded).ok_or(())?),
+                        destination: Box::new(Destination::parse(&decoded).map_err(|error| {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "invalid destination",
+                            );
+                        })?),
                     }
                 };
 
@@ -793,8 +799,14 @@ impl Datagram {
         let (input, dest_b64) = take_while1(|c| c != ' ')(input)?;
         let decoded = base64_decode(dest_b64)
             .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Char)))?;
-        let destination = Destination::parse(&decoded)
-            .ok_or_else(|| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Char)))?;
+        let destination = Destination::parse(&decoded).map_err(|error| {
+            tracing::warn!(
+                target: LOG_TARGET,
+                ?error,
+                "invalid destination",
+            );
+            nom::Err::Error(nom::error::Error::new(input, ErrorKind::Char))
+        })?;
 
         Ok((input, destination))
     }

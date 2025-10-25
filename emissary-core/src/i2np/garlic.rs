@@ -18,6 +18,7 @@
 
 use crate::{
     crypto::StaticPublicKey,
+    error::parser::GarlicParseError,
     i2np::{Message, MessageType, LOG_TARGET},
     primitives::MessageId,
 };
@@ -25,7 +26,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u8},
     Err, IResult,
 };
@@ -448,7 +448,9 @@ pub struct GarlicMessage<'a> {
 
 impl<'a> GarlicMessage<'a> {
     /// Try to parse [`GarlicMessage::DateTime`] from `input`.
-    fn parse_date_time(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_date_time(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, timestamp) = be_u32(rest)?;
 
@@ -456,23 +458,17 @@ impl<'a> GarlicMessage<'a> {
     }
 
     /// Try to parse [`DeliveryInstructions`] for [`GarlicMessage::GarlicClove`] from `input`.
-    fn parse_delivery_instructions(input: &'a [u8]) -> IResult<&'a [u8], DeliveryInstructions<'a>> {
+    fn parse_delivery_instructions(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], DeliveryInstructions<'a>, GarlicParseError> {
         let (rest, flag) = be_u8(input)?;
 
         if (flag >> 7) & 1 != 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "encrypted garlic messages not supported",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(GarlicParseError::EncryptionNotSupported));
         }
 
         if (flag >> 4) & 1 != 0 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                "delay not supproted",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(GarlicParseError::DelayNotSupported));
         }
 
         match (flag >> 5) & 0x3 {
@@ -493,19 +489,14 @@ impl<'a> GarlicMessage<'a> {
 
                 Ok((rest, DeliveryInstructions::Tunnel { hash, tunnel_id }))
             }
-            kind => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?kind,
-                    "invalid delivery kind",
-                );
-                Err(Err::Error(make_error(input, ErrorKind::Fail)))
-            }
+            kind => Err(Err::Error(GarlicParseError::InvalidDelivery(kind))),
         }
     }
 
     /// Try to parse [`GarlicMessage::GarlicClove`] from `input`.
-    fn parse_garlic_clove(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_garlic_clove(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, delivery_instructions) = Self::parse_delivery_instructions(rest)?;
         let (rest, message_type) = be_u8(rest)?;
@@ -513,7 +504,7 @@ impl<'a> GarlicMessage<'a> {
         let (rest, expiration) = be_u32(rest)?;
 
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+            .ok_or_else(|| Err::Error(GarlicParseError::InvalidMessage(message_type)))?;
 
         // parse body and make sure it has sane length
         let message_body_len =
@@ -533,7 +524,9 @@ impl<'a> GarlicMessage<'a> {
     }
 
     /// Try to parse [`GarlicMessage::Padding`] from `input`.
-    fn parse_padding(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_padding(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, size) = be_u16(input)?;
         let (rest, padding) = take(size)(rest)?;
 
@@ -541,7 +534,9 @@ impl<'a> GarlicMessage<'a> {
     }
 
     /// Try to parse [`GarlicMessage::NextKey`] from `input`.
-    fn parse_next_key(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_next_key(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, flag) = be_u8(rest)?;
         let (rest, key_id) = be_u16(rest)?;
@@ -580,7 +575,9 @@ impl<'a> GarlicMessage<'a> {
     }
 
     /// Try to parse [`GarlicMessage::AckRequest`] from `input`.
-    fn parse_ack_request(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_ack_request(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, _size) = be_u16(input)?;
         let (rest, _flag) = be_u8(rest)?;
 
@@ -588,11 +585,11 @@ impl<'a> GarlicMessage<'a> {
     }
 
     /// Try to parse [`GarlicMessage::Ack`] from `input`.
-    fn parse_ack(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_ack(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, size) = be_u16(input)?;
 
         if size % 4 != 0 {
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(GarlicParseError::InvalidSize));
         }
 
         let (rest, acks) = (0..size / 4)
@@ -604,13 +601,13 @@ impl<'a> GarlicMessage<'a> {
 
                 Some((rest, acks))
             })
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+            .ok_or_else(|| Err::Error(GarlicParseError::InvalidAcks))?;
 
         Ok((rest, GarlicMessageBlock::Ack { acks }))
     }
 
     /// Attempt to parse [`GarlicMessageBlock`] from `input`.
-    fn parse_frame(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>> {
+    fn parse_frame(input: &'a [u8]) -> IResult<&'a [u8], GarlicMessageBlock<'a>, GarlicParseError> {
         let (rest, message_type) = be_u8(input)?;
 
         match GarlicMessageType::from_u8(message_type) {
@@ -639,19 +636,19 @@ impl<'a> GarlicMessage<'a> {
     fn parse_inner(
         input: &'a [u8],
         mut messages: Vec<GarlicMessageBlock<'a>>,
-    ) -> Option<Vec<GarlicMessageBlock<'a>>> {
-        let (rest, message) = Self::parse_frame(input).ok()?;
+    ) -> Result<Vec<GarlicMessageBlock<'a>>, GarlicParseError> {
+        let (rest, message) = Self::parse_frame(input)?;
         messages.push(message);
 
         match rest.is_empty() {
-            true => Some(messages),
+            true => Ok(messages),
             false => Self::parse_inner(rest, messages),
         }
     }
 
     /// Attempt to parse `input` into [`GarlicMessage`].
-    pub fn parse(input: &'a [u8]) -> Option<Self> {
-        Some(Self {
+    pub fn parse(input: &'a [u8]) -> Result<Self, GarlicParseError> {
+        Ok(Self {
             blocks: Self::parse_inner(input, Vec::new())?,
         })
     }
@@ -660,7 +657,6 @@ impl<'a> GarlicMessage<'a> {
     ///
     /// Panics if `message` isn't long enough to contain a garlic tag.
     pub fn garlic_tag(message: &Message) -> u64 {
-        // TODO: is this correct
         u64::from_le_bytes(
             TryInto::<[u8; 8]>::try_into(&message.payload[4..12]).expect("valid garlic message"),
         )

@@ -19,7 +19,7 @@
 use crate::{
     crypto::{base64_encode, SigningPrivateKey},
     destination::{routing_path::RoutingPathHandle, DeliveryStyle},
-    error::StreamingError,
+    error::{parser::PacketParseError, StreamingError},
     i2cp::I2cpPayload,
     primitives::{Destination, DestinationId},
     runtime::{Instant, JoinSet, Runtime},
@@ -334,7 +334,7 @@ impl<R: Runtime> StreamManager<R> {
             flags,
             payload,
             ..
-        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet)?;
 
         // verify signature
         let signature = flags.signature().ok_or_else(|| {
@@ -384,7 +384,7 @@ impl<R: Runtime> StreamManager<R> {
                     ?send_stream_id,
                     "cannot verify signature, packet is too short",
                 );
-                return Err(StreamingError::Malformed);
+                return Err(StreamingError::Malformed(PacketParseError::PacketTooShort));
             }
 
             let signature_start = original.len() - payload.len() - verifying_key.signature_len();
@@ -771,7 +771,9 @@ impl<R: Runtime> StreamManager<R> {
             ..
         } = payload;
 
-        let packet = Packet::peek(&payload).ok_or(StreamingError::Malformed)?;
+        let packet = Packet::peek(&payload).ok_or(StreamingError::Malformed(
+            PacketParseError::InvalidBitstream,
+        ))?;
 
         tracing::trace!(
             target: LOG_TARGET,
@@ -876,7 +878,7 @@ impl<R: Runtime> StreamManager<R> {
             resend_delay,
             flags,
             payload,
-        } = Packet::parse::<R>(&payload).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&payload)?;
 
         tracing::debug!(
             target: LOG_TARGET,

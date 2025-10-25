@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
+    error::parser::TunnelBuildRecordParseError,
     i2np::{HopRole, AES256_IV_LEN, ROUTER_HASH_LEN},
     primitives::{Mapping, MessageId, RouterId, TunnelId},
 };
@@ -24,7 +25,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u32, be_u8},
     Err, IResult,
 };
@@ -176,7 +176,7 @@ impl TunnelBuildRecord {
     /// Attempt to parse [`TunnelBuildRecord`] from `input`.
     ///
     /// Returns the parsed record and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, TunnelBuildRecordParseError> {
         let (rest, tunnel_id) = be_u32(input)?;
         let (rest, next_tunnel_id) = be_u32(rest)?;
         let (rest, next_router_hash) = take(ROUTER_HASH_LEN)(rest)?;
@@ -186,9 +186,10 @@ impl TunnelBuildRecord {
         let (rest, _request_time) = be_u32(rest)?;
         let (rest, _request_expiration) = be_u32(rest)?;
         let (rest, next_message_id) = be_u32(rest)?;
-        let (rest, _options) = Mapping::parse_frame(rest)?;
+        let (rest, _options) = Mapping::parse_frame(rest).map_err(Err::convert)?;
         let (rest, _padding) = take(rest.len())(rest)?;
-        let role = HopRole::from_u8(flags).ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
+        let role = HopRole::from_u8(flags)
+            .ok_or(Err::Error(TunnelBuildRecordParseError::InvalidHop(flags)))?;
 
         Ok((
             rest,
@@ -203,8 +204,8 @@ impl TunnelBuildRecord {
     }
 
     /// Attempt to parse `input` into `TunnelBuildRecord`.
-    pub fn parse(input: &[u8]) -> Option<Self> {
-        Some(Self::parse_frame(input).ok()?.1)
+    pub fn parse(input: &[u8]) -> Result<Self, TunnelBuildRecordParseError> {
+        Ok(Self::parse_frame(input)?.1)
     }
 
     /// Get tunnel ID.
@@ -249,7 +250,7 @@ mod tests {
             .with_next_message_id(MessageId::from(0))
             .serialize(&mut rand_core::OsRng);
 
-        assert!(TunnelBuildRecord::parse(&serialized).is_some());
+        assert!(TunnelBuildRecord::parse(&serialized).is_ok());
     }
 
     #[test]
@@ -274,7 +275,10 @@ mod tests {
 
         let serialized = out.freeze().to_vec();
 
-        assert!(TunnelBuildRecord::parse(&serialized).is_none());
+        assert_eq!(
+            TunnelBuildRecord::parse(&serialized).unwrap_err(),
+            TunnelBuildRecordParseError::InvalidHop(254)
+        );
     }
 
     #[test]
@@ -312,6 +316,6 @@ mod tests {
 
         let serialized = out.freeze().to_vec();
 
-        assert!(TunnelBuildRecord::parse(&serialized).is_some());
+        assert!(TunnelBuildRecord::parse(&serialized).is_ok());
     }
 }

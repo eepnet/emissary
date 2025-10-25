@@ -17,17 +17,13 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    i2np::{database::DATABASE_KEY_SIZE, LOG_TARGET, ROUTER_HASH_LEN},
+    error::parser::DatabaseSearchReplyParseError,
+    i2np::{database::DATABASE_KEY_SIZE, ROUTER_HASH_LEN},
     primitives::RouterId,
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
-use nom::{
-    bytes::complete::take,
-    error::{make_error, ErrorKind},
-    number::complete::be_u8,
-    Err, IResult,
-};
+use nom::{bytes::complete::take, number::complete::be_u8, Err, IResult};
 
 use alloc::vec::Vec;
 
@@ -47,7 +43,7 @@ impl DatabaseSearchReply {
     /// Attempt to parse [`DatabaseSearchReply`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, DatabaseSearchReplyParseError> {
         let (rest, key) = take(DATABASE_KEY_SIZE)(input)?;
         let (rest, num_hashes) = be_u8(rest)?;
         let (rest, routers) = (0..num_hashes)
@@ -58,14 +54,7 @@ impl DatabaseSearchReply {
                     (rest, hashes)
                 })
             })
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse search reply hash list",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(DatabaseSearchReplyParseError::InvalidReplyHashList))?;
 
         // `from` field is not needed
         let (rest, from) = take(ROUTER_HASH_LEN)(rest)?;
@@ -81,8 +70,8 @@ impl DatabaseSearchReply {
     }
 
     /// Attempt to parse `input` into [`DatabaseSearchReply`].
-    pub fn parse(input: &[u8]) -> Option<Self> {
-        Self::parse_frame(input).ok().map(|(_, message)| message)
+    pub fn parse(input: &[u8]) -> Result<Self, DatabaseSearchReplyParseError> {
+        Ok(Self::parse_frame(input)?.1)
     }
 
     /// Serialize [`DatabaseSearchReply`].

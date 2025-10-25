@@ -96,17 +96,20 @@ impl<R: Runtime> ZeroHopInboundTunnel<R> {
             return;
         };
 
-        let Some(message) = Message::parse_standard(payload) else {
-            tracing::warn!(
-                target: LOG_TARGET,
-                tunnel_id = %self.tunnel_id,
-                message_type = ?message.message_type,
-                "invalid message, expected standard i2np message",
-            );
-            return;
-        };
-
-        self.reply_tx.take().map(|tx| tx.send(message));
+        match Message::parse_standard(payload) {
+            Ok(message) => {
+                self.reply_tx.take().map(|tx| tx.send(message));
+            }
+            Err(error) => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    tunnel_id = %self.tunnel_id,
+                    message_type = ?message.message_type,
+                    ?error,
+                    "invalid message, expected standard i2np message",
+                );
+            }
+        }
     }
 }
 

@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
+    error::parser::DatabaseLookupParseError,
     i2np::{database::DATABASE_KEY_SIZE, LOG_TARGET, ROUTER_HASH_LEN},
     primitives::{RouterId, TunnelId},
 };
@@ -25,7 +26,6 @@ use bytes::{BufMut, Bytes, BytesMut};
 use hashbrown::HashSet;
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u8},
     Err, IResult,
 };
@@ -121,12 +121,12 @@ impl DatabaseLookup {
     /// Attempt to parse [`DatabaseLookup`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, DatabaseLookupParseError> {
         let (rest, key) = take(DATABASE_KEY_SIZE)(input)?;
         let (rest, router) = take(ROUTER_HASH_LEN)(rest)?;
         let (rest, flag) = be_u8(rest)?;
         let lookup = LookupType::from_u8(flag)
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+            .ok_or_else(|| Err::Error(DatabaseLookupParseError::InvalidLookupType(flag)))?;
 
         let (rest, reply) = match flag & 1 == 1 {
             true => {
@@ -150,12 +150,9 @@ impl DatabaseLookup {
         let (rest, num_routers_to_ignore) = be_u16(rest)?;
 
         if num_routers_to_ignore as usize > MAX_ROUTERS_TO_IGNORE {
-            tracing::warn!(
-                target: LOG_TARGET,
-                ?num_routers_to_ignore,
-                "too many routers to ignore",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(DatabaseLookupParseError::TooLongIgnoreList(
+                num_routers_to_ignore,
+            )));
         }
 
         let (rest, ignore) = (0..num_routers_to_ignore)
@@ -169,22 +166,12 @@ impl DatabaseLookup {
                     })
                 },
             )
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse router ignore list",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(DatabaseLookupParseError::InvalidIgnoreList))?;
 
         if (flag >> 1) & 1 == 1 || (flag >> 4) & 1 == 1 {
-            tracing::warn!(
-                target: LOG_TARGET,
-                ?num_routers_to_ignore,
-                "database lookup encryption not supported",
-            );
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(
+                DatabaseLookupParseError::LookupEncryptionNotSupported,
+            ));
         }
 
         Ok((
@@ -199,8 +186,8 @@ impl DatabaseLookup {
     }
 
     /// Attempt to parse `input` into [`DatabaseLookup`].
-    pub fn parse(input: &[u8]) -> Option<Self> {
-        Self::parse_frame(input).ok().map(|(_, message)| message)
+    pub fn parse(input: &[u8]) -> Result<Self, DatabaseLookupParseError> {
+        Ok(Self::parse_frame(input)?.1)
     }
 }
 

@@ -324,7 +324,7 @@ impl AddressBook for AddressBookHandle {
                     AddressBookHandle::resolve(path, &host)
                         .await
                         .and_then(base64_decode)
-                        .and_then(Destination::parse)
+                        .and_then(|destination| Destination::parse(destination).ok())
                         .map(|destination| {
                             let resolved = base32_encode(destination.id().to_vec());
 

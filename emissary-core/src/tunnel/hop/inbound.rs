@@ -185,11 +185,12 @@ impl<R: Runtime> InboundTunnel<R> {
 
         // parse messages and fragments and return an iterator of ready messages
         let messages = TunnelData::parse(&ciphertext[payload_start..])
-            .ok_or_else(|| {
+            .map_err(|error| {
                 tracing::warn!(
                     target: LOG_TARGET,
                     name = %self.name,
                     tunnel_id = %self.tunnel_id,
+                    ?error,
                     "malformed tunnel data message",
                 );
 
@@ -204,7 +205,17 @@ impl<R: Runtime> InboundTunnel<R> {
                 {
                     match delivery_instructions {
                         DeliveryInstructions::Local =>
-                            return Message::parse_standard(message.message),
+                            return Message::parse_standard(message.message)
+                                .inspect_err(|error| {
+                                    tracing::warn!(
+                                        target: LOG_TARGET,
+                                        name = %self.name,
+                                        tunnel = %self.tunnel_id,
+                                        ?error,
+                                        "invalid i2np message",
+                                    );
+                                })
+                                .ok(),
                         delivery_instructions => {
                             tracing::warn!(
                                 target: LOG_TARGET,

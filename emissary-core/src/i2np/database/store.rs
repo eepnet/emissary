@@ -17,7 +17,8 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    i2np::{database::DATABASE_KEY_SIZE, LOG_TARGET, ROUTER_HASH_LEN},
+    error::parser::DatabaseStoreParseError,
+    i2np::{database::DATABASE_KEY_SIZE, ROUTER_HASH_LEN},
     primitives::{LeaseSet2, RouterId, RouterInfo, TunnelId},
     runtime::Runtime,
 };
@@ -25,7 +26,6 @@ use crate::{
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u8},
     Err, IResult,
 };
@@ -35,7 +35,7 @@ use core::{fmt, marker::PhantomData};
 /// "No reply" token/tunnel ID.
 const NO_REPLY: u32 = 0u32;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 enum StoreType {
     /// Router info.
     RouterInfo,
@@ -216,12 +216,12 @@ impl<R: Runtime> DatabaseStore<R> {
     /// Attempt to parse [`DatabaseStore`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, DatabaseStoreParseError> {
         let (rest, key) = take(DATABASE_KEY_SIZE)(input)?;
         let (rest, store_type) = be_u8(rest)?;
         let (rest, reply_token) = be_u32(rest)?;
-        let store_type = StoreType::from_u8(store_type)
-            .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+        let store_kind = StoreType::from_u8(store_type)
+            .ok_or_else(|| Err::Error(DatabaseStoreParseError::InvalidStoreType(store_type)))?;
 
         let (rest, reply) = match reply_token == NO_REPLY {
             true => (rest, ReplyType::None),
@@ -249,28 +249,16 @@ impl<R: Runtime> DatabaseStore<R> {
             }
         };
 
-        match store_type {
+        match store_kind {
             StoreType::RouterInfo => {
                 let (rest, size) = be_u16(rest)?;
                 let (rest, data) = take(size)(rest)?;
 
-                let data = R::gzip_decompress(data).ok_or_else(|| {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        "failed to decompress gzip",
-                    );
+                let data = R::gzip_decompress(data)
+                    .ok_or_else(|| Err::Error(DatabaseStoreParseError::CompressionFailed))?;
 
-                    Err::Error(make_error(input, ErrorKind::Fail))
-                })?;
-
-                let router_info = RouterInfo::parse(&data).ok_or_else(|| {
-                    tracing::debug!(
-                        target: LOG_TARGET,
-                        "failed to parse gzipped router info",
-                    );
-
-                    Err::Error(make_error(input, ErrorKind::Fail))
-                })?;
+                let router_info = RouterInfo::parse(&data)
+                    .map_err(|error| Err::Error(DatabaseStoreParseError::RouterInfo(error)))?;
 
                 Ok((
                     rest,
@@ -283,7 +271,7 @@ impl<R: Runtime> DatabaseStore<R> {
                 ))
             }
             StoreType::LeaseSet2 => {
-                let (rest, lease_set) = LeaseSet2::parse_frame::<R>(rest)?;
+                let (rest, lease_set) = LeaseSet2::parse_frame::<R>(rest).map_err(Err::convert)?;
 
                 Ok((
                     rest,
@@ -295,20 +283,15 @@ impl<R: Runtime> DatabaseStore<R> {
                     },
                 ))
             }
-            kind => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?kind,
-                    "support for store kind not implemented",
-                );
-                Err(Err::Error(make_error(input, ErrorKind::Fail)))
-            }
+            _ => Err(Err::Error(DatabaseStoreParseError::UnsupportedStoreType(
+                store_type,
+            ))),
         }
     }
 
     /// Attempt to parse `input` into [`DatabaseStore`].
-    pub fn parse(input: &[u8]) -> Option<Self> {
-        Self::parse_frame(input).ok().map(|(_, message)| message)
+    pub fn parse(input: &[u8]) -> Result<Self, DatabaseStoreParseError> {
+        Ok(Self::parse_frame(input)?.1)
     }
 
     /// Extract raw payload from [`DatabaseStore`] message.
@@ -569,7 +552,7 @@ mod tests {
         let _ = DatabaseStore::<MockRuntime>::parse(&buffer).unwrap();
         let raw_lease_set = DatabaseStore::<MockRuntime>::extract_raw_lease_set(&buffer);
 
-        assert!(LeaseSet2::parse::<MockRuntime>(&raw_lease_set).is_some());
+        assert!(LeaseSet2::parse::<MockRuntime>(&raw_lease_set).is_ok());
     }
 
     #[test]

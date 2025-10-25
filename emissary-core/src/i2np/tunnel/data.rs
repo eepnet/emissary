@@ -18,6 +18,7 @@
 
 use crate::{
     crypto::sha256::Sha256,
+    error::parser::TunnelDataParseError,
     i2np::{AES256_IV_LEN, ROUTER_HASH_LEN},
     primitives::{MessageId, TunnelId},
     runtime::Runtime,
@@ -26,7 +27,6 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u8},
     Err, IResult,
 };
@@ -327,7 +327,9 @@ pub struct TunnelData<'a> {
 
 impl<'a> TunnelData<'a> {
     /// Attempt to parse `input` into first or follow-on delivery instructions and payload.
-    fn parse_frame(input: &'a [u8]) -> IResult<&'a [u8], TunnelDataBlock<'a>> {
+    fn parse_frame(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], TunnelDataBlock<'a>, TunnelDataParseError> {
         let (rest, flag) = be_u8(input)?;
 
         // parse follow-on fragment delivery instructions
@@ -359,7 +361,8 @@ impl<'a> TunnelData<'a> {
                             sequence_number,
                         },
                     ),
-                    _ => return Err(Err::Error(make_error(input, ErrorKind::Fail))),
+                    fragment =>
+                        return Err(Err::Error(TunnelDataParseError::InvalidFragment(fragment))),
                 };
 
                 return Ok((
@@ -371,7 +374,7 @@ impl<'a> TunnelData<'a> {
                 ));
             }
             UNFRAGMENTED => {}
-            _ => return Err(Err::Error(make_error(input, ErrorKind::Fail))),
+            kind => return Err(Err::Error(TunnelDataParseError::InvalidMessage(kind))),
         }
 
         // parse first fragment delivery instructions.
@@ -390,7 +393,7 @@ impl<'a> TunnelData<'a> {
 
                 (rest, DeliveryInstructions::Router { hash })
             }
-            _ => return Err(Err::Error(make_error(input, ErrorKind::Fail))),
+            kind => return Err(Err::Error(TunnelDataParseError::InvalidDelivery(kind))),
         };
 
         let (rest, message_kind) = match (flag >> 3) & 0x01 {
@@ -411,7 +414,7 @@ impl<'a> TunnelData<'a> {
                     },
                 )
             }
-            _ => return Err(Err::Error(make_error(input, ErrorKind::Fail))),
+            kind => return Err(Err::Error(TunnelDataParseError::InvalidFragment(kind))),
         };
 
         let (rest, size) = be_u16(rest)?;
@@ -430,19 +433,19 @@ impl<'a> TunnelData<'a> {
     fn parse_inner(
         input: &'a [u8],
         mut messages: Vec<TunnelDataBlock<'a>>,
-    ) -> Option<Vec<TunnelDataBlock<'a>>> {
-        let (rest, message) = Self::parse_frame(input).ok()?;
+    ) -> Result<Vec<TunnelDataBlock<'a>>, TunnelDataParseError> {
+        let (rest, message) = Self::parse_frame(input)?;
         messages.push(message);
 
         match rest.is_empty() {
-            true => Some(messages),
+            true => Ok(messages),
             false => Self::parse_inner(rest, messages),
         }
     }
 
     /// Attempt to parse `input` into [`TunnelData`].
-    pub fn parse(input: &'a [u8]) -> Option<Self> {
-        Some(Self {
+    pub fn parse(input: &'a [u8]) -> Result<Self, TunnelDataParseError> {
+        Ok(Self {
             messages: Self::parse_inner(input, Vec::new())?,
         })
     }

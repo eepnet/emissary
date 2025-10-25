@@ -154,10 +154,11 @@ impl<R: Runtime> OutboundEndpoint<R> {
         let payload_start = self.find_payload_start(&ciphertext, &iv)?;
 
         let our_message = ciphertext[payload_start..].to_vec();
-        let _ = TunnelData::parse(&our_message).ok_or_else(|| {
+        let _ = TunnelData::parse(&our_message).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
                 tunnel_id = %self.tunnel_id,
+                ?error,
                 "malformed tunnel data message",
             );
 
@@ -166,10 +167,11 @@ impl<R: Runtime> OutboundEndpoint<R> {
 
         // parse messages and fragments and return an iterator of ready messages
         let messages = TunnelData::parse(&ciphertext[payload_start..])
-            .ok_or_else(|| {
+            .map_err(|error| {
                 tracing::warn!(
                     target: LOG_TARGET,
                     tunnel_id = %self.tunnel_id,
+                    ?error,
                     "malformed tunnel data message",
                 );
 
@@ -182,7 +184,16 @@ impl<R: Runtime> OutboundEndpoint<R> {
                     MessageKind::Unfragmented {
                         delivery_instructions,
                     } => (
-                        Message::parse_standard(message.message)?,
+                        Message::parse_standard(message.message)
+                            .inspect_err(|error| {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    tunnel_id = %self.tunnel_id,
+                                    ?error,
+                                    "invalid i2np message"
+                                );
+                            })
+                            .ok()?,
                         OwnedDeliveryInstructions::from(&delivery_instructions),
                     ),
                     MessageKind::FirstFragment {

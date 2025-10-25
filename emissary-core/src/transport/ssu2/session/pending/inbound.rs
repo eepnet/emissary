@@ -206,11 +206,12 @@ impl<R: Runtime> InboundSsu2Session<R> {
         ChaChaPoly::with_nonce(&intro_key, pkt_num as u64)
             .decrypt_with_ad(&pkt[..32], &mut payload)?;
 
-        Block::parse(&payload).ok_or_else(|| {
+        Block::parse(&payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
                 ?dst_id,
                 ?src_id,
+                ?error,
                 "failed to parse message blocks",
             );
             debug_assert!(false);
@@ -399,11 +400,12 @@ impl<R: Runtime> InboundSsu2Session<R> {
         // MixHash(ciphertext)
         self.noise_ctx.mix_hash(&pkt[64..pkt.len()]);
 
-        if Block::parse(&payload).is_none() {
+        if let Err(error) = Block::parse(&payload) {
             tracing::warn!(
                 target: LOG_TARGET,
                 dst_id = ?self.dst_id,
                 src_id = ?self.src_id,
+                ?error,
                 "malformed `SessionRequest` payload",
             );
             debug_assert!(false);
@@ -532,14 +534,15 @@ impl<R: Runtime> InboundSsu2Session<R> {
             .decrypt_with_ad(self.noise_ctx.state(), &mut payload)?;
         cipher_key.zeroize();
 
-        let Some(blocks) = Block::parse(&payload) else {
+        let blocks = Block::parse(&payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
+                ?error,
                 "failed to parse message blocks of `SessionConfirmed`",
             );
             debug_assert!(false);
-            return Err(Ssu2Error::Malformed);
-        };
+            Ssu2Error::Malformed
+        })?;
 
         let Some(Block::RouterInfo { router_info }) =
             blocks.iter().find(|block| core::matches!(block, Block::RouterInfo { .. }))

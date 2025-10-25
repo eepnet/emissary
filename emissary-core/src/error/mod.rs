@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
+    error::parser::PacketParseError,
     i2np::Message,
     primitives::{MessageId, TunnelId},
     transport::TerminationReason,
@@ -24,6 +25,8 @@ use crate::{
 
 use alloc::string::String;
 use core::fmt;
+
+pub mod parser;
 
 /// SSU2 error.
 #[derive(Debug, PartialEq, Eq)]
@@ -212,7 +215,7 @@ pub enum StreamingError {
     InvalidSignature,
 
     /// Malformed packet.
-    Malformed,
+    Malformed(PacketParseError),
 
     /// Listener kind mismatch.
     ///
@@ -230,6 +233,12 @@ pub enum StreamingError {
     SequenceNumberTooHigh,
 }
 
+impl From<PacketParseError> for StreamingError {
+    fn from(value: PacketParseError) -> Self {
+        Self::Malformed(value)
+    }
+}
+
 impl fmt::Display for StreamingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -243,7 +252,7 @@ impl fmt::Display for StreamingError {
                 write!(f, "nack field didn't contain correct destination id")
             }
             Self::InvalidSignature => write!(f, "invalid signature"),
-            Self::Malformed => write!(f, "malformed packet"),
+            Self::Malformed(error) => write!(f, "malformed packet: {error:?}"),
             Self::ListenerMismatch => write!(f, "listener kind mismatch"),
             Self::Closed => write!(f, "stream closed"),
             Self::ReceiveWindowFull => write!(f, "receive window is full"),

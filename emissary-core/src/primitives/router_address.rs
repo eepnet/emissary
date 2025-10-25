@@ -18,15 +18,12 @@
 
 use crate::{
     crypto::{base64_encode, StaticPrivateKey},
+    error::parser::RouterAddressParseError,
     primitives::{Date, Mapping, Str},
 };
 
 use bytes::{BufMut, BytesMut};
-use nom::{
-    error::{make_error, ErrorKind},
-    number::complete::be_u8,
-    Err, IResult,
-};
+use nom::{number::complete::be_u8, Err, IResult};
 
 use alloc::{string::ToString, vec::Vec};
 use core::{
@@ -192,11 +189,13 @@ impl RouterAddress {
     }
 
     /// Parse [`RouterAddress`] from `input`, returning rest of `input` and parsed address.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterAddress> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], RouterAddress, RouterAddressParseError> {
         let (rest, cost) = be_u8(input)?;
-        let (rest, expires) = Date::parse_frame(rest)?;
-        let (rest, transport) = Str::parse_frame(rest)?;
-        let (rest, options) = Mapping::parse_frame(rest)?;
+        let (rest, expires) = Date::parse_frame(rest)
+            .map_err(|_| Err::Error(RouterAddressParseError::InvalidExpiration))?;
+        let (rest, transport) = Str::parse_frame(rest)
+            .map_err(|_| Err::Error(RouterAddressParseError::InvalidTransport))?;
+        let (rest, options) = Mapping::parse_frame(rest).map_err(Err::convert)?;
         let socket_address: Option<SocketAddr> = {
             let maybe_host = options.get(&Str::from("host"));
             let maybe_port = options.get(&Str::from("port"));
@@ -221,7 +220,7 @@ impl RouterAddress {
                 cost,
                 expires,
                 transport: TransportKind::try_from(transport)
-                    .map_err(|_| Err::Error(make_error(input, ErrorKind::Fail)))?,
+                    .map_err(|_| Err::Error(RouterAddressParseError::InvalidTransport))?,
                 options,
                 socket_address,
             },
@@ -229,8 +228,8 @@ impl RouterAddress {
     }
 
     /// Try to convert `bytes` into a [`RouterAddress`].
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<RouterAddress> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<RouterAddress, RouterAddressParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Serialize [`RouterAddress`].

@@ -292,14 +292,18 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                     Err(_) => return Poll::Ready(TerminationReason::AeadFailure),
                                 };
 
-                            let Some(messages) = MessageBlock::parse_multiple(&data_block) else {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    router_id = %this.router,
-                                    ?data_block,
-                                    "failed to parse message(s)",
-                                );
-                                continue;
+                            let messages = match MessageBlock::parse_multiple(&data_block) {
+                                Ok(messages) => messages,
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: LOG_TARGET,
+                                        router_id = %this.router,
+                                        ?data_block,
+                                        ?error,
+                                        "failed to parse message(s)",
+                                    );
+                                    continue;
+                                }
                             };
 
                             tracing::trace!(

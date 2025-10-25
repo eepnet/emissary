@@ -17,13 +17,13 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
+    error::parser::TunnelBuildRecordParseError,
     i2np::{HopRole, AES256_IV_LEN, AES256_KEY_LEN, ROUTER_HASH_LEN},
     primitives::{Mapping, MessageId, RouterId, TunnelId},
 };
 
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u32, be_u8},
     Err, IResult,
 };
@@ -59,7 +59,9 @@ impl<'a> TunnelBuildRecord<'a> {
     /// Attempt to parse `input` into `TunnelBuildRecord`.
     ///
     /// Returns the tunnel build record and what's left of `input` on success.
-    pub fn parse_frame(input: &'a [u8]) -> IResult<&'a [u8], TunnelBuildRecord<'a>> {
+    pub fn parse_frame(
+        input: &'a [u8],
+    ) -> IResult<&'a [u8], TunnelBuildRecord<'a>, TunnelBuildRecordParseError> {
         let (rest, tunnel_id) = be_u32(input)?;
         let (rest, next_tunnel_id) = be_u32(rest)?;
         let (rest, next_router_hash) = take(ROUTER_HASH_LEN)(rest)?;
@@ -72,9 +74,10 @@ impl<'a> TunnelBuildRecord<'a> {
         let (rest, _request_time) = be_u32(rest)?;
         let (rest, _request_expiration) = be_u32(rest)?;
         let (rest, next_message_id) = be_u32(rest)?;
-        let (rest, _options) = Mapping::parse_frame(rest)?;
+        let (rest, _options) = Mapping::parse_frame(rest).map_err(Err::convert)?;
         let (rest, _padding) = take(input.len() - rest.len())(rest)?;
-        let role = HopRole::from_u8(flags).ok_or(Err::Error(make_error(input, ErrorKind::Fail)))?;
+        let role = HopRole::from_u8(flags)
+            .ok_or(Err::Error(TunnelBuildRecordParseError::InvalidHop(flags)))?;
 
         Ok((
             rest,
@@ -91,8 +94,8 @@ impl<'a> TunnelBuildRecord<'a> {
     }
 
     /// Attempt to parse `input` into `TunnelBuildRecord`.
-    pub fn parse(input: &'a [u8]) -> Option<TunnelBuildRecord<'a>> {
-        Some(Self::parse_frame(input).ok()?.1)
+    pub fn parse(input: &'a [u8]) -> Result<TunnelBuildRecord<'a>, TunnelBuildRecordParseError> {
+        Ok(Self::parse_frame(input)?.1)
     }
 
     /// Get tunnel ID.

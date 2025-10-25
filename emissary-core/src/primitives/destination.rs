@@ -25,14 +25,13 @@ use crate::{
         base64_decode, base64_encode, sha256::Sha256, PrivateKeyKind, SigningKeyKind,
         SigningPublicKey,
     },
-    primitives::LOG_TARGET,
+    error::parser::DestinationParseError,
     runtime::Runtime,
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u8},
     sequence::tuple,
     Err, IResult,
@@ -167,15 +166,9 @@ impl Destination {
     }
 
     /// Parse [`Destination`] from `input`, returning rest of `input` and parsed [`Destination`].
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Destination> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Destination, DestinationParseError> {
         if input.len() < DESTINATION_MINIMUM_LEN {
-            tracing::warn!(
-                target: LOG_TARGET,
-                serialized_len = ?input.len(),
-                "not enough bytes in destination",
-            );
-
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(DestinationParseError::InvalidLength));
         }
 
         let (_, (initial_bytes, rest)) = tuple((
@@ -191,7 +184,7 @@ impl Destination {
                 (NULL_CERTIFICATE, _) => (
                     rest,
                     SigningPublicKey::dsa_sha1(&initial_bytes[384 - 128..384])
-                        .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?,
+                        .ok_or_else(|| Err::Error(DestinationParseError::InvalidBitstream))?,
                     256, // elgamal
                     128, // dsa-sha1
                     DESTINATION_WITH_NULL_CERT_LEN,
@@ -202,16 +195,11 @@ impl Destination {
 
                     let (verifying_key, signing_key_len) =
                         match SigningKeyKind::try_from(signing_key_kind) {
-                            Ok(SigningKeyKind::DsaSha1(_)) => {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    "dsa-sha1 signing key but not null certificate",
-                                );
-                                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                            }
+                            Ok(SigningKeyKind::DsaSha1(_)) =>
+                                return Err(Err::Error(DestinationParseError::NotANullCertificate)),
                             Ok(SigningKeyKind::EcDsaSha256P256(size)) => (
                                 SigningPublicKey::p256(&initial_bytes[384 - 64..384]).ok_or_else(
-                                    || Err::Error(make_error(input, ErrorKind::Fail)),
+                                    || Err::Error(DestinationParseError::InvalidBitstream),
                                 )?,
                                 size,
                             ),
@@ -225,33 +213,25 @@ impl Destination {
 
                                 (
                                     SigningPublicKey::from_bytes(&public_key).ok_or_else(|| {
-                                        Err::Error(make_error(input, ErrorKind::Fail))
+                                        Err::Error(DestinationParseError::InvalidBitstream)
                                     })?,
                                     size,
                                 )
                             }
-                            Err(()) => {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    ?signing_key_kind,
-                                    "unsupported signing key kind for destination",
-                                );
-                                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                            }
+                            Err(()) =>
+                                return Err(Err::Error(
+                                    DestinationParseError::UnsupportedSigningKey(signing_key_kind),
+                                )),
                         };
 
                     let public_key_len = match PrivateKeyKind::try_from(private_key_kind) {
                         Ok(PrivateKeyKind::ElGamal(size)) => size,
                         Ok(PrivateKeyKind::P256(size)) => size,
                         Ok(PrivateKeyKind::X25519(size)) => size,
-                        Err(()) => {
-                            tracing::warn!(
-                                target: LOG_TARGET,
-                                ?private_key_kind,
-                                "unsupported private key kind for destination",
-                            );
-                            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                        }
+                        Err(()) =>
+                            return Err(Err::Error(DestinationParseError::UnsupportedPrivateKey(
+                                private_key_kind,
+                            ))),
                     };
 
                     (
@@ -262,15 +242,10 @@ impl Destination {
                         DESTINATION_WITH_KEY_CERT_LEN,
                     )
                 }
-                (certificate_kind, certificate_len) => {
-                    tracing::debug!(
-                        target: LOG_TARGET,
-                        ?certificate_kind,
-                        ?certificate_len,
-                        "unsupported certificate type for destination",
-                    );
-                    return Err(Err::Error(make_error(input, ErrorKind::Fail)));
-                }
+                (certificate_kind, _certificate_len) =>
+                    return Err(Err::Error(DestinationParseError::UnsupportedCertificate(
+                        certificate_kind,
+                    ))),
             };
 
         let identity_hash = Bytes::from(Sha256::new().update(&input[..destination_len]).finalize());
@@ -290,8 +265,8 @@ impl Destination {
     }
 
     /// Try to parse router information from `bytes`.
-    pub fn parse(input: impl AsRef<[u8]>) -> Option<Self> {
-        Some(Self::parse_frame(input.as_ref()).ok()?.1)
+    pub fn parse(input: impl AsRef<[u8]>) -> Result<Self, DestinationParseError> {
+        Ok(Self::parse_frame(input.as_ref())?.1)
     }
 
     /// Serialize [`Destination`] into a byte vector.
@@ -372,7 +347,10 @@ mod tests {
 
     #[test]
     fn too_small_input() {
-        assert!(Destination::parse(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).is_none());
+        assert_eq!(
+            Destination::parse(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]).unwrap_err(),
+            DestinationParseError::InvalidLength
+        );
     }
 
     #[test]

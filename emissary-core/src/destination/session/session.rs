@@ -912,11 +912,12 @@ impl<R: Runtime> Session<R> {
             .map(|_| payload)?;
 
         // parse `payload` into garlic message and check if it contains a `NextKey` block
-        let message = GarlicMessage::parse(&payload).ok_or_else(|| {
+        let message = GarlicMessage::parse(&payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
                 local = %self.local,
                 remote = %self.remote,
+                ?error,
                 "malformed garlic message",
             );
 

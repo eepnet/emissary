@@ -16,11 +16,12 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{crypto::SigningPublicKey, primitives::LOG_TARGET, runtime::Runtime};
+use crate::{
+    crypto::SigningPublicKey, error::parser::OfflineSignatureParseError, runtime::Runtime,
+};
 
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32},
     Err, IResult,
 };
@@ -43,20 +44,14 @@ impl OfflineSignature {
     pub fn parse_frame<'a, R: Runtime>(
         input: &'a [u8],
         key: &SigningPublicKey,
-    ) -> IResult<&'a [u8], SigningPublicKey> {
+    ) -> IResult<&'a [u8], SigningPublicKey, OfflineSignatureParseError> {
         // save start of the signed segment so the offline signature can be verified
         let signed_segment = input;
 
         let (rest, expires) = be_u32(input)?;
 
         if R::time_since_epoch().as_secs() > expires as u64 {
-            tracing::trace!(
-                target: LOG_TARGET,
-                expired_at = ?expires,
-                "offline signature expired",
-            );
-
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(OfflineSignatureParseError::Expired));
         }
 
         let (rest, signature_kind) = be_u16(rest)?;
@@ -72,24 +67,21 @@ impl OfflineSignature {
                 let verifying_key = SigningPublicKey::from_bytes(
                     &TryInto::<[u8; 32]>::try_into(key).expect("to succeed"),
                 )
-                .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+                .ok_or_else(|| Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
 
                 (rest, verifying_key, 32usize)
             }
             SIGNATURE_KIND_ECDSA_SHA256_P256 => {
                 let (rest, key) = take(64usize)(rest)?;
                 let verifying_key = SigningPublicKey::p256(key)
-                    .ok_or_else(|| Err::Error(make_error(input, ErrorKind::Fail)))?;
+                    .ok_or_else(|| Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
 
                 (rest, verifying_key, 64usize)
             }
             _ => {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?signature_kind,
-                    "unsupported offline signature kind",
-                );
-                return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                return Err(Err::Error(
+                    OfflineSignatureParseError::UnsupportedPublicKey(signature_kind),
+                ));
             }
         };
 
@@ -99,15 +91,7 @@ impl OfflineSignature {
         let (rest, signature) = take(verifying_key.signature_len())(rest)?;
 
         key.verify(&signed_segment[..(6 + verifying_key_len)], signature)
-            .map_err(|error| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "invalid offline signature",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .map_err(|_| Err::Error(OfflineSignatureParseError::InvalidSignature))?;
 
         Ok((rest, verifying_key))
     }

@@ -184,7 +184,14 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             .decrypt_with_ad(&pkt[..16], &mut payload)?;
 
         if !Block::parse(&payload)
-            .ok_or(Ssu2Error::Malformed)?
+            .map_err(|error| {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    ?error,
+                    "failed to parse message block",
+                );
+                Ssu2Error::Malformed
+            })?
             .iter()
             .any(|message| core::matches!(message, Block::Termination { .. }))
         {

@@ -16,7 +16,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::primitives::Str;
+use crate::{error::parser::MappingParseError, primitives::Str};
 
 use bytes::{BufMut, Bytes, BytesMut};
 use hashbrown::{
@@ -25,7 +25,7 @@ use hashbrown::{
 };
 use nom::{
     number::complete::{be_u16, be_u8},
-    IResult,
+    Err, IResult,
 };
 
 use alloc::vec::Vec;
@@ -72,16 +72,16 @@ impl Mapping {
     }
 
     /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed mapping.
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self> {
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], Self, MappingParseError> {
         let (rest, size) = be_u16(input)?;
         let mut mapping = Self::default();
 
         match rest.split_at_checked(size as usize) {
             Some((mut data, rest)) => {
                 while !data.is_empty() {
-                    let (remaining, key) = Str::parse_frame(data)?;
+                    let (remaining, key) = Str::parse_frame(data).map_err(Err::convert)?;
                     let (remaining, _) = be_u8(remaining)?;
-                    let (remaining, value) = Str::parse_frame(remaining)?;
+                    let (remaining, value) = Str::parse_frame(remaining).map_err(Err::convert)?;
                     let (remaining, _) = be_u8(remaining)?;
                     mapping.insert(key, value);
                     data = remaining;
@@ -98,8 +98,8 @@ impl Mapping {
     }
 
     /// Try to convert `bytes` into a [`Mapping`].
-    pub fn parse(bytes: impl AsRef<[u8]>) -> Option<Mapping> {
-        Some(Self::parse_frame(bytes.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Mapping, MappingParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     /// Equivalent to `HashMap::insert`
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn empty_mapping() {
-        assert_eq!(Mapping::parse(b"\0\0"), Some(Mapping::default()));
+        assert_eq!(Mapping::parse(b"\0\0"), Ok(Mapping::default()));
     }
 
     #[test]
@@ -159,7 +159,7 @@ mod tests {
 
         let ser = mapping.serialize();
 
-        assert_eq!(Mapping::parse(ser), Some(mapping));
+        assert_eq!(Mapping::parse(ser), Ok(mapping));
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         ser.push(3);
         ser.push(4);
 
-        assert_eq!(Mapping::parse(ser), Some(mapping));
+        assert_eq!(Mapping::parse(ser), Ok(mapping));
     }
 
     #[test]
@@ -209,6 +209,9 @@ mod tests {
     #[test]
     fn over_sized() {
         let ser = b"\x01\x00\x01a=\x01b;\x01c=\x01d;\x01e=\x01f;";
-        assert!(Mapping::parse(ser).is_none());
+        assert_eq!(
+            Mapping::parse(ser).unwrap_err(),
+            MappingParseError::InvalidBitstream
+        );
     }
 }

@@ -679,11 +679,12 @@ impl<R: Runtime> SessionManager<R> {
                     self.key_context.create_inbound_session(message.payload)?;
 
                 // attempt to parse `payload` into clove set
-                let clove_set = GarlicMessage::parse(&payload).ok_or_else(|| {
+                let clove_set = GarlicMessage::parse(&payload).map_err(|error| {
                     tracing::warn!(
                         target: LOG_TARGET,
                         local = %self.destination_id,
                         id = %self.destination_id,
+                        ?error,
                         "failed to parse NS payload into a clove set",
                     );
 
@@ -743,19 +744,30 @@ impl<R: Runtime> SessionManager<R> {
                 };
 
                 // attempt to parse the `DatabaseStore` as `LeaseSet2`
-                let Some(DatabaseStore {
-                    key,
-                    payload: DatabaseStorePayload::LeaseSet2 { lease_set },
-                    ..
-                }) = DatabaseStore::<R>::parse(message_body)
-                else {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        id = %self.destination_id,
-                        "`DatabaseStore` is not a valid `LeaseSet2` store, cannot reply",
-                    );
-
-                    return Err(SessionError::Malformed);
+                let (key, lease_set) = match DatabaseStore::<R>::parse(message_body) {
+                    Ok(DatabaseStore {
+                        key,
+                        payload: DatabaseStorePayload::LeaseSet2 { lease_set },
+                        ..
+                    }) => (key, lease_set),
+                    Ok(store) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            id = %self.destination_id,
+                            ?store,
+                            "`DatabaseStore` does not contain a lease set, cannot reply",
+                        );
+                        return Err(SessionError::Malformed);
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            id = %self.destination_id,
+                            ?error,
+                            "failed to parse database store message",
+                        );
+                        return Err(SessionError::Malformed);
+                    }
                 };
                 let destination_id = lease_set.header.destination.id();
                 let key = DestinationId::from(key);
@@ -870,10 +882,11 @@ impl<R: Runtime> SessionManager<R> {
         //
         // TODO: optimize, ideally this should return references
         let cloves = GarlicMessage::parse(&payload)
-            .ok_or_else(|| {
+            .map_err(|error| {
                 tracing::warn!(
                     target: LOG_TARGET,
                     id = %self.destination_id,
+                    ?error,
                     "failed to parse NS payload into a clove set",
                 );
 

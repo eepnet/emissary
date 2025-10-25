@@ -541,22 +541,22 @@ impl<R: Runtime> Destination<R> {
 
         match message.message_type {
             MessageType::DatabaseStore => {
-                let DatabaseStore { key, payload, .. } =
-                    DatabaseStore::<R>::parse(&message.payload).ok_or_else(|| {
+                let (key, payload) = match DatabaseStore::<R>::parse(&message.payload) {
+                    Ok(DatabaseStore { key, payload, .. }) => (key, payload),
+                    Err(error) => {
                         tracing::warn!(
                             target: LOG_TARGET,
                             local = %self.destination_id,
-                            "received malformed database store",
+                            ?error,
+                            "received a malformed database store",
                         );
-                        Error::InvalidData
-                    })?;
+
+                        return Err(Error::InvalidData);
+                    }
+                };
 
                 match payload {
                     DatabaseStorePayload::LeaseSet2 { .. } => {
-                        // self.lease_set_manager.register_database_store(
-                        //     key.clone(),
-                        //     DatabaseStore::<R>::extract_raw_lease_set(&message.payload),
-                        // );
                         self.lease_set_manager.register_database_store(key.clone());
                         return Ok(Vec::new());
                     }
@@ -572,10 +572,11 @@ impl<R: Runtime> Destination<R> {
             }
             MessageType::DatabaseSearchReply => {
                 let DatabaseSearchReply { key, routers, .. } =
-                    DatabaseSearchReply::parse(&message.payload).ok_or_else(|| {
+                    DatabaseSearchReply::parse(&message.payload).map_err(|error| {
                         tracing::warn!(
                             target: LOG_TARGET,
                             local = %self.destination_id,
+                            ?error,
                             "received malformed database search reply",
                         );
                         Error::InvalidData
@@ -640,7 +641,7 @@ impl<R: Runtime> Destination<R> {
                     );
 
                     match DatabaseStore::<R>::parse(&clove.message_body) {
-                        Some(DatabaseStore {
+                        Ok(DatabaseStore {
                             payload: DatabaseStorePayload::LeaseSet2 { lease_set },
                             ..
                         }) => {

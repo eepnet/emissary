@@ -262,7 +262,7 @@ impl<R: Runtime> ProfileStorage<R> {
         let routers = routers
             .iter()
             .filter_map(|router| {
-                RouterInfo::parse(router).map(|router| (router.identity.id(), router))
+                RouterInfo::parse(router).map(|router| (router.identity.id(), router)).ok()
             })
             .collect::<HashMap<_, _>>();
 

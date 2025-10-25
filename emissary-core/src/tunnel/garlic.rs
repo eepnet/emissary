@@ -137,7 +137,15 @@ impl<R: Runtime> GarlicHandler<R> {
         };
 
         let messages = GarlicMessage::parse(&message)
-            .ok_or(Error::Tunnel(TunnelError::InvalidMessage))?
+            .map_err(|error| {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    ?message_id,
+                    ?error,
+                    "invalid garlic message",
+                );
+                Error::Tunnel(TunnelError::InvalidMessage)
+            })?
             .blocks
             .into_iter()
             .filter_map(|block| match block {

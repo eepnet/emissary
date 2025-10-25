@@ -20,6 +20,9 @@
 
 use crate::{
     crypto::{SigningPrivateKey, SigningPublicKey},
+    error::parser::{
+        DestinationParseError, FlagsParseError, OfflineSignatureParseError, PacketParseError,
+    },
     primitives::{Destination, DestinationId, OfflineSignature},
     runtime::Runtime,
     sam::protocol::streaming::LOG_TARGET,
@@ -28,7 +31,6 @@ use crate::{
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
-    error::{make_error, ErrorKind},
     number::complete::{be_u16, be_u32, be_u8},
     Err, IResult,
 };
@@ -141,7 +143,7 @@ impl fmt::Display for Flags<'_> {
 }
 
 impl<'a> Flags<'a> {
-    fn new<R: Runtime>(flags: u16, options: &'a [u8]) -> IResult<&'a [u8], Self> {
+    fn new<R: Runtime>(flags: u16, options: &'a [u8]) -> IResult<&'a [u8], Self, FlagsParseError> {
         let (rest, requested_delay) = match (flags >> 6) & 1 == 1 {
             true => be_u16(options).map(|(rest, requested_delay)| (rest, Some(requested_delay)))?,
             false => (options, None),
@@ -149,7 +151,8 @@ impl<'a> Flags<'a> {
 
         let (rest, destination) = match (flags >> 5) & 1 == 1 {
             true => Destination::parse_frame(rest)
-                .map(|(rest, destination)| (rest, Some(destination)))?,
+                .map(|(rest, destination)| (rest, Some(destination)))
+                .map_err(Err::convert)?,
             false => (rest, None),
         };
 
@@ -161,16 +164,13 @@ impl<'a> Flags<'a> {
         let (rest, offline_signature) = match (flags >> 11) & 1 == 1 {
             true => match destination.as_ref() {
                 None => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        "cannot verify offline signature, `FROM_INLCUDED` missing",
-                    );
                     debug_assert!(false);
-                    return Err(Err::Error(make_error(options, ErrorKind::Fail)));
+                    return Err(Err::Error(FlagsParseError::DestinationMissing));
                 }
                 Some(destination) => {
                     let (rest, verifying_key) =
-                        OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())?;
+                        OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())
+                            .map_err(Err::convert)?;
 
                     (rest, Some(verifying_key))
                 }
@@ -182,7 +182,7 @@ impl<'a> Flags<'a> {
             true => match destination.as_ref() {
                 None => {
                     // destination not specified, optimistically take rest of the input
-                    let (rest, signature) = take(rest.len())(rest)?;
+                    let (rest, _signature) = take(rest.len())(rest)?;
 
                     (rest, Some(rest))
                 }
@@ -365,7 +365,7 @@ impl<'a> Packet<'a> {
     /// Attempt to parse [`Packet`] from `input`.
     ///
     /// Returns the parsed message and rest of `input` on success.
-    fn parse_frame<R: Runtime>(input: &'a [u8]) -> IResult<&'a [u8], Self> {
+    fn parse_frame<R: Runtime>(input: &'a [u8]) -> IResult<&'a [u8], Self, PacketParseError> {
         let (rest, send_stream_id) = be_u32(input)?;
         let (rest, recv_stream_id) = be_u32(rest)?;
         let (rest, seq_nro) = be_u32(rest)?;
@@ -379,20 +379,13 @@ impl<'a> Packet<'a> {
                     (rest, nacks)
                 })
             })
-            .ok_or_else(|| {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    "failed to parse nack list",
-                );
-
-                Err::Error(make_error(input, ErrorKind::Fail))
-            })?;
+            .ok_or_else(|| Err::Error(PacketParseError::InvalidNackList))?;
 
         let (rest, resend_delay) = be_u8(rest)?;
         let (rest, flags) = be_u16(rest)?;
         let (rest, options_size) = be_u16(rest)?;
         let (rest, options) = take(options_size)(rest)?;
-        let (_, flags) = Flags::new::<R>(flags, options)?;
+        let (_, flags) = Flags::new::<R>(flags, options).map_err(Err::convert)?;
 
         Ok((
             &[],
@@ -410,8 +403,8 @@ impl<'a> Packet<'a> {
     }
 
     /// Attempt to parse `input` into [`Packet`].
-    pub fn parse<R: Runtime>(input: &'a [u8]) -> Option<Self> {
-        Some(Self::parse_frame::<R>(input).ok()?.1)
+    pub fn parse<R: Runtime>(input: &'a [u8]) -> Result<Self, PacketParseError> {
+        Ok(Self::parse_frame::<R>(input)?.1)
     }
 
     /// Inner implementation of [`Packet::peek()`].
@@ -475,19 +468,19 @@ impl FlagsBuilder<'_> {
 
     /// Specify `CLOSE`.
     pub fn with_close(mut self) -> Self {
-        self.flags |= (1 << 1);
+        self.flags |= 1 << 1;
         self
     }
 
     /// Specify `RESET`.
     pub fn with_reset(mut self) -> Self {
-        self.flags |= (1 << 2);
+        self.flags |= 1 << 2;
         self
     }
 
     /// Specify that signature is included.
     pub fn with_signature(mut self) -> Self {
-        self.flags |= (1 << 3);
+        self.flags |= 1 << 3;
         self.options_len += 64;
         self
     }
@@ -496,7 +489,7 @@ impl FlagsBuilder<'_> {
     pub fn with_from_included(mut self, destination: Destination) -> Self {
         self.options_len += destination.serialized_len();
         self.destination = Some(destination.serialize());
-        self.flags |= (1 << 5);
+        self.flags |= 1 << 5;
         self
     }
 
@@ -504,7 +497,7 @@ impl FlagsBuilder<'_> {
     pub fn with_delay_requested(mut self, requested_delay: u16) -> Self {
         self.requested_delay = Some(requested_delay);
         self.options_len += 2;
-        self.flags |= (1 << 6);
+        self.flags |= 1 << 6;
         self
     }
 
@@ -512,19 +505,19 @@ impl FlagsBuilder<'_> {
     pub fn with_max_packet_size(mut self, max_packet_size: u16) -> Self {
         self.max_packet_size = Some(max_packet_size);
         self.options_len += 2;
-        self.flags |= (1 << 7);
+        self.flags |= 1 << 7;
         self
     }
 
     /// Specify `ECHO`.
     pub fn with_echo(mut self) -> Self {
-        self.flags |= (1 << 9);
+        self.flags |= 1 << 9;
         self
     }
 
     /// Specify `NO_ACK`.
     pub fn with_no_ack(mut self) -> Self {
-        self.flags |= (1 << 10);
+        self.flags |= 1 << 10;
         self
     }
 

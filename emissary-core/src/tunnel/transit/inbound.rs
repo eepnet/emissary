@@ -98,17 +98,18 @@ impl<R: Runtime> InboundGateway<R> {
         tunnel_gateway: &TunnelGateway,
     ) -> crate::Result<(RouterId, impl Iterator<Item = Vec<u8>> + '_)> {
         match Message::parse_standard(tunnel_gateway.payload) {
-            None => {
+            Err(error) => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     tunnel_id = %self.tunnel_id,
                     gateway_tunnel_id = %tunnel_gateway.tunnel_id,
                     message_len = ?tunnel_gateway.payload.len(),
+                    ?error,
                     "malformed i2np message",
                 );
                 return Err(Error::InvalidData);
             }
-            Some(message) if message.is_expired::<R>() => {
+            Ok(message) if message.is_expired::<R>() => {
                 tracing::debug!(
                     target: LOG_TARGET,
                     message_id = ?message.message_id,
@@ -117,7 +118,7 @@ impl<R: Runtime> InboundGateway<R> {
                 );
                 return Err(Error::Expired);
             }
-            Some(message) => tracing::trace!(
+            Ok(message) => tracing::trace!(
                 target: LOG_TARGET,
                 tunnel_id = %self.tunnel_id,
                 message_type = ?message.message_type,

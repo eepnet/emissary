@@ -783,7 +783,7 @@ impl<R: Runtime> Stream<R> {
             flags,
             payload,
             ..
-        } = Packet::parse::<R>(&packet).ok_or(StreamingError::Malformed)?;
+        } = Packet::parse::<R>(&packet)?;
 
         if flags.synchronize() {
             tracing::warn!(

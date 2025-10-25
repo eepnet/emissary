@@ -1038,9 +1038,11 @@ impl<R: Runtime> NetDb<R> {
             payload,
             reply,
             ..
-        } = DatabaseStore::<R>::parse(&message.payload).ok_or_else(|| {
-            tracing::debug!(
+        } = DatabaseStore::<R>::parse(&message.payload).map_err(|error| {
+            tracing::warn!(
                 target: LOG_TARGET,
+                ?error,
+                ?sender,
                 "malformed database store received",
             );
             Error::InvalidData
@@ -1178,7 +1180,7 @@ impl<R: Runtime> NetDb<R> {
     ) -> crate::Result<()> {
         // if the value was received directly from the floodfill, i.e., not
         // through tunnel, adjust the floodfill score
-        if let Some(router_id) = sender {
+        if let Some(ref router_id) = sender {
             self.floodfill_dht.register_lookup_failure(&router_id);
         }
 
@@ -1186,9 +1188,11 @@ impl<R: Runtime> NetDb<R> {
             key,
             mut routers,
             from,
-        } = DatabaseSearchReply::parse(&message.payload).ok_or_else(|| {
+        } = DatabaseSearchReply::parse(&message.payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
+                ?sender,
+                ?error,
                 "malformed database search reply",
             );
             Error::InvalidData
@@ -1362,9 +1366,11 @@ impl<R: Runtime> NetDb<R> {
                     key,
                     lookup,
                     reply,
-                } = DatabaseLookup::parse(&message.payload).ok_or_else(|| {
+                } = DatabaseLookup::parse(&message.payload).map_err(|error| {
                     tracing::warn!(
                         target: LOG_TARGET,
+                        ?sender,
+                        ?error,
                         "malformed database lookup received",
                     );
                     Error::InvalidData
@@ -3422,7 +3428,7 @@ mod tests {
         let message = Message::parse_short(&message).unwrap();
 
         assert_eq!(message.message_type, MessageType::DatabaseStore);
-        assert!(DatabaseStore::<MockRuntime>::parse(&message.payload).is_some());
+        assert!(DatabaseStore::<MockRuntime>::parse(&message.payload).is_ok());
     }
 
     #[tokio::test]
