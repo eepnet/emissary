@@ -54,7 +54,9 @@ impl DatabaseSearchReply {
                     (rest, hashes)
                 })
             })
-            .ok_or_else(|| Err::Error(DatabaseSearchReplyParseError::InvalidReplyHashList))?;
+            .ok_or(Err::Error(
+                DatabaseSearchReplyParseError::InvalidReplyHashList,
+            ))?;
 
         // `from` field is not needed
         let (rest, from) = take(ROUTER_HASH_LEN)(rest)?;

@@ -293,7 +293,7 @@ impl LeaseSet2 {
                     }
                 },
             )
-            .ok_or_else(|| Err::Error(LeaseSetParseError::InvalidBitstream))?;
+            .ok_or(Err::Error(LeaseSetParseError::InvalidBitstream))?;
 
         // for now, emissary only supports curve25519-based crypto
         if public_keys.is_empty() {
@@ -315,7 +315,7 @@ impl LeaseSet2 {
 
                 Some((rest, leases))
             })
-            .ok_or_else(|| Err::Error(LeaseSetParseError::InvalidLeaseList))?;
+            .ok_or(Err::Error(LeaseSetParseError::InvalidLeaseList))?;
 
         // ensure that lease set contains at least one valid lease
         // before returning so the caller doesn't have make this check.

@@ -125,8 +125,9 @@ impl DatabaseLookup {
         let (rest, key) = take(DATABASE_KEY_SIZE)(input)?;
         let (rest, router) = take(ROUTER_HASH_LEN)(rest)?;
         let (rest, flag) = be_u8(rest)?;
-        let lookup = LookupType::from_u8(flag)
-            .ok_or_else(|| Err::Error(DatabaseLookupParseError::InvalidLookupType(flag)))?;
+        let lookup = LookupType::from_u8(flag).ok_or(Err::Error(
+            DatabaseLookupParseError::InvalidLookupType(flag),
+        ))?;
 
         let (rest, reply) = match flag & 1 == 1 {
             true => {
@@ -166,7 +167,7 @@ impl DatabaseLookup {
                     })
                 },
             )
-            .ok_or_else(|| Err::Error(DatabaseLookupParseError::InvalidIgnoreList))?;
+            .ok_or(Err::Error(DatabaseLookupParseError::InvalidIgnoreList))?;
 
         if (flag >> 1) & 1 == 1 || (flag >> 4) & 1 == 1 {
             return Err(Err::Error(

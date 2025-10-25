@@ -220,8 +220,9 @@ impl<R: Runtime> DatabaseStore<R> {
         let (rest, key) = take(DATABASE_KEY_SIZE)(input)?;
         let (rest, store_type) = be_u8(rest)?;
         let (rest, reply_token) = be_u32(rest)?;
-        let store_kind = StoreType::from_u8(store_type)
-            .ok_or_else(|| Err::Error(DatabaseStoreParseError::InvalidStoreType(store_type)))?;
+        let store_kind = StoreType::from_u8(store_type).ok_or(Err::Error(
+            DatabaseStoreParseError::InvalidStoreType(store_type),
+        ))?;
 
         let (rest, reply) = match reply_token == NO_REPLY {
             true => (rest, ReplyType::None),
@@ -255,7 +256,7 @@ impl<R: Runtime> DatabaseStore<R> {
                 let (rest, data) = take(size)(rest)?;
 
                 let data = R::gzip_decompress(data)
-                    .ok_or_else(|| Err::Error(DatabaseStoreParseError::CompressionFailed))?;
+                    .ok_or(Err::Error(DatabaseStoreParseError::CompressionFailed))?;
 
                 let router_info = RouterInfo::parse(&data)
                     .map_err(|error| Err::Error(DatabaseStoreParseError::RouterInfo(error)))?;

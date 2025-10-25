@@ -184,7 +184,7 @@ impl RouterIdentity {
                         .expect("to succeed");
 
                 SigningPublicKey::from_bytes(&public_key)
-                    .ok_or_else(|| Err::Error(RouterIdentityParseError::InvalidBitstream))?
+                    .ok_or(Err::Error(RouterIdentityParseError::InvalidBitstream))?
             }),
             _ => None,
         }

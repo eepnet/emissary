@@ -154,7 +154,7 @@ impl RouterInfo {
                     Some((rest, addresses))
                 },
             )
-            .ok_or_else(|| Err::Error(RouterInfoParseError::InvalidBitstream))?;
+            .ok_or(Err::Error(RouterInfoParseError::InvalidBitstream))?;
 
         // ignore `peer_size`
         let (rest, _) = be_u8(rest)?;

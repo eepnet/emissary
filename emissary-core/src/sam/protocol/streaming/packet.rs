@@ -379,7 +379,7 @@ impl<'a> Packet<'a> {
                     (rest, nacks)
                 })
             })
-            .ok_or_else(|| Err::Error(PacketParseError::InvalidNackList))?;
+            .ok_or(Err::Error(PacketParseError::InvalidNackList))?;
 
         let (rest, resend_delay) = be_u8(rest)?;
         let (rest, flags) = be_u16(rest)?;

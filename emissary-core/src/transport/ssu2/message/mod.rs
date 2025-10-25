@@ -551,8 +551,9 @@ impl Block {
         let (rest, message_id) = be_u32(rest)?;
         let (rest, expiration) = be_u32(rest)?;
         let fragment_len = size.saturating_sub(9) as usize; // type + id + size + expiration
-        let message_type = I2npMessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(Ssu2ParseError::InvalidMessageTypeFirstFrag(message_type)))?;
+        let message_type = I2npMessageType::from_u8(message_type).ok_or(Err::Error(
+            Ssu2ParseError::InvalidMessageTypeFirstFrag(message_type),
+        ))?;
 
         if fragment_len == 0 {
             return Err(Err::Error(Ssu2ParseError::EmptyFirstFragment));

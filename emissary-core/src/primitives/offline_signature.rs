@@ -67,14 +67,14 @@ impl OfflineSignature {
                 let verifying_key = SigningPublicKey::from_bytes(
                     &TryInto::<[u8; 32]>::try_into(key).expect("to succeed"),
                 )
-                .ok_or_else(|| Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
+                .ok_or(Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
 
                 (rest, verifying_key, 32usize)
             }
             SIGNATURE_KIND_ECDSA_SHA256_P256 => {
                 let (rest, key) = take(64usize)(rest)?;
                 let verifying_key = SigningPublicKey::p256(key)
-                    .ok_or_else(|| Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
+                    .ok_or(Err::Error(OfflineSignatureParseError::InvalidPublicKey))?;
 
                 (rest, verifying_key, 64usize)
             }

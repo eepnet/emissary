@@ -419,7 +419,7 @@ impl Message {
 
         let (rest, payload) = take(size as usize - I2NP_SHORT_HEADER_LEN)(rest)?;
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(I2npParseError::InvalidMessage(message_type)))?;
+            .ok_or(Err::Error(I2npParseError::InvalidMessage(message_type)))?;
 
         Ok((
             rest,
@@ -448,7 +448,7 @@ impl Message {
         }
 
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(I2npParseError::InvalidMessage(message_type)))?;
+            .ok_or(Err::Error(I2npParseError::InvalidMessage(message_type)))?;
 
         Ok((
             rest,

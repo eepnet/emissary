@@ -184,7 +184,7 @@ impl Destination {
                 (NULL_CERTIFICATE, _) => (
                     rest,
                     SigningPublicKey::dsa_sha1(&initial_bytes[384 - 128..384])
-                        .ok_or_else(|| Err::Error(DestinationParseError::InvalidBitstream))?,
+                        .ok_or(Err::Error(DestinationParseError::InvalidBitstream))?,
                     256, // elgamal
                     128, // dsa-sha1
                     DESTINATION_WITH_NULL_CERT_LEN,
@@ -198,9 +198,8 @@ impl Destination {
                             Ok(SigningKeyKind::DsaSha1(_)) =>
                                 return Err(Err::Error(DestinationParseError::NotANullCertificate)),
                             Ok(SigningKeyKind::EcDsaSha256P256(size)) => (
-                                SigningPublicKey::p256(&initial_bytes[384 - 64..384]).ok_or_else(
-                                    || Err::Error(DestinationParseError::InvalidBitstream),
-                                )?,
+                                SigningPublicKey::p256(&initial_bytes[384 - 64..384])
+                                    .ok_or(Err::Error(DestinationParseError::InvalidBitstream))?,
                                 size,
                             ),
                             Ok(SigningKeyKind::EdDsaSha512Ed25519(size)) => {
@@ -212,7 +211,7 @@ impl Destination {
                                 .expect("to succeed");
 
                                 (
-                                    SigningPublicKey::from_bytes(&public_key).ok_or_else(|| {
+                                    SigningPublicKey::from_bytes(&public_key).ok_or({
                                         Err::Error(DestinationParseError::InvalidBitstream)
                                     })?,
                                     size,

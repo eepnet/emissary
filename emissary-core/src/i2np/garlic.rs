@@ -504,7 +504,7 @@ impl<'a> GarlicMessage<'a> {
         let (rest, expiration) = be_u32(rest)?;
 
         let message_type = MessageType::from_u8(message_type)
-            .ok_or_else(|| Err::Error(GarlicParseError::InvalidMessage(message_type)))?;
+            .ok_or(Err::Error(GarlicParseError::InvalidMessage(message_type)))?;
 
         // parse body and make sure it has sane length
         let message_body_len =
@@ -601,7 +601,7 @@ impl<'a> GarlicMessage<'a> {
 
                 Some((rest, acks))
             })
-            .ok_or_else(|| Err::Error(GarlicParseError::InvalidAcks))?;
+            .ok_or(Err::Error(GarlicParseError::InvalidAcks))?;
 
         Ok((rest, GarlicMessageBlock::Ack { acks }))
     }

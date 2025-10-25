@@ -1193,7 +1193,7 @@ impl<R: Runtime> NetDb<R> {
         // if the value was received directly from the floodfill, i.e., not
         // through tunnel, adjust the floodfill score
         if let Some(ref router_id) = sender {
-            self.floodfill_dht.register_lookup_failure(&router_id);
+            self.floodfill_dht.register_lookup_failure(router_id);
         }
 
         let DatabaseSearchReply {
