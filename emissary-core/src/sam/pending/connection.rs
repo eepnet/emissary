@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base64_encode, SigningPrivateKey, StaticPrivateKey},
+    crypto::{base64_encode, SigningPrivateKey},
     error::{ConnectionError, Error},
     primitives::Destination,
     runtime::Runtime,
@@ -30,6 +30,7 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use futures::{FutureExt, StreamExt};
 use hashbrown::HashMap;
+use rand_core::RngCore;
 
 use alloc::{boxed::Box, format, string::String, sync::Arc};
 use core::{
@@ -46,6 +47,9 @@ const LOG_TARGET: &str = "emissary::sam::pending::connection";
 
 /// Keep-alive timeout.
 const KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// ElGamal key length.
+const ELGAMAL_KEY_LEN: usize = 256usize;
 
 /// SAMv3 connection kind.
 pub enum ConnectionKind<R: Runtime> {
@@ -407,12 +411,11 @@ impl<R: Runtime> Future for PendingSamConnection<R> {
                         );
 
                         // generate keys and destination
-                        let (private_key, signing_key, destination) = {
+                        let (signing_key, destination) = {
                             let signing_key = SigningPrivateKey::random(R::rng());
-                            let private_key = StaticPrivateKey::random(R::rng());
                             let destination = Destination::new::<R>(signing_key.public());
 
-                            (private_key, signing_key, destination)
+                            (signing_key, destination)
                         };
 
                         // generate `PRIV` and `PUB` parameters
@@ -422,7 +425,14 @@ impl<R: Runtime> Future for PendingSamConnection<R> {
                             let destination = destination.serialize();
 
                             out.put_slice(&destination);
-                            out.put_slice(private_key.as_ref());
+                            out.put_slice(&{
+                                {
+                                    let mut bytes = [0u8; ELGAMAL_KEY_LEN];
+                                    R::rng().fill_bytes(&mut bytes);
+
+                                    bytes
+                                }
+                            });
                             out.put_slice(signing_key.as_ref());
 
                             (base64_encode(out), base64_encode(&destination))

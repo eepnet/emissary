@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base32_decode, base64_decode, SigningPrivateKey, StaticPrivateKey},
+    crypto::{base32_decode, base64_decode, SigningPrivateKey},
     primitives::{Destination, DestinationId},
     runtime::Runtime,
 };
@@ -33,18 +33,23 @@ use nom::{
     sequence::{delimited, pair, preceded, separated_pair, tuple},
     Err, IResult, Parser,
 };
+use rand_core::RngCore;
 
 use alloc::{
     borrow::ToOwned,
     boxed::Box,
     string::{String, ToString},
     sync::Arc,
+    vec,
     vec::Vec,
 };
 use core::{fmt, marker::PhantomData};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::sam::parser";
+
+/// ElGamal key length.
+const ELGAMAL_KEY_LEN: usize = 256usize;
 
 /// Parsed command.
 ///
@@ -127,7 +132,10 @@ pub struct DestinationContext {
     pub destination: Destination,
 
     /// Private key of the destination.
-    pub private_key: Box<StaticPrivateKey>,
+    ///
+    /// Not used by the SAM session but stored since it must be returned
+    /// back to user in `SESSION CREATE` reply.
+    pub private_key: Vec<u8>,
 
     /// Signing key of the destination.
     pub signing_key: Box<SigningPrivateKey>,
@@ -407,35 +415,57 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                 let destination = match parsed_cmd.key_value_pairs.remove("DESTINATION") {
                     Some("TRANSIENT") => {
                         let signing_key = SigningPrivateKey::random(R::rng());
-                        let encryption_key = StaticPrivateKey::random(R::rng());
                         let destination = Destination::new::<R>(signing_key.public());
 
                         DestinationContext {
                             destination,
-                            private_key: Box::new(encryption_key),
+                            private_key: {
+                                let mut bytes = vec![0u8; ELGAMAL_KEY_LEN];
+                                R::rng().fill_bytes(&mut bytes);
+
+                                bytes
+                            },
                             signing_key: Box::new(signing_key),
                         }
                     }
                     Some(destination) => {
                         let decoded = base64_decode(destination).ok_or(())?;
                         let (rest, destination) =
-                            Destination::parse_frame(&decoded).map_err(|_| ()).unwrap();
+                            Destination::parse_frame(&decoded).map_err(|error| {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    ?error,
+                                    "failed to parse parse destination",
+                                );
+                            })?;
 
-                        let (rest, _private_key) =
-                            take::<_, _, ()>(destination.private_key_length())(rest)
-                                .map_err(|_| ())
-                                .unwrap();
-                        let (_, signing_key) =
-                            take::<_, _, ()>(destination.signing_key_length())(rest)
-                                .map_err(|_| ())
-                                .unwrap();
+                        let (rest, private_key) = take::<_, _, ()>(
+                            destination.private_key_length(),
+                        )(rest)
+                        .map_err(|error| {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "failed to parse encryption key from persistent destination",
+                            );
+                        })?;
+                        let (_, signing_key) = take::<_, _, ()>(destination.signing_key_length())(
+                            rest,
+                        )
+                        .map_err(|error| {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "failed to parse signing key from persistent destination",
+                            );
+                        })?;
 
-                        // conversions are expected to succeed since the client is interacting with
+                        // conversion is expected to succeed since the client is interacting with
                         // a local router and would only crash their onw router if they provided
                         // invalid keying material
                         DestinationContext {
                             destination,
-                            private_key: Box::new(StaticPrivateKey::random(R::rng())),
+                            private_key: private_key.to_vec(),
                             signing_key: Box::new(
                                 SigningPrivateKey::from_bytes(signing_key).expect("to succeed"),
                             ),
@@ -893,13 +923,11 @@ mod tests {
         // persistent
         let privkey = {
             let signing_key = SigningPrivateKey::random(MockRuntime::rng());
-            let encryption_key = StaticPrivateKey::random(MockRuntime::rng());
-
             let destination = Destination::new::<MockRuntime>(signing_key.public());
 
             let mut out = BytesMut::with_capacity(destination.serialized_len() + 2 * 32);
             out.put_slice(&destination.serialize());
-            out.put_slice(encryption_key.as_ref());
+            out.put_slice(&[0u8; 256]);
             out.put_slice(signing_key.as_ref());
 
             base64_encode(out)
@@ -1333,13 +1361,11 @@ mod tests {
         {
             let privkey = {
                 let signing_key = SigningPrivateKey::random(MockRuntime::rng());
-                let encryption_key = StaticPrivateKey::random(MockRuntime::rng());
-
                 let destination = Destination::new::<MockRuntime>(signing_key.public());
 
                 let mut out = BytesMut::with_capacity(destination.serialized_len() + 2 * 32);
                 out.put_slice(&destination.serialize());
-                out.put_slice(encryption_key.as_ref());
+                out.put_slice(&[0u8; 256]);
                 out.put_slice(signing_key.as_ref());
 
                 base64_encode(out)
@@ -1448,13 +1474,11 @@ mod tests {
         {
             let privkey = {
                 let signing_key = SigningPrivateKey::random(MockRuntime::rng());
-                let encryption_key = StaticPrivateKey::random(MockRuntime::rng());
-
                 let destination = Destination::new::<MockRuntime>(signing_key.public());
 
                 let mut out = BytesMut::with_capacity(destination.serialized_len() + 2 * 32);
                 out.put_slice(&destination.serialize());
-                out.put_slice(encryption_key.as_ref());
+                out.put_slice(&[0u8; 256]);
                 out.put_slice(signing_key.as_ref());
 
                 base64_encode(out)

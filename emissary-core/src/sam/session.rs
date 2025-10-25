@@ -405,6 +405,11 @@ impl<R: Runtime> SamSession<R> {
                 base64_encode(out)
             };
 
+            // generate new private key for the session
+            //
+            // the key extracted from `$privkey` is not used
+            let private_key = StaticPrivateKey::random(R::rng());
+
             // create leaseset for the destination and store it in `NetDb`
             let public_key = private_key.public();
             let is_unpublished = options
@@ -439,7 +444,7 @@ impl<R: Runtime> SamSession<R> {
 
             let mut session_destination = Destination::new(
                 destination_id.clone(),
-                *private_key.clone(),
+                private_key.clone(),
                 local_leaseset.clone(),
                 netdb_handle,
                 tunnel_pool_handle,
@@ -448,7 +453,7 @@ impl<R: Runtime> SamSession<R> {
                 is_unpublished,
                 profile_storage,
             );
-            // // TODO: not needed anymore?
+            // TODO: not needed anymore?
             session_destination.publish_lease_set(local_leaseset.clone());
 
             tracing::info!(
@@ -481,7 +486,7 @@ impl<R: Runtime> SamSession<R> {
             ),
             dest: dest.clone(),
             destination: session_destination,
-            encryption_key: *encryption_key,
+            encryption_key,
             event_handle,
             lookup_futures: R::join_set(),
             options,
@@ -1611,7 +1616,6 @@ mod tests {
         let address = listener.local_addr().unwrap();
 
         let signing_key = SigningPrivateKey::random(rand::thread_rng());
-        let encryption_key = StaticPrivateKey::random(rand::thread_rng());
         let destination = Destination::new::<MockRuntime>(signing_key.public());
 
         let (datagram_tx, datagram_rx) = mpsc::channel(10);
@@ -1632,7 +1636,7 @@ mod tests {
                 datagram_tx,
                 destination: DestinationContext {
                     destination,
-                    private_key: Box::new(encryption_key),
+                    private_key: Vec::new(),
                     signing_key: Box::new(signing_key),
                 },
                 event_handle,

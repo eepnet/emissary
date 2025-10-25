@@ -144,7 +144,13 @@ impl Destination {
             out.put_u8(KEY_CERTIFICATE);
             out.put_u16(KEY_CERTIFICATE_LEN);
             out.put_u16(KEY_KIND_EDDSA_SHA512_ED25519);
-            out.put_u16(4u16); // public key type for x25519
+
+            // public key type for elgamal
+            //
+            // setting this to 4 (which is the correct key type) causes issues with java
+            //
+            // more specifically, streaming SYN signature cannot be read
+            out.put_u16(0u16);
 
             out.freeze()
         };
