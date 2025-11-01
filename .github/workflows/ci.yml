@@ -64,6 +64,10 @@ jobs:
       working-directory: emissary-core
       run: cargo check --no-default-features --features no_std
 
+    - name: cargo-check emissary-core no events
+      working-directory: emissary-core
+      run: cargo check --no-default-features --features=std
+
     - name: cargo-check emissary-cli web-ui
       working-directory: emissary-cli
       run: cargo check --no-default-features --features web-ui
