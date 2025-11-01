@@ -44,6 +44,7 @@ impl thingbuf::Recycle<NetDbAction> for NetDbActionRecycle {
 }
 
 /// Query kind.
+#[derive(Default)]
 pub enum NetDbAction {
     /// [`LeaseSet2`] query.
     QueryLeaseSet2 {
@@ -98,13 +99,8 @@ pub enum NetDbAction {
     WaitUntilReady { tx: oneshot::Sender<()> },
 
     /// Dummy value.
+    #[default]
     Dummy,
-}
-
-impl Default for NetDbAction {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 /// Handle to [`NetDb`].

@@ -35,7 +35,7 @@ use core::{
 };
 
 /// Events emitted by a `TunnelPool`.
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum TunnelPoolEvent {
     /// Tunnel pool has been shut down.
     TunnelPoolShutDown,
@@ -88,6 +88,7 @@ pub enum TunnelPoolEvent {
     },
 
     /// Dummy event.
+    #[default]
     Dummy,
 }
 
@@ -107,12 +108,6 @@ impl fmt::Display for TunnelPoolEvent {
             Self::Message { .. } => write!(f, "TunnelPoolEvent::Message"),
             Self::Dummy => write!(f, "TunnelPoolEvent::Dummy"),
         }
-    }
-}
-
-impl Default for TunnelPoolEvent {
-    fn default() -> Self {
-        Self::Dummy
     }
 }
 

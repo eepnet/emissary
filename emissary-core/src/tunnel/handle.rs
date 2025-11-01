@@ -41,6 +41,7 @@ impl thingbuf::Recycle<TunnelManagerCommand> for CommandRecycle {
 }
 
 /// Commands handled by the [`TunnelManager`].
+#[derive(Default)]
 pub(super) enum TunnelManagerCommand {
     /// Create new tunnel pool.
     CreateTunnelPool {
@@ -52,13 +53,8 @@ pub(super) enum TunnelManagerCommand {
     },
 
     /// Dummy event.
+    #[default]
     Dummy,
-}
-
-impl Default for TunnelManagerCommand {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 /// Tunnel manager handle.

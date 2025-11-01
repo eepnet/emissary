@@ -207,7 +207,7 @@ impl PartialEq for HostKind {
 impl Eq for HostKind {}
 
 /// SAMv3 commands received from the client.
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Default, Debug, PartialEq, Eq, Clone)]
 pub enum SamCommand {
     /// `HELLO VERSION` message.
     Hello {
@@ -288,13 +288,8 @@ pub enum SamCommand {
     GenerateDestination,
 
     /// Dummy event
+    #[default]
     Dummy,
-}
-
-impl Default for SamCommand {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 impl fmt::Display for SamCommand {

@@ -247,7 +247,7 @@ pub trait Transport: Stream + Unpin + Send {
     fn reject(&mut self, router: &RouterId);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum ProtocolCommand {
     /// Attempt to connect to remote peer.
     Connect {
@@ -256,13 +256,8 @@ pub enum ProtocolCommand {
     },
 
     /// Dummy event.
+    #[default]
     Dummy,
-}
-
-impl Default for ProtocolCommand {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 /// Transport service.

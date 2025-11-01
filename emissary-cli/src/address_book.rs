@@ -212,7 +212,7 @@ impl AddressBookManager {
                     continue;
                 }
                 Ok(destination) => {
-                    let base32_address = base32_encode(&destination.id().to_vec());
+                    let base32_address = base32_encode(destination.id().to_vec());
                     addresses.insert(hostname, (base32_address, base64_destination));
                 }
             }
@@ -509,12 +509,12 @@ mod tests {
         for (key, (_, value)) in addresses {
             let key = key.strip_suffix(".i2p").unwrap();
 
-            let path = dir.join("addressbook/destinations").join(&format!("{key}.i2p.txt"));
+            let path = dir.join("addressbook/destinations").join(format!("{key}.i2p.txt"));
             assert_eq!(std::fs::read_to_string(&path).unwrap(), value);
         }
 
         // verify all base32 addresses have been saved and correspond to correct hostnames
-        let content = std::fs::read_to_string(&dir.join("addressbook/addresses")).unwrap();
+        let content = std::fs::read_to_string(dir.join("addressbook/addresses")).unwrap();
         let mut expected = HashMap::<&str, &str>::from_iter([
             (
                 "psi.i2p",

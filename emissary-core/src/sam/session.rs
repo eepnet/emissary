@@ -75,6 +75,7 @@ impl<R: Runtime> thingbuf::Recycle<SamSessionCommand<R>> for SamSessionCommandRe
 }
 
 /// SAMv3 session commands.
+#[derive(Default)]
 pub enum SamSessionCommand<R: Runtime> {
     /// Open virtual stream to `destination` over this connection.
     Connect {
@@ -131,13 +132,8 @@ pub enum SamSessionCommand<R: Runtime> {
     },
 
     /// Dummy event, never constructed.
+    #[default]
     Dummy,
-}
-
-impl<R: Runtime> Default for SamSessionCommand<R> {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 /// State of a pending outbound session.

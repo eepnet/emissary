@@ -47,6 +47,7 @@ use core::{fmt, time::Duration};
 const LOG_TARGET: &str = "emissary::ntcp2::initiator";
 
 /// Initiator state.
+#[derive(Default)]
 enum InitiatorState {
     /// Initiator has sent `SessionCreated` message to remote
     /// and is waitint to hear a response.
@@ -93,6 +94,7 @@ enum InitiatorState {
     },
 
     /// Initiator state has been poisoned.
+    #[default]
     Poisoned,
 }
 
@@ -104,12 +106,6 @@ impl fmt::Debug for InitiatorState {
             Self::SessionCreated { .. } => f.debug_struct("SessionCreated").finish_non_exhaustive(),
             Self::Poisoned => f.debug_struct("Poisoned").finish(),
         }
-    }
-}
-
-impl Default for InitiatorState {
-    fn default() -> Self {
-        Self::Poisoned
     }
 }
 

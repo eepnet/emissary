@@ -180,18 +180,13 @@ pub struct PortForwardingConfig {
     pub name: String,
 }
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, Copy, clap::ValueEnum, Serialize, Deserialize)]
 pub enum Theme {
     #[serde(alias = "light")]
     Light,
     #[serde(alias = "dark")]
+    #[default]
     Dark,
-}
-
-impl Default for Theme {
-    fn default() -> Self {
-        Self::Dark
-    }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

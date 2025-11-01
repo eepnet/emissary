@@ -48,6 +48,7 @@ use core::{fmt, time::Duration};
 const LOG_TARGET: &str = "emissary::ntcp2::responder";
 
 /// Responder state.
+#[derive(Default)]
 enum ResponderState {
     /// Responder has received `SessionRequest` message from remote peer,
     /// has initialized NTCP2 session state and is waiting to read padding bytes
@@ -82,6 +83,7 @@ enum ResponderState {
     },
 
     /// Responder state has been poisoned.
+    #[default]
     Poisoned,
 }
 
@@ -93,12 +95,6 @@ impl fmt::Debug for ResponderState {
             Self::SessionCreated { .. } => f.debug_struct("SessionCreated").finish_non_exhaustive(),
             Self::Poisoned => f.debug_struct("Poisoned").finish(),
         }
-    }
-}
-
-impl Default for ResponderState {
-    fn default() -> Self {
-        Self::Poisoned
     }
 }
 

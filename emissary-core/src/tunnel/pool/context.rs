@@ -283,6 +283,7 @@ impl thingbuf::Recycle<TunnelMessage> for TunnelMessageRecycle {
     }
 }
 
+#[derive(Default)]
 pub enum TunnelMessage {
     /// I2NP message received into one of the pool's inbound tunnels
     ///
@@ -347,13 +348,8 @@ pub enum TunnelMessage {
         message: Vec<u8>,
     },
 
+    #[default]
     Dummy,
-}
-
-impl Default for TunnelMessage {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 /// Tunnel pool context.

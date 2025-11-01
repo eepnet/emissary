@@ -34,25 +34,20 @@ pub enum SubsystemKind {
     Tunnel,
 }
 
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub enum SubsystemCommand {
     /// Send I2NP message to router.
     SendMessage {
         /// Serialized I2NP message.
         message: Vec<u8>,
     },
+
+    #[default]
     Dummy,
 }
 
-// TODO: get rid of thingbuf
-impl Default for SubsystemCommand {
-    fn default() -> Self {
-        Self::Dummy
-    }
-}
-
 /// Inner subsystem event.
-#[derive(Clone)]
+#[derive(Default, Clone)]
 pub enum InnerSubsystemEvent {
     /// Connection established.
     ConnectionEstablished {
@@ -81,17 +76,12 @@ pub enum InnerSubsystemEvent {
         messages: Vec<(RouterId, Message)>,
     },
 
+    #[default]
     Dummy,
 }
 
-impl Default for InnerSubsystemEvent {
-    fn default() -> Self {
-        Self::Dummy
-    }
-}
-
 /// Subsystem event.
-#[derive(Debug, Clone)]
+#[derive(Default, Debug, Clone)]
 pub enum SubsystemEvent {
     /// Connection established.
     ConnectionEstablished {
@@ -117,13 +107,8 @@ pub enum SubsystemEvent {
         messages: Vec<(RouterId, Message)>,
     },
 
+    #[default]
     Dummy,
-}
-
-impl Default for SubsystemEvent {
-    fn default() -> Self {
-        Self::Dummy
-    }
 }
 
 #[derive(Clone)]
