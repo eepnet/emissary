@@ -228,7 +228,7 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
             Some(address_book_config) => {
                 // create address book, allocate address book handle and pass it to `Router`
                 let address_book_manager =
-                    AddressBookManager::new(config.base_path.clone(), address_book_config);
+                    AddressBookManager::new(config.base_path.clone(), address_book_config).await;
                 let address_book_handle = address_book_manager.handle();
 
                 Router::<Runtime>::new(

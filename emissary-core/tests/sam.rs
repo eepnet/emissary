@@ -21,7 +21,6 @@ use emissary_core::{
     Ntcp2Config, SamConfig, Ssu2Config, TransitConfig,
 };
 use emissary_util::runtime::tokio::Runtime;
-use futures::future::Either;
 use rand::{thread_rng, RngCore};
 use sha2::{Digest, Sha256};
 use tokio::{
@@ -1676,14 +1675,11 @@ async fn host_lookup(kind: TransportKind) {
             Box::pin(async move { Some(dest) })
         }
 
-        fn resolve_b32(
-            &self,
-            _: String,
-        ) -> Either<String, Pin<Box<dyn Future<Output = Option<String>> + Send>>> {
+        fn resolve_b32(&self, _: &str) -> Option<String> {
             let dest = emissary_core::crypto::base64_decode(self.dest.clone()).unwrap();
             let dest = emissary_core::primitives::Destination::parse(dest).unwrap();
 
-            Either::Left(base32_encode(dest.id().to_vec()))
+            Some(base32_encode(dest.id().to_vec()))
         }
     }
 

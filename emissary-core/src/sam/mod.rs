@@ -35,13 +35,12 @@ use crate::{
             session::{PendingSamSession, SamSessionContext},
         },
         session::{SamSession, SamSessionCommand, SamSessionCommandRecycle},
-        socket::SamSocket,
     },
     tunnel::{TunnelManagerHandle, TunnelPoolConfig},
     util::udp::{UdpSocket, UdpSocketHandle},
 };
 
-use futures::{future::Either, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
@@ -235,13 +234,6 @@ pub struct SamServer<R: Runtime> {
     /// Event handle.
     event_handle: EventHandle<R>,
 
-    /// Pending host lookups.
-    host_lookups: R::JoinSet<(
-        Arc<str>,
-        SamSocket<R>,
-        Option<(DestinationId, HashMap<String, String>)>,
-    )>,
-
     /// TCP listener.
     listener: R::TcpListener,
 
@@ -334,7 +326,6 @@ impl<R: Runtime> SamServer<R> {
             datagram_tx,
             datagram_writer_state: DatagramWriterState::GetMessage,
             event_handle,
-            host_lookups: R::join_set(),
             listener,
             metrics,
             netdb_handle,
@@ -587,7 +578,7 @@ impl<R: Runtime> Future for SamServer<R> {
                     }
                     ConnectionKind::Stream {
                         session_id,
-                        socket,
+                        mut socket,
                         host,
                         options,
                         ..
@@ -646,55 +637,59 @@ impl<R: Runtime> Future for SamServer<R> {
                                     "resolve host",
                                 );
 
-                                match address_book.resolve_b32(host) {
-                                    Either::Left(destination) =>
-                                        match base32_decode(&destination) {
-                                            None => {
-                                                tracing::error!(
-                                                    target: LOG_TARGET,
-                                                    "failed to base32-decode destination id from a host lookup",
-                                                );
-                                                debug_assert!(false);
-                                            }
-                                            Some(destination) => {
-                                                let destination_id =
-                                                    DestinationId::from(destination);
+                                match address_book.resolve_b32(&host) {
+                                    Some(destination) => match base32_decode(&destination) {
+                                        None => {
+                                            tracing::error!(
+                                                target: LOG_TARGET,
+                                                "failed to base32-decode destination id from a host lookup",
+                                            );
+                                            debug_assert!(false);
+                                        }
+                                        Some(destination) => {
+                                            let destination_id = DestinationId::from(destination);
 
-                                                tracing::trace!(
-                                                    target: LOG_TARGET,
-                                                    %destination_id,
-                                                    "destination id found from the cache",
-                                                );
-
-                                                if let Err(error) =
-                                                    this.active_sessions.send_command(
-                                                        &Arc::clone(&session_id),
-                                                        SamSessionCommand::Connect {
-                                                            socket,
-                                                            destination_id,
-                                                            options,
-                                                            session_id: Arc::clone(&session_id),
-                                                        },
-                                                    )
-                                                {
-                                                    tracing::warn!(
-                                                        target: LOG_TARGET,
-                                                        %session_id,
-                                                        ?error,
-                                                        "failed to send `STREAM CONNECT` to active session",
-                                                    )
-                                                }
-                                            }
-                                        },
-                                    Either::Right(future) => {
-                                        this.host_lookups.push(async move {
-                                            let result = future.await.and_then(base32_decode).map(
-                                                |destination| {
-                                                    (DestinationId::from(destination), options)
-                                                },
+                                            tracing::trace!(
+                                                target: LOG_TARGET,
+                                                %destination_id,
+                                                "destination id found from the cache",
                                             );
 
-                                            (session_id, socket, result)
+                                            if let Err(error) = this.active_sessions.send_command(
+                                                &Arc::clone(&session_id),
+                                                SamSessionCommand::Connect {
+                                                    socket,
+                                                    destination_id,
+                                                    options,
+                                                    session_id: Arc::clone(&session_id),
+                                                },
+                                            ) {
+                                                tracing::warn!(
+                                                    target: LOG_TARGET,
+                                                    %session_id,
+                                                    ?error,
+                                                    "failed to send `STREAM CONNECT` to active session",
+                                                )
+                                            }
+                                        }
+                                    },
+                                    None => {
+                                        tracing::debug!(
+                                            target: LOG_TARGET,
+                                            %session_id,
+                                            %host,
+                                            "failed to resolve host",
+                                        );
+
+                                        R::spawn(async move {
+                                            let _ = socket
+                                                .send_message_blocking(
+                                                    "STREAM STATUS RESULT=I2P_ERROR\n"
+                                                        .to_string()
+                                                        .as_bytes()
+                                                        .to_vec(),
+                                                )
+                                                .await;
                                         });
                                     }
                                 }
@@ -808,45 +803,6 @@ impl<R: Runtime> Future for SamServer<R> {
                         this.active_destinations.remove(&destination_id);
                     }
                 }
-            }
-        }
-
-        loop {
-            match this.host_lookups.poll_next_unpin(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some((session_id, mut socket, None))) => {
-                    tracing::debug!(
-                        target: LOG_TARGET,
-                        ?session_id,
-                        "failed to resolve host",
-                    );
-
-                    R::spawn(async move {
-                        let _ = socket
-                            .send_message_blocking(
-                                "STREAM STATUS RESULT=I2P_ERROR\n".to_string().as_bytes().to_vec(),
-                            )
-                            .await;
-                    });
-                }
-                Poll::Ready(Some((session_id, socket, Some((destination_id, options))))) =>
-                    if let Err(error) = this.active_sessions.send_command(
-                        &Arc::clone(&session_id),
-                        SamSessionCommand::Connect {
-                            socket,
-                            destination_id,
-                            options,
-                            session_id: Arc::clone(&session_id),
-                        },
-                    ) {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            %session_id,
-                            ?error,
-                            "failed to send `STREAM CONNECT` to active session",
-                        )
-                    },
             }
         }
 
