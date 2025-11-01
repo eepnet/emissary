@@ -60,6 +60,7 @@ tracing-subscriber = { workspace = true }
 yosemite = { workspace = true }
 
 [features]
-default = ["std"]
-std = ["dep:parking_lot"]
+default = ["std", "events"]
+events = []
 no_std = ["dep:spin"]
+std = ["dep:parking_lot"]

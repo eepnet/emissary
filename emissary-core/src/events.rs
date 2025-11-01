@@ -18,24 +18,34 @@
 
 use crate::runtime::Runtime;
 
+#[cfg(feature = "events")]
 use futures::FutureExt;
+#[cfg(feature = "events")]
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{string::String, vec::Vec};
 use core::{
     future::Future,
-    mem,
     pin::Pin,
-    sync::atomic::{AtomicUsize, Ordering},
     task::{Context, Poll},
     time::Duration,
 };
 
+#[cfg(feature = "events")]
+use alloc::sync::Arc;
+#[cfg(feature = "events")]
+use core::{
+    mem,
+    sync::atomic::{AtomicUsize, Ordering},
+};
+
 /// Default update interval.
+#[cfg(feature = "events")]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Events emitted by [`EventSubscriber`].
 #[derive(Debug, Clone)]
+#[cfg(feature = "events")]
 enum SubsystemEvent {
     /// Client destination has been started.
     ClientDestinationStarted {
@@ -53,6 +63,7 @@ enum SubsystemEvent {
     },
 }
 
+#[cfg(feature = "events")]
 impl Default for SubsystemEvent {
     fn default() -> Self {
         Self::ClientDestinationStarted {
@@ -62,6 +73,7 @@ impl Default for SubsystemEvent {
 }
 
 /// Event handle.
+#[cfg(feature = "events")]
 pub(crate) struct EventHandle<R: Runtime> {
     /// TX channel for sending events to [`EventSubscriber`].
     event_tx: Sender<SubsystemEvent>,
@@ -91,6 +103,7 @@ pub(crate) struct EventHandle<R: Runtime> {
     timer: Option<R::Timer>,
 }
 
+#[cfg(feature = "events")]
 impl<R: Runtime> Clone for EventHandle<R> {
     fn clone(&self) -> Self {
         EventHandle {
@@ -107,65 +120,94 @@ impl<R: Runtime> Clone for EventHandle<R> {
     }
 }
 
+/// Event handle.
+#[cfg(not(feature = "events"))]
+#[derive(Clone)]
+pub(crate) struct EventHandle<R: Runtime> {
+    /// Marker for `Runtime`.
+    _marker: core::marker::PhantomData<R>,
+}
+
 impl<R: Runtime> EventHandle<R> {
     /// Update transit tunnel count.
     ///
     /// [`AtomicUsize::store()`] is used because the count is updated only by
     /// `TransitTunnelManager`.
-    pub(crate) fn num_transit_tunnels(&self, num_tunnels: usize) {
-        self.num_transit_tunnels.store(num_tunnels, Ordering::Release);
+    #[inline(always)]
+    pub(crate) fn num_transit_tunnels(&self, _num_tunnels: usize) {
+        #[cfg(feature = "events")]
+        self.num_transit_tunnels.store(_num_tunnels, Ordering::Release);
     }
 
     /// Update transit tunnel bandwidth.
     ///
     /// [`AtomicUsize::fetch_add()`] is used because each transit tunnel keeps track
     /// of its own bandwidth.
-    pub(crate) fn transit_tunnel_bandwidth(&self, bandwidth: usize) {
-        self.transit_bandwidth.fetch_add(bandwidth, Ordering::Release);
+    #[inline(always)]
+    pub(crate) fn transit_tunnel_bandwidth(&self, _bandwidth: usize) {
+        #[cfg(feature = "events")]
+        self.transit_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update transport bandwidth.
     ///
     /// [`AtomicUsize::fetch_add()`] is used because each connection keeps track of its own
     /// bandwidth.
-    pub(crate) fn transport_bandwidth(&self, bandwidth: usize) {
-        self.bandwidth.fetch_add(bandwidth, Ordering::Release);
+    #[inline(always)]
+    pub(crate) fn transport_bandwidth(&self, _bandwidth: usize) {
+        #[cfg(feature = "events")]
+        self.bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update connected router count.
     ///
     /// [`AtomicUsize::store()`] is used because the count is updated only by
     /// `TransportManager`.
-    pub(crate) fn num_connected_routers(&self, num_connected_routers: usize) {
-        self.num_connected_routers.store(num_connected_routers, Ordering::Release);
+    #[inline(always)]
+    pub(crate) fn num_connected_routers(&self, _num_connected_routers: usize) {
+        #[cfg(feature = "events")]
+        self.num_connected_routers.store(_num_connected_routers, Ordering::Release);
     }
 
     /// Update tunnel build success/failure status.
     ///
     /// [`AtomicUsize::fetch_add()`] is used because each tunnel pool keeps track of its own
     /// tunnel build success/failure rate.
-    pub(crate) fn tunnel_status(&self, num_tunnels_built: usize, num_tunnel_build_failures: usize) {
-        self.num_tunnels_built.fetch_add(num_tunnels_built, Ordering::Release);
+    #[inline(always)]
+    pub(crate) fn tunnel_status(
+        &self,
+        _num_tunnels_built: usize,
+        _num_tunnel_build_failures: usize,
+    ) {
+        #[cfg(feature = "events")]
+        self.num_tunnels_built.fetch_add(_num_tunnels_built, Ordering::Release);
+        #[cfg(feature = "events")]
         self.num_tunnel_build_failures
-            .fetch_add(num_tunnel_build_failures, Ordering::Release);
+            .fetch_add(_num_tunnel_build_failures, Ordering::Release);
     }
 
-    // TODO:
-    pub(crate) fn server_destination_started(&self, name: String, address: String) {
-        let _ = self
-            .event_tx
-            .try_send(SubsystemEvent::ServerDestinationStarted { name, address });
+    /// Notify the [`EventManager`] that a server destination was started.
+    #[inline(always)]
+    pub(crate) fn server_destination_started(&self, _name: String, _address: String) {
+        #[cfg(feature = "events")]
+        let _ = self.event_tx.try_send(SubsystemEvent::ServerDestinationStarted {
+            name: _name,
+            address: _address,
+        });
     }
 
-    // TODO:
-    pub(crate) fn client_destination_started(&self, name: String) {
-        let _ = self.event_tx.try_send(SubsystemEvent::ClientDestinationStarted { name });
+    /// Notify the [`EventManager`] that a client destination was started.
+    #[inline(always)]
+    pub(crate) fn client_destination_started(&self, _name: String) {
+        #[cfg(feature = "events")]
+        let _ = self.event_tx.try_send(SubsystemEvent::ClientDestinationStarted { name: _name });
     }
 }
 
 impl<R: Runtime> Future for EventHandle<R> {
     type Output = ();
 
+    #[cfg(feature = "events")]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match &mut self.timer {
             None => Poll::Pending,
@@ -180,6 +222,11 @@ impl<R: Runtime> Future for EventHandle<R> {
                 Poll::Ready(())
             }
         }
+    }
+
+    #[cfg(not(feature = "events"))]
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
     }
 }
 
@@ -259,6 +306,7 @@ pub enum Event {
 }
 
 /// [`EventManager`] state.
+#[cfg(feature = "events")]
 enum State {
     /// [`EventManager`] and the router is active.
     Active,
@@ -271,6 +319,7 @@ enum State {
 }
 
 /// Event manager.
+#[cfg(feature = "events")]
 pub(crate) struct EventManager<R: Runtime> {
     /// RX channel for receiving events from other subsystems.
     event_rx: Receiver<SubsystemEvent>,
@@ -294,8 +343,15 @@ pub(crate) struct EventManager<R: Runtime> {
     timer: R::Timer,
 }
 
+/// Event manager.
+#[cfg(not(feature = "events"))]
+pub(crate) struct EventManager<R: Runtime> {
+    _marker: core::marker::PhantomData<R>,
+}
+
 impl<R: Runtime> EventManager<R> {
     /// Create new [`EventManager`].
+    #[cfg(feature = "events")]
     pub(crate) fn new(
         update_interval: Option<Duration>,
     ) -> (Self, EventSubscriber, EventHandle<R>) {
@@ -339,8 +395,25 @@ impl<R: Runtime> EventManager<R> {
         )
     }
 
+    /// Create new [`EventManager`].
+    #[cfg(not(feature = "events"))]
+    pub(crate) fn new(
+        _update_interval: Option<Duration>,
+    ) -> (Self, EventSubscriber, EventHandle<R>) {
+        (
+            Self {
+                _marker: Default::default(),
+            },
+            EventSubscriber {},
+            EventHandle {
+                _marker: Default::default(),
+            },
+        )
+    }
+
     /// Send shutdown signal to [`EventSubscriber`].
     pub(crate) fn shutdown(&mut self) {
+        #[cfg(feature = "events")]
         match self.state {
             State::Active => {
                 let _ = self.status_tx.try_send(Event::ShuttingDown);
@@ -360,6 +433,7 @@ impl<R: Runtime> EventManager<R> {
 impl<R: Runtime> Future for EventManager<R> {
     type Output = ();
 
+    #[cfg(feature = "events")]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             match self.event_rx.poll_recv(cx) {
@@ -407,18 +481,31 @@ impl<R: Runtime> Future for EventManager<R> {
 
         Poll::Pending
     }
+
+    #[cfg(not(feature = "events"))]
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Poll::Pending
+    }
 }
 
 /// Event subscriber.
 pub struct EventSubscriber {
     /// RX channel for receiving events.
+    #[cfg(feature = "events")]
     status_rx: Receiver<Event>,
 }
 
 impl EventSubscriber {
     /// Attempt to get next [`Event`].
+    #[cfg(feature = "events")]
     pub fn router_status(&mut self) -> Option<Event> {
         self.status_rx.try_recv().ok()
+    }
+
+    /// Attempt to get next [`Event`].
+    #[cfg(not(feature = "events"))]
+    pub fn router_status(&mut self) -> Option<Event> {
+        None
     }
 }
 
