@@ -20,14 +20,14 @@ use crate::{
     crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
     error::Error,
     i2cp::I2cpPayload,
-    primitives::Destination,
+    primitives::{DatagramFlags, Destination, OfflineSignature},
     protocol::Protocol,
     runtime::Runtime,
 };
 
 use bytes::{BufMut, BytesMut};
 use hashbrown::HashMap;
-use nom::bytes::complete::take;
+use nom::{bytes::complete::take, Err};
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
@@ -96,7 +96,7 @@ impl<R: Runtime> DatagramManager<R> {
 
                 out.to_vec()
             }
-             Protocol::Datagram2 => todo!(),
+            Protocol::Datagram2 => todo!("make datagram2"),
             Protocol::Anonymous => datagram,
             Protocol::Streaming => unreachable!(),
         }
@@ -148,7 +148,27 @@ impl<R: Runtime> DatagramManager<R> {
 
                 Ok(())
             }
-            Protocol::Datagram2 => todo!("parse datagram2"),
+            Protocol::Datagram2 => {
+                let (rest, destination) =
+                    Destination::parse_frame(&payload).map_err(|_| Error::InvalidData)?;
+
+                let (rest, flags) =
+                    DatagramFlags::parse_frame(rest).map_err(|_| Error::InvalidData)?;
+
+                let (options, has_offsig) = match flags {
+                    DatagramFlags::V2 {
+                        options,
+                        has_offsig,
+                    } => (options, has_offsig),
+                    _ => return Err(Error::InvalidData),
+                };
+
+                if has_offsig {
+                    todo!("parse datagram offsig")
+                }
+
+                todo!()
+            }
             Protocol::Anonymous => {
                 let _ = self.datagram_tx.try_send((*port, payload));
 

@@ -48,27 +48,43 @@ impl Mapping {
     /// Serialize [`Mapping`] into a byte vector.
     pub fn serialize(&self) -> Bytes {
         // Allocate at least two bytes for the size prefix
-        let mut out = BytesMut::with_capacity(2);
-        let mut data = out.split_off(2);
+        let out = BytesMut::with_capacity(2);
+        self.serialize_into(out).freeze()
+    }
+
+    pub fn serialize_into(&self, mut out: BytesMut) -> BytesMut {
+        let start_len = out.len();
+
+        // Reserve 2 bytes for size prefix
+        if out.capacity() - out.len() < 2 {
+            out.reserve(2);
+        }
+        out.put_u16(0); // temporary placeholder
+
+        let data_start = out.len();
         let mut entries: Vec<_> = self.0.iter().collect();
 
-        // Our mapping implementation does not support duplicate keys, so we do not need to preserve
+        // Our mapping implementation does not support duplicate keys, so we do not need to preserve 
         // order
         entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
         for (key, value) in entries {
             let key = key.serialize();
             let value = value.serialize();
-            data.reserve(key.len() + value.len() + 2);
-            data.extend(key);
-            data.put_u8(b'=');
-            data.extend(value);
-            data.put_u8(b';');
+            out.reserve(key.len() + value.len() + 2);
+            out.extend_from_slice(&key);
+            out.put_u8(b'=');
+            out.extend_from_slice(&value);
+            out.put_u8(b';');
         }
-        debug_assert!(data.len() <= u16::MAX as usize);
-        out.put_u16(data.len() as u16);
-        out.unsplit(data);
 
-        out.freeze()
+        let data_len = out.len() - data_start;
+        debug_assert!(data_len <= u16::MAX as usize);
+
+        // Write actual length into the 2-byte prefix we reserved
+        let prefix_pos = start_len;
+        out[prefix_pos..prefix_pos + 2].copy_from_slice(&(data_len as u16).to_be_bytes());
+
+        out
     }
 
     /// Parse [`Mapping`] from `input`, returning rest of `input` and parsed mapping.
@@ -163,7 +179,7 @@ mod tests {
     }
 
     #[test]
-    fn valid_string_with_extra_bytes() {
+    fn valid_string_with_extra_end_bytes() {
         let mut mapping = Mapping::default();
         mapping.insert("hello".into(), "world".into());
 
@@ -174,6 +190,20 @@ mod tests {
         ser.push(4);
 
         assert_eq!(Mapping::parse(ser), Ok(mapping));
+    }
+
+    #[test]
+    fn valid_string_with_extra_start_bytes() {
+        let mut mapping = Mapping::default();
+        mapping.insert("hello".into(), "world".into());
+
+        const PREFIX: &[u8] = b"prefix";
+
+        let buf = BytesMut::from(PREFIX);
+        let ser = mapping.serialize_into(buf).to_vec();
+
+        assert_eq!(&ser[..PREFIX.len()], b"prefix");
+        assert_eq!(Mapping::parse(&ser[PREFIX.len()..]), Some(mapping));
     }
 
     #[test]
