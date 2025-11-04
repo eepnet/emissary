@@ -96,6 +96,7 @@ impl<R: Runtime> DatagramManager<R> {
 
                 out.to_vec()
             }
+             Protocol::Datagram2 => todo!(),
             Protocol::Anonymous => datagram,
             Protocol::Streaming => unreachable!(),
         }
@@ -147,6 +148,7 @@ impl<R: Runtime> DatagramManager<R> {
 
                 Ok(())
             }
+            Protocol::Datagram2 => todo!("parse datagram2"),
             Protocol::Anonymous => {
                 let _ = self.datagram_tx.try_send((*port, payload));
 

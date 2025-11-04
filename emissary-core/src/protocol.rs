@@ -25,6 +25,10 @@ pub enum Protocol {
     /// Repliable datagrams.
     Datagram,
 
+    /// Repliable datagrams with replay prevention,
+    /// offline signature support and flags extensibility.
+    Datagram2,
+
     /// Raw datagrams.
     Anonymous,
 }
@@ -35,6 +39,7 @@ impl Protocol {
         match protocol {
             6u8 => Some(Self::Streaming),
             17u8 => Some(Self::Datagram),
+            19u8 => Some(Self::Datagram2),
             18u8 => Some(Self::Anonymous),
             _ => {
                 tracing::warn!(?protocol, "unknown i2cp protocol");
@@ -48,6 +53,7 @@ impl Protocol {
         match self {
             Self::Streaming => 6u8,
             Self::Datagram => 17u8,
+            Self::Datagram2 => 19u8,
             Self::Anonymous => 18u8,
         }
     }
