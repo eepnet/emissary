@@ -25,9 +25,11 @@ use crate::{
     runtime::Runtime,
 };
 
+use std::borrow::Cow;
+
 use bytes::{BufMut, BytesMut};
 use hashbrown::HashMap;
-use nom::{bytes::complete::take, Err};
+use nom::bytes::complete::take;
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
@@ -163,11 +165,41 @@ impl<R: Runtime> DatagramManager<R> {
                     _ => return Err(Error::InvalidData),
                 };
 
-                if has_offsig {
-                    todo!("parse datagram offsig")
+                let (rest, verifying_key) = if has_offsig {
+                    let (rest, offsig) =
+                        OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())
+                            .map_err(|_| Error::InvalidData)?;
+
+                    (rest, Cow::Owned(offsig))
+                } else {
+                    (rest, Cow::Borrowed(destination.verifying_key()))
+                };
+
+                let (signature, payload) =
+                    take::<_, _, ()>(rest.len() - verifying_key.signature_len())(rest)
+                        .map_err(|_| Error::InvalidData)?;
+
+                match verifying_key.as_ref() {
+                    SigningPublicKey::DsaSha1(_) => return Err(Error::NotSupported),
+                    verifying_key => verifying_key.verify(payload, signature)?,
                 }
 
-                todo!()
+                todo!("should I write options to the info?");
+
+                let info = format!(
+                    "{} FROM_PORT={src_port} TO_PORT={dst_port}\n",
+                    base64_encode(destination.serialize())
+                );
+
+                let info = info.as_bytes();
+
+                let mut out = BytesMut::with_capacity(info.len() + payload.len());
+                out.put_slice(info);
+                out.put_slice(payload);
+
+                let _ = self.datagram_tx.try_send((*port, out.to_vec()));
+
+                Ok(())
             }
             Protocol::Anonymous => {
                 let _ = self.datagram_tx.try_send((*port, payload));
