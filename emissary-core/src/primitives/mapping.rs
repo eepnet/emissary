@@ -64,7 +64,7 @@ impl Mapping {
         let data_start = out.len();
         let mut entries: Vec<_> = self.0.iter().collect();
 
-        // Our mapping implementation does not support duplicate keys, so we do not need to preserve 
+        // Our mapping implementation does not support duplicate keys, so we do not need to preserve
         // order
         entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
         for (key, value) in entries {
@@ -203,7 +203,7 @@ mod tests {
         let ser = mapping.serialize_into(buf).to_vec();
 
         assert_eq!(&ser[..PREFIX.len()], b"prefix");
-        assert_eq!(Mapping::parse(&ser[PREFIX.len()..]), Some(mapping));
+        assert_eq!(Mapping::parse(&ser[PREFIX.len()..]), Ok(mapping));
     }
 
     #[test]

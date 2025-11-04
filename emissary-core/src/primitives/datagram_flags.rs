@@ -16,7 +16,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::primitives::{Mapping, LOG_TARGET};
+use crate::{
+    error::parser::DatagramFlagsParseError,
+    primitives::{Mapping, LOG_TARGET},
+};
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
@@ -54,8 +57,9 @@ impl DatagramFlags {
         }
     }
 
-    /// Parse [`DatagramFlags`] from `input`, returning rest of `input` and parsed [`DatagramFlags`].
-    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], DatagramFlags> {
+    /// Parse [`DatagramFlags`] from `input`, returning rest of `input` and parsed
+    /// [`DatagramFlags`].
+    pub fn parse_frame(input: &[u8]) -> IResult<&[u8], DatagramFlags, DatagramFlagsParseError> {
         if input.len() < FLAGS_LEN {
             tracing::warn!(
                 target: LOG_TARGET,
@@ -63,7 +67,7 @@ impl DatagramFlags {
                 "not enough bytes in flags",
             );
 
-            return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+            return Err(Err::Error(DatagramFlagsParseError::InvalidLength));
         }
 
         let (rest, flags) = take(FLAGS_LEN)(input)?;
@@ -71,19 +75,20 @@ impl DatagramFlags {
         match flags[0] & VERSION_MASK {
             2 => DatagramFlags::parse_v2(rest, flags),
             version => {
-                tracing::warn!(
+                tracing::trace!(
                     target: LOG_TARGET,
                     ?version,
                     "unknown flags version",
                 );
-                Err(Err::Error(make_error(rest, ErrorKind::Fail)))
+
+                Err(Err::Error(DatagramFlagsParseError::UnknownVersion))
             }
         }
     }
 
     /// Try to parse router information from `bytes`.
-    pub fn parse(input: impl AsRef<[u8]>) -> Option<Self> {
-        Some(Self::parse_frame(input.as_ref()).ok()?.1)
+    pub fn parse(bytes: impl AsRef<[u8]>) -> Result<Self, DatagramFlagsParseError> {
+        Ok(Self::parse_frame(bytes.as_ref())?.1)
     }
 
     fn serialize_v2(options: Option<&Mapping>, has_offline_signature: bool) -> Bytes {
@@ -106,7 +111,10 @@ impl DatagramFlags {
         }
     }
 
-    fn parse_v2<'a>(input: &'a [u8], flags: &[u8]) -> IResult<&'a [u8], DatagramFlags> {
+    fn parse_v2<'a>(
+        input: &'a [u8],
+        flags: &[u8],
+    ) -> IResult<&'a [u8], DatagramFlags, DatagramFlagsParseError> {
         let flags = flags[0];
 
         // parse options
@@ -126,7 +134,7 @@ impl DatagramFlags {
                     return Err(Err::Error(make_error(input, ErrorKind::Fail)));
                 }
                 _ => {
-                    let (rest, mapping) = Mapping::parse_frame(input)?;
+                    let (rest, mapping) = Mapping::parse_frame(input).map_err(Err::convert)?;
                     (rest, Some(mapping))
                 }
             }
@@ -148,13 +156,18 @@ mod tests {
 
     #[test]
     fn empty_flags() {
-        assert_eq!(DatagramFlags::parse(b"\0\0"), None);
+        assert_eq!(
+            DatagramFlags::parse(b"\0\0"),
+            Err(DatagramFlagsParseError::UnknownVersion)
+        );
     }
 
     #[test]
     fn undersized() {
-        let ser = b"\x01";
-        assert!(DatagramFlags::parse(ser).is_none());
+        assert_eq!(
+            DatagramFlags::parse(b"\x01"),
+            Err(DatagramFlagsParseError::InvalidLength)
+        );
     }
 
     #[test]
@@ -165,11 +178,11 @@ mod tests {
         };
         let ser = flags.serialize();
 
-        assert_eq!(DatagramFlags::parse(ser), Some(flags));
+        assert_eq!(DatagramFlags::parse(ser), Ok(flags));
     }
 
     #[test]
-    fn valid_flags_with_all() {
+    fn valid_flags_with_all_fields() {
         let mut opts = Mapping::default();
         opts.insert("hello".into(), "world".into());
 
@@ -180,7 +193,7 @@ mod tests {
 
         let ser = flags.serialize();
 
-        assert_eq!(DatagramFlags::parse(ser), Some(flags));
+        assert_eq!(DatagramFlags::parse(ser), Ok(flags));
     }
 
     #[test]
@@ -199,7 +212,7 @@ mod tests {
         ser.push(3);
         ser.push(4);
 
-        assert_eq!(DatagramFlags::parse(ser), Some(flags));
+        assert_eq!(DatagramFlags::parse(ser), Ok(flags));
     }
 
     #[test]

@@ -179,6 +179,28 @@ impl From<OfflineSignatureParseError> for FlagsParseError {
     }
 }
 
+/// Parse error for `DatagramFlags`.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum DatagramFlagsParseError {
+    /// Invalid bitstream.
+    InvalidBitstream,
+
+    /// Invalid length.
+    InvalidLength,
+
+    /// Unknown datagram version.
+    UnknownVersion,
+
+    /// Invalid `Mapping`
+    InvalidOptions(MappingParseError),
+}
+
+impl From<MappingParseError> for DatagramFlagsParseError {
+    fn from(value: MappingParseError) -> Self {
+        Self::InvalidOptions(value)
+    }
+}
+
 /// Parse error for `Packet`.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum PacketParseError {
@@ -530,6 +552,7 @@ derive_nom_parse_error!(DatabaseStoreParseError);
 derive_nom_parse_error!(DateParseError);
 derive_nom_parse_error!(DestinationParseError);
 derive_nom_parse_error!(FlagsParseError);
+derive_nom_parse_error!(DatagramFlagsParseError);
 derive_nom_parse_error!(GarlicParseError);
 derive_nom_parse_error!(I2npParseError);
 derive_nom_parse_error!(LeaseSetParseError);
