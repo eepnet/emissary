@@ -238,7 +238,10 @@ impl SamSessionKind {
             Self::Stream => false,
             Self::Datagram { .. } => true,
             Self::Primary { sub_sessions } => sub_sessions.get(session_id).is_some_and(|kind| {
-                core::matches!(kind, SessionKind::Datagram | SessionKind::Anonymous)
+                core::matches!(
+                    kind,
+                    SessionKind::Datagram | SessionKind::Anonymous | SessionKind::Datagram2,
+                )
             }),
         }
     }
@@ -252,6 +255,7 @@ impl SamSessionKind {
             Self::Datagram { kind } => match kind {
                 SessionKind::Datagram => Protocol::Datagram,
                 SessionKind::Anonymous => Protocol::Anonymous,
+                SessionKind::Datagram2 => Protocol::Datagram2,
                 _ => unreachable!(),
             },
             Self::Primary { sub_sessions } => match sub_sessions.get(session_id).expect("to exist")
@@ -259,6 +263,7 @@ impl SamSessionKind {
                 SessionKind::Stream => Protocol::Streaming,
                 SessionKind::Datagram => Protocol::Datagram,
                 SessionKind::Anonymous => Protocol::Anonymous,
+                SessionKind::Datagram2 => Protocol::Datagram2,
                 _ => unreachable!(),
             },
         }
@@ -497,6 +502,9 @@ impl<R: Runtime> SamSession<R> {
                 },
                 SessionKind::Anonymous => SamSessionKind::Datagram {
                     kind: SessionKind::Anonymous,
+                },
+                SessionKind::Datagram2 => SamSessionKind::Datagram {
+                    kind: SessionKind::Datagram2,
                 },
                 SessionKind::Primary => SamSessionKind::Primary {
                     sub_sessions: HashMap::new(),
@@ -1295,7 +1303,10 @@ impl<R: Runtime> SamSession<R> {
         }
 
         // if session kind indicated datagrams, attempt to add listener into `DatagramManager`
-        if core::matches!(session_kind, SessionKind::Datagram | SessionKind::Anonymous) {
+        if core::matches!(
+            session_kind,
+            SessionKind::Datagram | SessionKind::Anonymous | SessionKind::Datagram2
+        ) {
             if let Err(()) = self.datagram_manager.add_listener(options) {
                 return b"SESSION STATUS RESULT=I2P_ERROR MESSAGE=\"invalid datagram configuration\"\n".to_vec();
             }

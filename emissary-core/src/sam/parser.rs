@@ -82,6 +82,9 @@ pub enum SessionKind {
     /// Repliable datagram.
     Datagram,
 
+    /// Repliable datagram with replay prevention.
+    Datagram2,
+
     /// Anonymous datagrams.
     Anonymous,
 
@@ -376,7 +379,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                 let session_kind = match parsed_cmd.key_value_pairs.remove("STYLE") {
                     Some("STREAM") => SessionKind::Stream,
                     Some("PRIMARY") | Some("MASTER") => SessionKind::Primary,
-                    style @ (Some("RAW") | Some("DATAGRAM")) => {
+                    style @ (Some("RAW") | Some("DATAGRAM") | Some("DATAGRAM2")) => {
                         // currently only forwarded datagrams are supported
                         let _ = parsed_cmd.key_value_pairs.get("PORT").ok_or_else(|| {
                             tracing::warn!(
@@ -393,6 +396,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                         match style {
                             Some("RAW") => SessionKind::Anonymous,
                             Some("DATAGRAM") => SessionKind::Datagram,
+                            Some("DATAGRAM2") => SessionKind::Datagram2,
                             _ => unreachable!(),
                         }
                     }
@@ -508,7 +512,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                         );
                         return Err(());
                     }
-                    style @ (Some("RAW") | Some("DATAGRAM")) => {
+                    style @ (Some("RAW") | Some("DATAGRAM") | Some("DATAGRAM2")) => {
                         // currently only forwarded datagrams are supported
                         let _ = parsed_cmd.key_value_pairs.get("PORT").ok_or_else(|| {
                             tracing::warn!(
@@ -525,6 +529,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                         match style {
                             Some("RAW") => SessionKind::Anonymous,
                             Some("DATAGRAM") => SessionKind::Datagram,
+                            Some("DATAGRAM2") => SessionKind::Datagram2,
                             _ => unreachable!(),
                         }
                     }
