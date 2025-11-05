@@ -20,20 +20,21 @@ use crate::{
     crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
     error::Error,
     i2cp::I2cpPayload,
-    primitives::{DatagramFlags, Destination, OfflineSignature},
+    primitives::{DatagramFlags, Destination, Mapping, OfflineSignature},
     protocol::Protocol,
     runtime::Runtime,
+    sam::parser::Datagram,
 };
 
 use std::borrow::Cow;
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use hashbrown::HashMap;
 use nom::bytes::complete::take;
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
-use core::marker::PhantomData;
+use core::{hash::Hash, marker::PhantomData};
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::datagram";
@@ -84,24 +85,29 @@ impl<R: Runtime> DatagramManager<R> {
     /// Make repliable datagram.
     ///
     /// Caller must ensure to call this function with correct `protocol`.
-    pub fn make_datagram(&mut self, protocol: Protocol, datagram: Vec<u8>) -> Vec<u8> {
+    pub fn make_datagram(&mut self, protocol: Protocol, datagram: Vec<u8>) -> Bytes {
         match protocol {
             Protocol::Datagram => {
                 let signature = self.signing_key.sign(&datagram);
-                let destination = self.destination.serialize();
 
-                let mut out =
-                    BytesMut::with_capacity(destination.len() + signature.len() + datagram.len());
-                out.put_slice(&destination);
+                let mut out = BytesMut::with_capacity(
+                    self.destination.serialized_len() + signature.len() + datagram.len(),
+                );
+                out.put_slice(&self.destination);
                 out.put_slice(&signature);
                 out.put_slice(&datagram);
 
-                out.to_vec()
+                out.freeze()
             }
-            Protocol::Datagram2 => todo!("make datagram2"),
-            Protocol::Anonymous => datagram,
+            Protocol::Datagram2 => self.make_datagram2(datagram, None),
+            Protocol::Anonymous => Bytes::from(datagram),
             Protocol::Streaming => unreachable!(),
         }
+    }
+
+    /// Make repliable Datagram2.
+    pub fn make_datagram2(&mut self, payload: Vec<u8>, options: Option<Mapping>) -> Bytes {
+        todo!("make datagram2")
     }
 
     /// Handle inbound datagram.

@@ -47,6 +47,13 @@ pub enum DatagramFlags {
 }
 
 impl DatagramFlags {
+    pub fn new_v2(options: Option<Mapping>, has_offsig: bool) -> DatagramFlags {
+        DatagramFlags::V2 {
+            options,
+            has_offsig,
+        }
+    }
+
     /// Serialize [`DatagramFlags`] into a byte vector.
     pub fn serialize(&self) -> Bytes {
         match self {

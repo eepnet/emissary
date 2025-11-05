@@ -263,7 +263,7 @@ impl Destination {
         ))
     }
 
-    /// Try to parse router information from `bytes`.
+    /// Try to parse router information from `input`.
     pub fn parse(input: impl AsRef<[u8]>) -> Result<Self, DestinationParseError> {
         Ok(Self::parse_frame(input.as_ref())?.1)
     }
@@ -321,6 +321,14 @@ impl Destination {
             Self::new::<crate::runtime::mock::MockRuntime>(signing_key.public()),
             signing_key,
         )
+    }
+}
+
+impl core::ops::Deref for Destination {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.serialized
     }
 }
 
