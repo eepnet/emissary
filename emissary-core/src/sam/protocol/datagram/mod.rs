@@ -23,7 +23,6 @@ use crate::{
     primitives::{DatagramFlags, Destination, Mapping, OfflineSignature},
     protocol::Protocol,
     runtime::Runtime,
-    sam::parser::Datagram,
 };
 
 use std::borrow::Cow;
@@ -34,7 +33,7 @@ use nom::bytes::complete::take;
 use thingbuf::mpsc::Sender;
 
 use alloc::{format, string::String, vec::Vec};
-use core::{hash::Hash, marker::PhantomData};
+use core::marker::PhantomData;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::datagram";
