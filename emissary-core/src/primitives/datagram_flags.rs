@@ -44,6 +44,8 @@ pub enum DatagramFlags {
         options: Option<Mapping>,
         has_offsig: bool,
     },
+
+    V3, // Stub
 }
 
 impl DatagramFlags {
@@ -61,6 +63,7 @@ impl DatagramFlags {
                 options,
                 has_offsig: has_offline_signature,
             } => DatagramFlags::serialize_v2(options.as_ref(), *has_offline_signature),
+            Self::V3 => unreachable!(),
         }
     }
 

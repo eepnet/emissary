@@ -59,7 +59,6 @@ use core::{
     task::{Context, Poll, Waker},
     time::Duration,
 };
-use std::io::Read;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::sam::session";
