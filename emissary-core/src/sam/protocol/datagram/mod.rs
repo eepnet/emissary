@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base64_encode, SigningPrivateKey, SigningPublicKey},
+    crypto::{base64_encode, sha256::Sha256, SigningPrivateKey, SigningPublicKey},
     error::Error,
     i2cp::I2cpPayload,
     primitives::{DatagramFlags, Destination, Mapping, OfflineSignature},
@@ -47,6 +47,9 @@ pub struct DatagramManager<R: Runtime> {
     /// Local destination.
     destination: Destination,
 
+    /// Local destination SHA256 hash.
+    destination_hash: [u8; 32],
+
     /// Listeners.
     listeners: HashMap<u16, u16>,
 
@@ -66,6 +69,7 @@ impl<R: Runtime> DatagramManager<R> {
         signing_key: SigningPrivateKey,
     ) -> Self {
         Self {
+            destination_hash: Sha256::new().update(destination.as_ref()).finalize_new(),
             datagram_tx,
             destination,
             listeners: {
@@ -215,14 +219,28 @@ impl<R: Runtime> DatagramManager<R> {
                     (rest, Cow::Borrowed(destination.verifying_key()))
                 };
 
+                // allocate enough memory to store signed data and final output.
+                let signed_data = &payload[self.destination.len()
+                    ..payload.len() - self.destination.len() - verifying_key.signature_len()];
+
+                // signed data = self destination hash + datagram2 content from flags to signature
+                let mut out =
+                    BytesMut::with_capacity(signed_data.len() + self.destination_hash.len());
+
+                out.put_slice(&self.destination_hash);
+                out.put_slice(&signed_data);
+
+                // verify signature
                 let (signature, payload) =
                     take::<_, _, ()>(rest.len() - verifying_key.signature_len())(rest)
                         .map_err(|_| Error::InvalidData)?;
 
                 match verifying_key.as_ref() {
                     SigningPublicKey::DsaSha1(_) => return Err(Error::NotSupported),
-                    verifying_key => verifying_key.verify(payload, signature)?,
+                    verifying_key => verifying_key.verify(&out, signature)?,
                 }
+
+                out.clear();
 
                 todo!("datagram2: should I write options to the info?");
 
@@ -233,7 +251,6 @@ impl<R: Runtime> DatagramManager<R> {
 
                 let info = info.as_bytes();
 
-                let mut out = BytesMut::with_capacity(info.len() + payload.len());
                 out.put_slice(info);
                 out.put_slice(payload);
 
