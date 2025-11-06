@@ -28,6 +28,7 @@ use rand_core::RngCore;
 use core::{
     future::Future,
     net::Ipv4Addr,
+    ops::Deref,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
@@ -202,4 +203,42 @@ pub fn is_global(address: Ipv4Addr) -> bool {
         || address.is_documentation()
         || (address >= Ipv4Addr::new(198, 18, 0, 0) && address <= Ipv4Addr::new(198, 19, 255, 255))
         || address.is_broadcast())
+}
+
+/// `no_std` read only clone of [std::borrow::Cow]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaybeOwned<'a, T> {
+    Borrowed(&'a T),
+    Owned(T),
+}
+
+impl<'a, T> MaybeOwned<'a, T> {
+    #[inline]
+    pub fn into_owned(self) -> T
+    where
+        T: Clone,
+    {
+        match self {
+            MaybeOwned::Owned(v) => v,
+            MaybeOwned::Borrowed(r) => r.clone(),
+        }
+    }
+}
+
+impl<'a, T> AsRef<T> for MaybeOwned<'a, T> {
+    #[inline]
+    fn as_ref(&self) -> &T {
+        match self {
+            MaybeOwned::Borrowed(r) => r,
+            MaybeOwned::Owned(v) => v,
+        }
+    }
+}
+
+impl<'a, T> Deref for MaybeOwned<'a, T> {
+    type Target = T;
+    #[inline]
+    fn deref(&self) -> &T {
+        self.as_ref()
+    }
 }

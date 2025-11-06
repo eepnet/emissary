@@ -23,9 +23,8 @@ use crate::{
     primitives::{DatagramFlags, Destination, Mapping, OfflineSignature},
     protocol::Protocol,
     runtime::Runtime,
+    util::MaybeOwned,
 };
-
-use std::borrow::Cow;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use hashbrown::HashMap;
@@ -213,9 +212,9 @@ impl<R: Runtime> DatagramManager<R> {
                         OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())
                             .map_err(|_| Error::InvalidData)?;
 
-                    (rest, Cow::Owned(offsig))
+                    (rest, MaybeOwned::Owned(offsig))
                 } else {
-                    (rest, Cow::Borrowed(destination.verifying_key()))
+                    (rest, MaybeOwned::Borrowed(destination.verifying_key()))
                 };
 
                 // allocate enough memory to store signed data and final output.
