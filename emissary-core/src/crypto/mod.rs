@@ -365,6 +365,13 @@ impl SigningPrivateKey {
             Self::Ed25519(key) => SigningPublicKey::Ed25519(key.verifying_key()),
         }
     }
+
+    /// Get signature length.
+    pub fn signature_len(&self) -> usize {
+        match self {
+            Self::Ed25519(_) => 64usize,
+        }
+    }
 }
 
 impl From<[u8; 32]> for SigningPrivateKey {

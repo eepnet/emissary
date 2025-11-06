@@ -17,7 +17,10 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::{base32_decode, base32_encode, base64_encode, SigningPrivateKey, StaticPrivateKey},
+    crypto::{
+        base32_decode, base32_encode, base64_encode, sha256::Sha256, SigningPrivateKey,
+        StaticPrivateKey,
+    },
     destination::{DeliveryStyle, Destination, DestinationEvent, LeaseSetStatus},
     error::QueryError,
     events::EventHandle,
@@ -52,10 +55,12 @@ use alloc::{
 use core::{
     fmt,
     future::Future,
+    hint::unreachable_unchecked,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,
 };
+use std::io::Read;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::sam::session";
@@ -751,7 +756,16 @@ impl<R: Runtime> SamSession<R> {
 
         match self.destination.query_lease_set(&destination_id) {
             LeaseSetStatus::Found => {
-                let datagram = self.datagram_manager.make_datagram(protocol, datagram);
+                let datagram = match protocol {
+                    Protocol::Anonymous => self.datagram_manager.make_anonymous(datagram),
+                    Protocol::Datagram => self.datagram_manager.make_datagram(datagram),
+                    Protocol::Datagram2 => self.datagram_manager.make_datagram2(
+                        datagram,
+                        &Sha256::new().update(destination.as_ref()).finalize(),
+                        None, // TODO datagram2: where should I get the options?
+                    ),
+                    Protocol::Streaming => unreachable!(),
+                };
 
                 if let Some(message) =
                     I2cpPayloadBuilder::<R>::new(&datagram).with_protocol(protocol).build()
@@ -864,7 +878,16 @@ impl<R: Runtime> SamSession<R> {
 
             if let Some((destination, datagrams)) = datagrams {
                 datagrams.into_iter().for_each(|(protocol, datagram)| {
-                    let datagram = self.datagram_manager.make_datagram(protocol, datagram);
+                    let datagram = match protocol {
+                        Protocol::Anonymous => self.datagram_manager.make_anonymous(datagram),
+                        Protocol::Datagram => self.datagram_manager.make_datagram(datagram),
+                        Protocol::Datagram2 => self.datagram_manager.make_datagram2(
+                            datagram,
+                            &Sha256::new().update(destination.as_ref()).finalize(),
+                            None, // TODO datagram2: where should I get the options?
+                        ),
+                        Protocol::Streaming => unreachable!(),
+                    };
 
                     if let Some(message) =
                         I2cpPayloadBuilder::<R>::new(&datagram).with_protocol(protocol).build()

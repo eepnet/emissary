@@ -82,32 +82,66 @@ impl<R: Runtime> DatagramManager<R> {
         }
     }
 
-    /// Make repliable datagram.
-    ///
-    /// Caller must ensure to call this function with correct `protocol`.
-    pub fn make_datagram(&mut self, protocol: Protocol, datagram: Vec<u8>) -> Bytes {
-        match protocol {
-            Protocol::Datagram => {
-                let signature = self.signing_key.sign(&datagram);
-
-                let mut out = BytesMut::with_capacity(
-                    self.destination.serialized_len() + signature.len() + datagram.len(),
-                );
-                out.put_slice(&self.destination);
-                out.put_slice(&signature);
-                out.put_slice(&datagram);
-
-                out.freeze()
-            }
-            Protocol::Datagram2 => self.make_datagram2(datagram, None),
-            Protocol::Anonymous => Bytes::from(datagram),
-            Protocol::Streaming => unreachable!(),
-        }
+    /// Make anonymous datagram.
+    #[inline]
+    pub fn make_anonymous(&mut self, datagram: Vec<u8>) -> Bytes {
+        Bytes::from(datagram)
     }
 
-    /// Make repliable Datagram2.
-    pub fn make_datagram2(&mut self, payload: Vec<u8>, options: Option<Mapping>) -> Bytes {
-        todo!("make datagram2")
+    /// Make repliable datagram.
+    pub fn make_datagram(&mut self, datagram: Vec<u8>) -> Bytes {
+        let signature = self.signing_key.sign(&datagram);
+
+        let mut out = BytesMut::with_capacity(
+            self.destination.serialized_len() + signature.len() + datagram.len(),
+        );
+        out.put_slice(&self.destination);
+        out.put_slice(&signature);
+        out.put_slice(&datagram);
+
+        out.freeze()
+    }
+
+    /// Make repliable datagram2.
+    pub fn make_datagram2(
+        &mut self,
+        payload: Vec<u8>,
+        destination_hash: &[u8],
+        options: Option<Mapping>,
+    ) -> Bytes {
+        // TODO datagram2: support sessions with offline_signature
+        let flags = DatagramFlags::new_v2(options, false).serialize();
+
+        let mut out = BytesMut::with_capacity(
+            self.destination.serialized_len()
+                + flags.len()
+                + payload.len()
+                + self.signing_key.signature_len(),
+        );
+
+        out.put_slice(&self.destination);
+
+        // start of signed data
+        let signed_data_start = out.len();
+
+        out.put_slice(&destination_hash);
+        //TODO datagram2: write offsig data
+        //out.put_slice(&self.offsig_expiration_date);
+        //out.put_slice(&self.transient_key);
+        //out.put_slice(&self.offline_signature);
+        out.put_slice(&flags);
+        out.put_slice(&payload);
+        // end of signed data
+
+        let signature = self.signing_key.sign(&out[signed_data_start..]);
+
+        // remove destination hash from message
+        out.truncate(signed_data_start);
+        out.put_slice(&flags);
+        out.put_slice(&payload);
+        out.put_slice(&signature);
+
+        out.freeze()
     }
 
     /// Handle inbound datagram.
@@ -190,7 +224,7 @@ impl<R: Runtime> DatagramManager<R> {
                     verifying_key => verifying_key.verify(payload, signature)?,
                 }
 
-                todo!("should I write options to the info?");
+                todo!("datagram2: should I write options to the info?");
 
                 let info = format!(
                     "{} FROM_PORT={src_port} TO_PORT={dst_port}\n",
