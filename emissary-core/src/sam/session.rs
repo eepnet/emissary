@@ -55,7 +55,6 @@ use alloc::{
 use core::{
     fmt,
     future::Future,
-    hint::unreachable_unchecked,
     pin::Pin,
     task::{Context, Poll, Waker},
     time::Duration,

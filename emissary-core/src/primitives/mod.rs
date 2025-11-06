@@ -19,9 +19,9 @@
 use core::{fmt, ops::Deref};
 
 pub use capabilities::Capabilities;
+pub use datagram_flags::DatagramFlags;
 pub use date::Date;
 pub use destination::{Destination, DestinationId};
-pub use datagram_flags::DatagramFlags;
 pub use lease_set::{Lease, LeaseSet2, LeaseSet2Header};
 pub use mapping::Mapping;
 pub use offline_signature::OfflineSignature;
@@ -34,9 +34,9 @@ pub use string::Str;
 pub use router_info::RouterInfoBuilder;
 
 mod capabilities;
+mod datagram_flags;
 mod date;
 mod destination;
-mod datagram_flags;
 mod lease_set;
 mod mapping;
 mod offline_signature;

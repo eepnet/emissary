@@ -127,7 +127,7 @@ impl<R: Runtime> DatagramManager<R> {
         // start of signed data
         let signed_data_start = out.len();
 
-        out.put_slice(&destination_hash);
+        out.put_slice(destination_hash);
         //TODO datagram2: write offsig data
         //out.put_slice(&self.offsig_expiration_date);
         //out.put_slice(&self.transient_key);
@@ -227,7 +227,7 @@ impl<R: Runtime> DatagramManager<R> {
                     BytesMut::with_capacity(signed_data.len() + self.destination_hash.len());
 
                 out.put_slice(&self.destination_hash);
-                out.put_slice(&signed_data);
+                out.put_slice(signed_data);
 
                 // verify signature
                 let (signature, payload) =
