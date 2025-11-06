@@ -181,7 +181,7 @@ impl<R: Runtime> DatagramManager<R> {
 
                 let info = format!(
                     "{} FROM_PORT={src_port} TO_PORT={dst_port}\n",
-                    base64_encode(destination.serialize())
+                    base64_encode(destination.as_ref())
                 );
 
                 let info = info.as_bytes();
@@ -246,7 +246,7 @@ impl<R: Runtime> DatagramManager<R> {
 
                 let info = format!(
                     "{} FROM_PORT={src_port} TO_PORT={dst_port}\n",
-                    base64_encode(destination.serialize())
+                    base64_encode(destination.as_ref())
                 );
 
                 let info = info.as_bytes();
