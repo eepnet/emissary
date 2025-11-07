@@ -187,7 +187,7 @@ impl Request {
         let (host, keep_original_host) = match (self.host, address_book, outproxy) {
             (HostKind::B32 { host }, _, _) => (host, false),
             (HostKind::I2p { host }, Some(address_book), _) =>
-                match address_book.resolve_b32(&host) {
+                match address_book.resolve_base32(&host) {
                     Some(host) => (format!("{host}.b32.i2p"), false),
                     None => {
                         tracing::warn!(

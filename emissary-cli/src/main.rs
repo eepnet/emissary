@@ -33,7 +33,7 @@ use crate::{
 
 use anyhow::anyhow;
 use clap::Parser;
-use emissary_core::{events::EventSubscriber, router::Router};
+use emissary_core::{events::EventSubscriber, router::Router, runtime::AddressBook};
 use emissary_util::{reseeder::Reseeder, runtime::tokio::Runtime, su3::ReseedRouterInfo};
 use futures::{channel::oneshot, StreamExt};
 use tokio::sync::mpsc::{channel, Receiver};
@@ -279,7 +279,7 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
                     config,
                     address.port(),
                     http_proxy_ready_tx,
-                    address_book_handle,
+                    address_book_handle.map(|handle| handle as Arc<dyn AddressBook>),
                 )
                 .await
                 {

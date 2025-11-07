@@ -637,7 +637,7 @@ impl<R: Runtime> Future for SamServer<R> {
                                     "resolve host",
                                 );
 
-                                match address_book.resolve_b32(&host) {
+                                match address_book.resolve_base32(&host) {
                                     Some(destination) => match base32_decode(&destination) {
                                         None => {
                                             tracing::error!(
