@@ -151,9 +151,9 @@ impl<R: Runtime> EventHandle<R> {
     ///
     /// [`AtomicUsize::fetch_add()`] is used because each transit tunnel keeps track
     /// of its own bandwidth.
-    pub(crate) fn transit_inbound_bandwidth(&self, bandwidth: usize) {
+    pub(crate) fn transit_inbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
-        self.transit_inbound_bandwidth.fetch_add(bandwidth, Ordering::Release);
+        self.transit_inbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update outbound transit tunnel bandwidth.
@@ -161,9 +161,9 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each transit tunnel keeps track
     /// of its own bandwidth.
     #[inline(always)]
-    pub(crate) fn transit_outbound_bandwidth(&self, bandwidth: usize) {
+    pub(crate) fn transit_outbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
-        self.transit_outbound_bandwidth.fetch_add(bandwidth, Ordering::Release);
+        self.transit_outbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update inbound transport bandwidth.
@@ -171,9 +171,9 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each connection keeps track of its own
     /// bandwidth.
     #[inline(always)]
-    pub(crate) fn transport_inbound_bandwidth(&self, bandwidth: usize) {
+    pub(crate) fn transport_inbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
-        self.inbound_bandwidth.fetch_add(bandwidth, Ordering::Release);
+        self.inbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update outbound transport bandwidth.
@@ -181,9 +181,9 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each connection keeps track of its own
     /// bandwidth.
     #[inline(always)]
-    pub(crate) fn transport_outbound_bandwidth(&self, bandwidth: usize) {
+    pub(crate) fn transport_outbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
-        self.outbound_bandwidth.fetch_add(bandwidth, Ordering::Release);
+        self.outbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
 
     /// Update connected router count.
