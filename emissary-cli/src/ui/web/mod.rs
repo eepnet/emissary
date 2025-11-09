@@ -198,9 +198,9 @@ impl RouterUi {
                                 transport,
                                 tunnel,
                             } => {
-                                inner.transit_bandwidth = transit.bandwidth;
+                                inner.transit_bandwidth = transit.inbound_bandwidth + transit.outbound_bandwidth;
                                 inner.num_transit_tunnels = transit.num_tunnels;
-                                inner.bandwidth = transport.bandwidth;
+                                inner.bandwidth = transport.inbound_bandwidth + transport.outbound_bandwidth;
                                 inner.num_routers = transport.num_connected_routers;
                                 inner.server_destinations.extend(server_destinations);
                                 inner.client_destinations.extend(client_destinations);

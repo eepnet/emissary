@@ -101,7 +101,7 @@ impl AddressBookManager {
         }
     }
 
-    /// Get opaque handling implementing [`AddressBook`].
+    /// Get handle to [`AddressBook`].
     pub fn handle(&self) -> Arc<AddressBookHandle> {
         Arc::new(AddressBookHandle {
             address_book_path: Arc::from(self.address_book_path.to_str().expect("to succeed")),
@@ -392,6 +392,7 @@ pub struct AddressBookHandle {
     addresses: Arc<RwLock<HashMap<String, String>>>,
 
     /// Serialized list of Base32 addresses.
+    #[allow(dead_code)]
     serialized: Arc<RwLock<String>>,
 }
 

@@ -12,16 +12,19 @@ readme.workspace = true
 
 [dependencies]
 axum = { version = "0.8.4", default-features = false, features = ["ws", "macros", "tokio", "http1"], optional = true }
+chrono = { version = "0.4.42", optional = true }
 clap = { version = "4.5.40", features = ["derive"] }
 emissary-core = { path = "../emissary-core", version = "0.2.0" }
 emissary-util = { path = "../emissary-util", version = "0.2.0", features = ["tokio"] }
 futures = "0.3.31"
 home = "=0.5.11"
 httparse = "1.10.1"
-iced = { version = "0.13.1", features = ["advanced", "tokio"], optional = true }
+iced = { version = "0.13.1", features = ["advanced", "tokio", "svg"], optional = true }
 igd-next = { version = "0.16.1", default-features = false, features = ["aio_tokio"] }
 natpmp = "0.5.0"
 netdev = { version = "0.36.0", default-features = false, features = ["gateway"] }
+plotters-iced = { version = "0.11.0", optional = true }
+plotters = { version = "0.3.7", optional = true }
 serde_json = { version = "1.0.140", optional = true }
 serde = { version = "1.0.219", features = ["derive"] }
 thiserror = "2.0.12"
@@ -51,6 +54,6 @@ fast-socks5 = { version = "0.10.0", features = ["socks4"] }
 
 [features]
 default = ["native-ui"]
-native-ui = ["iced"]
+native-ui = ["chrono", "iced", "plotters", "plotters-iced"]
 web-ui = ["axum", "serde_json", "tokio-tungstenite"]
 metrics = ["emissary-util/metrics"]
