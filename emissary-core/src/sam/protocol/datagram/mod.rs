@@ -198,7 +198,7 @@ impl<R: Runtime> DatagramManager<R> {
                 let (rest, flags) =
                     DatagramFlags::parse_frame(rest).map_err(|_| Error::InvalidData)?;
 
-                let (options, has_offsig) = match flags {
+                let (_options, has_offsig) = match flags {
                     DatagramFlags::V2 {
                         options,
                         has_offsig,
