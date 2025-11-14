@@ -25,7 +25,7 @@ use crate::{
     error::QueryError,
     events::EventHandle,
     i2cp::{I2cpPayload, I2cpPayloadBuilder},
-    primitives::{Destination as Dest, DestinationId, LeaseSet2, LeaseSet2Header},
+    primitives::{Destination as Dest, DestinationId, LeaseSet2, LeaseSet2Header, Mapping},
     protocol::Protocol,
     runtime::{AddressBook, JoinSet, Runtime},
     sam::{
@@ -132,6 +132,9 @@ pub enum SamSessionCommand<R: Runtime> {
 
         /// Session ID.
         session_id: Arc<str>,
+
+        /// Options.
+        options: Option<Mapping>,
     },
 
     /// Dummy event, never constructed.
@@ -731,7 +734,13 @@ impl<R: Runtime> SamSession<R> {
     /// Send datagram to destination.
     ///
     /// If the session wasn't configured to use streams, the datagram is dropped.
-    fn on_send_datagram(&mut self, destination: Dest, datagram: Vec<u8>, session_id: Arc<str>) {
+    fn on_send_datagram(
+        &mut self,
+        destination: Dest,
+        datagram: Vec<u8>,
+        session_id: Arc<str>,
+        options: Option<Mapping>,
+    ) {
         if !self.session_kind.supports_datagrams(&session_id) {
             tracing::warn!(
                 target: LOG_TARGET,
@@ -760,7 +769,7 @@ impl<R: Runtime> SamSession<R> {
                     Protocol::Datagram2 => self.datagram_manager.make_datagram2(
                         datagram,
                         &Sha256::new().update(destination.as_ref()).finalize(),
-                        None, // TODO datagram2: where should I get the options?
+                        options,
                     ),
                     Protocol::Streaming => unreachable!(),
                 };
@@ -1424,7 +1433,8 @@ impl<R: Runtime> Future for SamSession<R> {
                     destination,
                     datagram,
                     session_id,
-                })) => self.on_send_datagram(destination, datagram, session_id),
+                    options,
+                })) => self.on_send_datagram(destination, datagram, session_id, options),
                 Poll::Ready(Some(SamSessionCommand::Dummy)) => unreachable!(),
             }
         }

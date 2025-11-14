@@ -18,7 +18,7 @@
 
 use crate::{
     crypto::{base32_decode, base64_decode, SigningPrivateKey},
-    primitives::{Destination, DestinationId},
+    primitives::{Destination, DestinationId, Str},
     runtime::Runtime,
 };
 
@@ -460,7 +460,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                         })?;
 
                         // conversion is expected to succeed since the client is interacting with
-                        // a local router and would only crash their onw router if they provided
+                        // a local router and would only crash their own router if they provided
                         // invalid keying material
                         DestinationContext {
                             destination,
@@ -777,8 +777,7 @@ pub struct Datagram {
     pub datagram: Vec<u8>,
 
     /// Options.
-    #[allow(unused)]
-    pub options: HashMap<String, String>,
+    pub options: HashMap<Str, Str>,
 }
 
 impl Datagram {
@@ -827,9 +826,9 @@ impl Datagram {
         ))(info)
         .ok()?;
 
-        let options = options?
+        let options: HashMap<Str, Str> = options?
             .into_iter()
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .map(|(key, value)| (Str::from(key.to_owned()), Str::from(value.to_owned())))
             .collect();
 
         Some(Self {
@@ -1357,7 +1356,7 @@ mod tests {
             }
         }
 
-        // no port specifed, currently not supported
+        // no port specified, currently not supported
         {
             let command = "SESSION CREATE \
                         STYLE=DATAGRAM \
@@ -1470,7 +1469,7 @@ mod tests {
             }
         }
 
-        // no port specifed, currently not supported
+        // no port specified, currently not supported
         {
             let command = "SESSION CREATE \
                         STYLE=RAW \
@@ -1594,13 +1593,34 @@ mod tests {
             }) => {
                 assert_eq!(*session_id, *"test");
                 assert_eq!(datagram, b"hello with options");
-                assert_eq!(options.get("FROM_PORT"), Some(&String::from("1234")));
-                assert_eq!(options.get("TO_PORT"), Some(&String::from("5678")));
-                assert_eq!(options.get("PROTOCOL"), Some(&String::from("17")));
-                assert_eq!(options.get("SEND_TAGS"), Some(&String::from("2")));
-                assert_eq!(options.get("TAG_THRESHOLD"), Some(&String::from("3")));
-                assert_eq!(options.get("EXPIRES"), Some(&String::from("3600")));
-                assert_eq!(options.get("SEND_LEASESET"), Some(&String::from("true")));
+                assert_eq!(
+                    options.get::<Str>(&"FROM_PORT".into()),
+                    Some(&Str::from("1234"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"TO_PORT".into()),
+                    Some(&Str::from("5678"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"PROTOCOL".into()),
+                    Some(&Str::from("17"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"SEND_TAGS".into()),
+                    Some(&Str::from("2"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"TAG_THRESHOLD".into()),
+                    Some(&Str::from("3"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"EXPIRES".into()),
+                    Some(&Str::from("3600"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"SEND_LEASESET".into()),
+                    Some(&Str::from("true"))
+                );
             }
             _ => panic!("invalid datagram"),
         }
@@ -1633,8 +1653,14 @@ mod tests {
             }) => {
                 assert_eq!(*session_id, *"test");
                 assert_eq!(datagram, b"hello with ports");
-                assert_eq!(options.get("FROM_PORT"), Some(&String::from("1234")));
-                assert_eq!(options.get("TO_PORT"), Some(&String::from("5678")));
+                assert_eq!(
+                    options.get::<Str>(&"FROM_PORT".into()),
+                    Some(&Str::from("1234"))
+                );
+                assert_eq!(
+                    options.get::<Str>(&"TO_PORT".into()),
+                    Some(&Str::from("5678"))
+                );
             }
             _ => panic!("invalid datagram"),
         }

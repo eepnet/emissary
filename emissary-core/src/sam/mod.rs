@@ -25,7 +25,7 @@ use crate::{
     error::{ChannelError, ConnectionError, Error},
     events::EventHandle,
     netdb::NetDbHandle,
-    primitives::{DestinationId, Str},
+    primitives::{DestinationId, Mapping, Str},
     profile::ProfileStorage,
     runtime::{AddressBook, JoinSet, Runtime, TcpListener, UdpSocket as _},
     sam::{
@@ -142,7 +142,7 @@ impl<R: Runtime, T: 'static + Send + Unpin> SessionContext<R, T> {
 }
 
 impl<R: Runtime> SessionContext<R, Arc<str>> {
-    /// Send `command` to an active sesison identified by `session_id`.
+    /// Send `command` to an active session identified by `session_id`.
     fn send_command(
         &self,
         session_id: &Arc<str>,
@@ -376,6 +376,7 @@ impl<R: Runtime> Future for SamServer<R> {
                         session_id,
                         destination,
                         datagram,
+                        options,
                         ..
                     }) = Datagram::parse(&datagram)
                     else {
@@ -386,12 +387,19 @@ impl<R: Runtime> Future for SamServer<R> {
                         continue;
                     };
 
+                    let options = if options.is_empty() {
+                        None
+                    } else {
+                        Some(Mapping::from(options))
+                    };
+
                     if let Err(error) = this.active_sessions.send_command(
                         &Arc::clone(&session_id),
                         SamSessionCommand::SendDatagram {
                             destination,
                             datagram,
                             session_id: Arc::clone(&session_id),
+                            options,
                         },
                     ) {
                         tracing::warn!(

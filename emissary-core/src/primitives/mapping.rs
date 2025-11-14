@@ -159,6 +159,12 @@ impl FromIterator<(Str, Str)> for Mapping {
     }
 }
 
+impl From<HashMap<Str, Str>> for Mapping {
+    fn from(value: HashMap<Str, Str>) -> Self {
+        Mapping(value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
