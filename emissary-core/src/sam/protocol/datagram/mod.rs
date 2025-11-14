@@ -239,8 +239,6 @@ impl<R: Runtime> DatagramManager<R> {
 
                 out.clear();
 
-                todo!("datagram2: should I write options to the info?");
-
                 let info = format!(
                     "{} FROM_PORT={src_port} TO_PORT={dst_port}\n",
                     base64_encode(destination.as_ref())
