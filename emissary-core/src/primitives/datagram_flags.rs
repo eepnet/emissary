@@ -21,12 +21,7 @@ use crate::{
     primitives::{Mapping, LOG_TARGET},
 };
 use bytes::{BufMut, Bytes, BytesMut};
-use nom::{
-    bytes::complete::take,
-    error::{make_error, ErrorKind},
-    number::complete::be_u16,
-    Err, IResult,
-};
+use nom::{bytes::complete::take, number::complete::be_u16, Err, IResult};
 
 /// Serialized length of [`DatagramFlags`].
 const FLAGS_LEN: usize = 2;
@@ -147,7 +142,7 @@ impl DatagramFlags {
                         serialized_len = ?input.len(),
                         "not enough bytes for mapping",
                     );
-                    return Err(Err::Error(make_error(input, ErrorKind::Fail)));
+                    return Err(Err::Error(DatagramFlagsParseError::InvalidBitstream));
                 }
                 _ => {
                     let (rest, mapping) = Mapping::parse_frame(input).map_err(Err::convert)?;
