@@ -28,7 +28,6 @@ use rand_core::RngCore;
 use core::{
     future::Future,
     net::Ipv4Addr,
-    ops::Deref,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
