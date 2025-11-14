@@ -43,7 +43,7 @@ use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
-use alloc::{collections::VecDeque, format, string::String, vec, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, format, string::String, vec, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
@@ -227,7 +227,7 @@ struct PendingOutboundStream<R: Runtime> {
     silent: bool,
 
     /// SAMv3 client socket that was used to send `STREAM CONNECT` command.
-    socket: SamSocket<R>,
+    socket: Box<SamSocket<R>>,
 
     /// Source port.
     src_port: u16,
@@ -907,7 +907,7 @@ impl<R: Runtime> StreamManager<R> {
         &mut self,
         destination_id: DestinationId,
         mut routing_path_handle: RoutingPathHandle<R>,
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
         options: HashMap<String, String>,
     ) -> (u32, BytesMut, DeliveryStyle, u16, u16) {
         let silent = options
@@ -1282,6 +1282,8 @@ mod tests {
         net::TcpListener,
     };
 
+    use alloc::boxed::Box;
+
     struct SocketFactory {
         listener: TcpListener,
     }
@@ -1293,13 +1295,13 @@ mod tests {
             }
         }
 
-        pub async fn socket(&self) -> (SamSocket<MockRuntime>, tokio::net::TcpStream) {
+        pub async fn socket(&self) -> (Box<SamSocket<MockRuntime>>, tokio::net::TcpStream) {
             let address = self.listener.local_addr().unwrap();
             let (stream1, stream2) =
                 tokio::join!(self.listener.accept(), MockTcpStream::connect(address));
             let (stream, _) = stream1.unwrap();
 
-            (SamSocket::new(stream2.unwrap()), stream)
+            (Box::new(SamSocket::new(stream2.unwrap())), stream)
         }
     }
 
@@ -1310,7 +1312,7 @@ mod tests {
         let (stream1, stream2) = tokio::join!(listener.accept(), MockTcpStream::connect(address));
 
         let (_stream, _) = stream1.unwrap();
-        let socket = SamSocket::<MockRuntime>::new(stream2.unwrap());
+        let socket = Box::new(SamSocket::<MockRuntime>::new(stream2.unwrap()));
 
         let signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let destination = Destination::new::<MockRuntime>(signing_key.public());
@@ -1461,7 +1463,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (stream1, stream2) = tokio::join!(listener.accept(), MockTcpStream::connect(address));
         let (_stream, _) = stream1.unwrap();
-        let socket = SamSocket::<MockRuntime>::new(stream2.unwrap());
+        let socket = Box::new(SamSocket::<MockRuntime>::new(stream2.unwrap()));
 
         assert!(manager
             .register_listener(ListenerKind::Ephemeral {
@@ -1539,7 +1541,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (stream1, stream2) = tokio::join!(listener.accept(), MockTcpStream::connect(address));
         let (_stream, _) = stream1.unwrap();
-        let socket = SamSocket::<MockRuntime>::new(stream2.unwrap());
+        let socket = Box::new(SamSocket::<MockRuntime>::new(stream2.unwrap()));
 
         assert!(manager
             .register_listener(ListenerKind::Ephemeral {
@@ -1613,7 +1615,7 @@ mod tests {
         let port = address.port();
         let (stream1, stream2) = tokio::join!(listener.accept(), MockTcpStream::connect(address));
         let (stream, _) = stream1.unwrap();
-        let socket = SamSocket::<MockRuntime>::new(stream2.unwrap());
+        let socket = Box::new(SamSocket::<MockRuntime>::new(stream2.unwrap()));
 
         assert!(manager
             .register_listener(ListenerKind::Persistent {
@@ -1778,7 +1780,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (stream1, stream2) = tokio::join!(listener.accept(), MockTcpStream::connect(address));
         let (mut stream, _) = stream1.unwrap();
-        let socket = SamSocket::<MockRuntime>::new(stream2.unwrap());
+        let socket = Box::new(SamSocket::<MockRuntime>::new(stream2.unwrap()));
 
         let outbound = TunnelId::random();
         let inbound = Lease::random();

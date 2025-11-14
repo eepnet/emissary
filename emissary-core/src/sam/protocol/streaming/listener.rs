@@ -60,7 +60,7 @@ pub enum ListenerKind<R: Runtime> {
         silent: bool,
 
         /// SAMv3 socket used to communicate with the client.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
     },
 
     /// Listener used to accept all inbound virtual stream (`STREAM FORWARD`).
@@ -77,7 +77,7 @@ pub enum ListenerKind<R: Runtime> {
         silent: bool,
 
         /// SAMv3 socket used the client used to send the `STREAM FORWARD` command.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
     },
 }
 
@@ -194,7 +194,7 @@ enum ListenerState<R: Runtime> {
         /// Ephemeral sockest and their silence configuration.
         ///
         /// Each ephemeral socket is able to accept one stream.
-        sockets: VecDeque<(SamSocket<R>, bool, PendingRoutingPathHandle)>,
+        sockets: VecDeque<(Box<SamSocket<R>>, bool, PendingRoutingPathHandle)>,
     },
 
     /// Listener is configured to be persistent.
@@ -210,7 +210,7 @@ enum ListenerState<R: Runtime> {
 
         /// Socket that was used to send the `STREAM FORWARD` command.
         #[allow(unused)]
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
     },
 
     /// Listener state has been poisoned.
@@ -242,7 +242,7 @@ pub struct StreamListener<R: Runtime> {
     destination_id: DestinationId,
 
     /// Pending sockets.
-    pending_sockets: R::JoinSet<crate::Result<(SamSocket<R>, PendingRoutingPathHandle)>>,
+    pending_sockets: R::JoinSet<crate::Result<(Box<SamSocket<R>>, PendingRoutingPathHandle)>>,
 
     /// Listener state.
     state: ListenerState<R>,
@@ -647,7 +647,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -656,7 +656,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 port: 1337,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
@@ -675,7 +675,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 port: 1337,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
@@ -685,7 +685,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -703,7 +703,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -719,7 +719,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -744,7 +744,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -758,7 +758,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -781,7 +781,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 port: 1337,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
@@ -791,7 +791,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(NoopTcpStream::new()),
+                socket: Box::new(SamSocket::new(NoopTcpStream::new())),
                 port: 1338,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
@@ -814,7 +814,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(stream2.unwrap()),
+                socket: Box::new(SamSocket::new(stream2.unwrap())),
                 port: 1337,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
@@ -862,7 +862,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph1.unwrap()),
+                socket: Box::new(SamSocket::new(eph1.unwrap())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -879,7 +879,7 @@ mod tests {
         // register another ephemeral listener but this time it's silent
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph2.unwrap()),
+                socket: Box::new(SamSocket::new(eph2.unwrap())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -918,7 +918,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph1.unwrap()),
+                socket: Box::new(SamSocket::new(eph1.unwrap())),
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -935,7 +935,7 @@ mod tests {
         // register another ephemeral listener but this time it's silent
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph2.unwrap()),
+                socket: Box::new(SamSocket::new(eph2.unwrap())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -980,7 +980,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph1.unwrap()),
+                socket: Box::new(SamSocket::new(eph1.unwrap())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -994,7 +994,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Ephemeral {
-                socket: SamSocket::new(eph2.unwrap()),
+                socket: Box::new(SamSocket::new(eph2.unwrap())),
                 silent: true,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),
             }),
@@ -1033,7 +1033,7 @@ mod tests {
 
         assert_eq!(
             listener.register_listener(ListenerKind::Persistent {
-                socket: SamSocket::new(stream2.unwrap()),
+                socket: Box::new(SamSocket::new(stream2.unwrap())),
                 port: 1337,
                 silent: false,
                 pending_routing_path_handle: PendingRoutingPathHandle::create(),

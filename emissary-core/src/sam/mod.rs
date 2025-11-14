@@ -396,7 +396,7 @@ impl<R: Runtime> Future for SamServer<R> {
                     if let Err(error) = this.active_sessions.send_command(
                         &Arc::clone(&session_id),
                         SamSessionCommand::SendDatagram {
-                            destination,
+                            destination: Box::new(destination),
                             datagram,
                             session_id: Arc::clone(&session_id),
                             options,

@@ -59,7 +59,7 @@ pub enum ConnectionKind<R: Runtime> {
         session_id: Arc<str>,
 
         /// SAMv3 socket associated with the session.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
 
         /// Destination context.
         destination: Box<DestinationContext>,
@@ -80,7 +80,7 @@ pub enum ConnectionKind<R: Runtime> {
         session_id: Arc<str>,
 
         /// SAMv3 socket associated with the outbound stream.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
 
         /// Negotiated version.
         version: SamVersion,
@@ -98,7 +98,7 @@ pub enum ConnectionKind<R: Runtime> {
         session_id: Arc<str>,
 
         /// SAMv3 socket associated with the inbound stream.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
 
         /// Negotiated version.
         version: SamVersion,
@@ -113,7 +113,7 @@ pub enum ConnectionKind<R: Runtime> {
         session_id: Arc<str>,
 
         /// SAMv3 socket associated with forwarding.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
 
         /// Negotiated version.
         version: SamVersion,
@@ -190,13 +190,13 @@ enum PendingConnectionState<R: Runtime> {
     /// Awaiting handshake from client.
     AwaitingHandshake {
         /// Socket used to read SAMv3 commands from client.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
     },
 
     /// Session has been handshaked.
     Handshaked {
         /// Socket used to read SAMv3 commands from client.
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
 
         /// Negotiated SAMv3 version.
         version: SamVersion,
@@ -228,7 +228,7 @@ impl<R: Runtime> PendingSamConnection<R> {
     pub fn new(stream: R::TcpStream) -> Self {
         Self {
             state: PendingConnectionState::AwaitingHandshake {
-                socket: SamSocket::new(stream),
+                socket: Box::new(SamSocket::new(stream)),
             },
             keep_alive_timer: R::timer(KEEP_ALIVE_TIMEOUT),
         }

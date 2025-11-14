@@ -36,7 +36,7 @@ use futures::{future::BoxFuture, StreamExt};
 use hashbrown::{HashMap, HashSet};
 use thingbuf::mpsc::{Receiver, Sender};
 
-use alloc::{string::String, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use core::time::Duration;
 
 /// Logging target for the file.
@@ -84,7 +84,7 @@ pub struct SamSessionContext<R: Runtime> {
     pub session_kind: SessionKind,
 
     /// SAMv3 socket.
-    pub socket: SamSocket<R>,
+    pub socket: Box<SamSocket<R>>,
 
     /// TX channel for sending sub-session commands.
     pub sub_session_tx: Option<Sender<SubSessionCommand>>,
@@ -136,7 +136,7 @@ pub struct PendingSamSession<R: Runtime> {
     session_kind: SessionKind,
 
     /// SAMv3 socket associated with the session.
-    socket: SamSocket<R>,
+    socket: Box<SamSocket<R>>,
 
     /// TX channel for sending sub-session commands.
     sub_session_tx: Option<Sender<SubSessionCommand>>,
@@ -150,7 +150,7 @@ pub struct PendingSamSession<R: Runtime> {
 impl<R: Runtime> PendingSamSession<R> {
     /// Create new [`PendingSamSession`].
     pub fn new(
-        socket: SamSocket<R>,
+        socket: Box<SamSocket<R>>,
         destination: DestinationContext,
         session_id: Arc<str>,
         session_kind: SessionKind,
