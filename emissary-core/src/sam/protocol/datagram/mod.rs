@@ -23,7 +23,6 @@ use crate::{
     primitives::{DatagramFlags, Destination, Mapping, OfflineSignature},
     protocol::Protocol,
     runtime::Runtime,
-    util::MaybeOwned,
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -31,7 +30,7 @@ use hashbrown::HashMap;
 use nom::bytes::complete::take;
 use thingbuf::mpsc::Sender;
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{borrow::Cow, format, string::String, vec::Vec};
 use core::marker::PhantomData;
 
 /// Logging target for the file.
@@ -212,9 +211,9 @@ impl<R: Runtime> DatagramManager<R> {
                         OfflineSignature::parse_frame::<R>(rest, destination.verifying_key())
                             .map_err(|_| Error::InvalidData)?;
 
-                    (rest, MaybeOwned::Owned(offsig))
+                    (rest, Cow::Owned(offsig))
                 } else {
-                    (rest, MaybeOwned::Borrowed(destination.verifying_key()))
+                    (rest, Cow::Borrowed(destination.verifying_key()))
                 };
 
                 // allocate enough memory to store signed data and final output.
