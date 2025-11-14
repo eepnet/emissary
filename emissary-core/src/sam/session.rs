@@ -189,7 +189,7 @@ pub struct PendingSession<R: Runtime> {
     /// Pending datagrams.
     ///
     /// Only set if there are pending datagrams for the remote destination.
-    datagrams: Option<(Dest, Vec<(Protocol, Vec<u8>)>)>,
+    datagrams: Option<(Dest, Vec<(Protocol, Vec<u8>, Option<Mapping>)>)>,
 }
 
 impl<R: Runtime> PendingSession<R> {
@@ -802,16 +802,16 @@ impl<R: Runtime> SamSession<R> {
                 match self.pending_outbound.get_mut(&destination_id) {
                     Some(PendingSession { datagrams, .. }) => match datagrams {
                         None => {
-                            *datagrams = Some((destination, vec![(protocol, datagram)]));
+                            *datagrams = Some((destination, vec![(protocol, datagram, options)]));
                         }
-                        Some((_, datagrams)) => datagrams.push((protocol, datagram)),
+                        Some((_, datagrams)) => datagrams.push((protocol, datagram, options)),
                     },
                     None => {
                         self.pending_outbound.insert(
                             destination_id,
                             PendingSession {
                                 streams: Vec::new(),
-                                datagrams: Some((destination, vec![(protocol, datagram)])),
+                                datagrams: Some((destination, vec![(protocol, datagram, options)])),
                             },
                         );
                     }
@@ -828,16 +828,16 @@ impl<R: Runtime> SamSession<R> {
                 match self.pending_outbound.get_mut(&destination_id) {
                     Some(PendingSession { datagrams, .. }) => match datagrams {
                         None => {
-                            *datagrams = Some((destination, vec![(protocol, datagram)]));
+                            *datagrams = Some((destination, vec![(protocol, datagram, options)]));
                         }
-                        Some((_, datagrams)) => datagrams.push((protocol, datagram)),
+                        Some((_, datagrams)) => datagrams.push((protocol, datagram, options)),
                     },
                     None => {
                         self.pending_outbound.insert(
                             destination_id,
                             PendingSession {
                                 streams: Vec::new(),
-                                datagrams: Some((destination, vec![(protocol, datagram)])),
+                                datagrams: Some((destination, vec![(protocol, datagram, options)])),
                             },
                         );
                     }
@@ -884,14 +884,14 @@ impl<R: Runtime> SamSession<R> {
             });
 
             if let Some((destination, datagrams)) = datagrams {
-                datagrams.into_iter().for_each(|(protocol, datagram)| {
+                datagrams.into_iter().for_each(|(protocol, datagram, options)| {
                     let datagram = match protocol {
                         Protocol::Anonymous => self.datagram_manager.make_anonymous(datagram),
                         Protocol::Datagram => self.datagram_manager.make_datagram(datagram),
                         Protocol::Datagram2 => self.datagram_manager.make_datagram2(
                             datagram,
                             &Sha256::new().update(destination.as_ref()).finalize(),
-                            None, // TODO datagram2: where should I get the options?
+                            options,
                         ),
                         Protocol::Streaming => unreachable!(),
                     };
