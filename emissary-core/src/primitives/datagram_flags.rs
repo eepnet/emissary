@@ -38,13 +38,19 @@ const V2_OPTIONS_MASK: u8 = 0x10;
 /// Offline mask for [`DatagramFlags::V2`].
 const V2_OFFLINE_MASK: u8 = 0x20;
 
+/// Datagram flags.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum DatagramFlags {
+    /// Used in Datagram2.
+    ///
+    /// https://geti2p.net/spec/datagrams#id9
     V2 {
         options: Option<Mapping>,
         has_offsig: bool,
     },
-
+    /// Used in Datagram3.
+    ///
+    /// https://geti2p.net/spec/datagrams#id14
     V3, // Stub
 }
 
