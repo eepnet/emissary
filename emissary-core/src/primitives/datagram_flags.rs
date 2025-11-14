@@ -20,6 +20,7 @@ use crate::{
     error::parser::DatagramFlagsParseError,
     primitives::{Mapping, LOG_TARGET},
 };
+
 use bytes::{BufMut, Bytes, BytesMut};
 use nom::{bytes::complete::take, number::complete::be_u16, Err, IResult};
 
