@@ -111,8 +111,11 @@ pub struct Ntcp2Session<R: Runtime> {
     /// Event handle.
     event_handle: EventHandle<R>,
 
-    /// Total bandwidth.
-    bandwidth: usize,
+    /// Total inbound bandwidth.
+    inbound_bandwidth: usize,
+
+    /// Total outbound bandwidth.
+    outbound_bandwidth: usize,
 
     /// Read buffer.
     read_buffer: Vec<u8>,
@@ -172,7 +175,8 @@ impl<R: Runtime> Ntcp2Session<R> {
             cmd_tx,
             direction,
             event_handle,
-            bandwidth: 0usize,
+            inbound_bandwidth: 0usize,
+            outbound_bandwidth: 0usize,
             read_buffer: vec![0u8; 0xffff],
             read_state: ReadState::ReadSize { offset: 0usize },
             recv_cipher: ChaChaPoly::new(&recv_key),
@@ -284,7 +288,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 };
                                 continue;
                             }
-                            this.bandwidth += this.read_buffer[..size].len();
+                            this.inbound_bandwidth += this.read_buffer[..size].len();
 
                             let data_block =
                                 match this.recv_cipher.decrypt(this.read_buffer[..size].to_vec()) {
@@ -418,7 +422,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                     Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
                     Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
                     Poll::Ready(Ok(nwritten)) => {
-                        this.bandwidth += nwritten;
+                        this.outbound_bandwidth += nwritten;
 
                         match nwritten + offset == size.len() {
                             true => {
@@ -446,7 +450,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                         Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
                         Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
                         Poll::Ready(Ok(nwritten)) => {
-                            this.bandwidth += nwritten;
+                            this.outbound_bandwidth += nwritten;
 
                             match nwritten + offset == message.len() {
                                 true => {
@@ -474,8 +478,10 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
         }
 
         if this.event_handle.poll_unpin(cx).is_ready() {
-            self.event_handle.transport_bandwidth(self.bandwidth);
-            self.bandwidth = 0;
+            self.event_handle.transport_inbound_bandwidth(self.inbound_bandwidth);
+            self.event_handle.transport_outbound_bandwidth(self.outbound_bandwidth);
+            self.inbound_bandwidth = 0;
+            self.outbound_bandwidth = 0;
         }
 
         Poll::Pending

@@ -202,10 +202,10 @@ pub trait Runtime: Clone + Unpin + Send + 'static {
 
 pub trait AddressBook: Unpin + Send + Sync + 'static {
     /// Attempt to resolve `host` into a base64-encoded `Destination`.
-    fn resolve_b64(&self, host: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>;
+    fn resolve_base64(&self, host: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>>;
 
     /// Attemp to resolve `host` into a base32-encoded destination hash.
-    fn resolve_b32(&self, host: &str) -> Option<String>;
+    fn resolve_base32(&self, host: &str) -> Option<String>;
 }
 
 pub trait Storage: Unpin + Send + Sync + 'static {

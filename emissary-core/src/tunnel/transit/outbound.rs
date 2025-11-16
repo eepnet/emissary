@@ -63,8 +63,11 @@ pub struct OutboundEndpoint<R: Runtime> {
     /// Fragment handler.
     fragment: FragmentHandler<R>,
 
-    /// Used bandwidth.
-    bandwidth: usize,
+    /// Used inbound bandwidth.
+    inbound_bandwidth: usize,
+
+    /// Used outbound bandwidth.
+    outbound_bandwidth: usize,
 
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
@@ -313,7 +316,8 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             fragment: FragmentHandler::new(),
-            bandwidth: 0usize,
+            inbound_bandwidth: 0usize,
+            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
             routing_table,
@@ -338,7 +342,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                     return Poll::Ready(self.tunnel_id);
                 }
                 Some(message) => {
-                    self.bandwidth += message.serialized_len_short();
+                    self.inbound_bandwidth += message.serialized_len_short();
 
                     let MessageType::TunnelData = message.message_type else {
                         tracing::warn!(
@@ -363,7 +367,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
 
                     match self.handle_tunnel_data(&message) {
                         Ok(messages) => messages.into_iter().for_each(|(router, message)| {
-                            self.bandwidth += message.len();
+                            self.outbound_bandwidth += message.len();
 
                             if let Err(error) = self.routing_table.send_message(router, message) {
                                 tracing::error!(
@@ -386,8 +390,10 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
         }
 
         if self.event_handle.poll_unpin(cx).is_ready() {
-            self.event_handle.transit_tunnel_bandwidth(self.bandwidth);
-            self.bandwidth = 0;
+            self.event_handle.transit_inbound_bandwidth(self.inbound_bandwidth);
+            self.event_handle.transit_outbound_bandwidth(self.outbound_bandwidth);
+            self.inbound_bandwidth = 0;
+            self.outbound_bandwidth = 0;
         }
 
         if self.expiration_timer.poll_unpin(cx).is_ready() {

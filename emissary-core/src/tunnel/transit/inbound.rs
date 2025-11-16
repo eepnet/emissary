@@ -63,8 +63,11 @@ pub struct InboundGateway<R: Runtime> {
     /// Tunnel expiration timer.
     expiration_timer: R::Timer,
 
-    /// Used bandwidth.
-    bandwidth: usize,
+    /// Used inbound bandwidth.
+    inbound_bandwidth: usize,
+
+    /// Used outbound bandwidth.
+    outbound_bandwidth: usize,
 
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
@@ -184,7 +187,8 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
         InboundGateway {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
-            bandwidth: 0usize,
+            inbound_bandwidth: 0usize,
+            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
             next_router,
@@ -212,7 +216,7 @@ impl<R: Runtime> Future for InboundGateway<R> {
                     return Poll::Ready(self.tunnel_id);
                 }
                 Some(message) => {
-                    self.bandwidth += message.serialized_len_short();
+                    self.inbound_bandwidth += message.serialized_len_short();
 
                     let MessageType::TunnelGateway = message.message_type else {
                         tracing::warn!(
@@ -249,28 +253,32 @@ impl<R: Runtime> Future for InboundGateway<R> {
                         }
                     };
 
-                    self.bandwidth += messages.into_iter().fold(0usize, |mut acc, message| {
-                        acc += message.len();
+                    self.outbound_bandwidth +=
+                        messages.into_iter().fold(0usize, |mut acc, message| {
+                            acc += message.len();
 
-                        if let Err(error) = self.routing_table.send_message(router.clone(), message)
-                        {
-                            tracing::error!(
-                                target: LOG_TARGET,
-                                tunnel_id = %self.tunnel_id,
-                                ?error,
-                                "failed to send message",
-                            )
-                        }
+                            if let Err(error) =
+                                self.routing_table.send_message(router.clone(), message)
+                            {
+                                tracing::error!(
+                                    target: LOG_TARGET,
+                                    tunnel_id = %self.tunnel_id,
+                                    ?error,
+                                    "failed to send message",
+                                )
+                            }
 
-                        acc
-                    });
+                            acc
+                        });
                 }
             }
         }
 
         if self.event_handle.poll_unpin(cx).is_ready() {
-            self.event_handle.transit_tunnel_bandwidth(self.bandwidth);
-            self.bandwidth = 0;
+            self.event_handle.transit_inbound_bandwidth(self.inbound_bandwidth);
+            self.event_handle.transit_outbound_bandwidth(self.outbound_bandwidth);
+            self.inbound_bandwidth = 0;
+            self.outbound_bandwidth = 0;
         }
 
         if self.expiration_timer.poll_unpin(cx).is_ready() {

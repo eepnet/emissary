@@ -87,67 +87,67 @@ impl From<emissary_core::Profile> for Profile {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ExploratoryConfig {
-    inbound_len: Option<usize>,
-    inbound_count: Option<usize>,
-    outbound_len: Option<usize>,
-    outbound_count: Option<usize>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExploratoryConfig {
+    pub inbound_len: Option<usize>,
+    pub inbound_count: Option<usize>,
+    pub outbound_len: Option<usize>,
+    pub outbound_count: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Ntcp2Config {
-    port: u16,
-    host: Option<Ipv4Addr>,
-    publish: Option<bool>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ntcp2Config {
+    pub port: u16,
+    pub host: Option<Ipv4Addr>,
+    pub publish: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Ssu2Config {
-    port: u16,
-    host: Option<Ipv4Addr>,
-    publish: Option<bool>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ssu2Config {
+    pub port: u16,
+    pub host: Option<Ipv4Addr>,
+    pub publish: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct I2cpConfig {
-    port: u16,
-    host: Option<String>,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct I2cpConfig {
+    pub port: u16,
+    pub host: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamConfig {
-    tcp_port: u16,
-    udp_port: u16,
-    host: Option<String>,
+    pub tcp_port: u16,
+    pub udp_port: u16,
+    pub host: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReseedConfig {
     pub hosts: Option<Vec<String>>,
     pub reseed_threshold: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpProxyConfig {
     pub port: u16,
     pub host: String,
     pub outproxy: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SocksProxyConfig {
     pub port: u16,
     pub host: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddressBookConfig {
     pub default: Option<String>,
     pub subscriptions: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientTunnelConfig {
     pub name: String,
     pub address: Option<String>,
@@ -156,24 +156,24 @@ pub struct ClientTunnelConfig {
     pub destination_port: Option<u16>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerTunnelConfig {
     pub name: String,
     pub port: u16,
     pub destination_path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransitConfig {
     pub max_tunnels: Option<usize>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct MetricsConfig {
     port: u16,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct PortForwardingConfig {
     pub nat_pmp: bool,
     pub upnp: bool,
@@ -196,39 +196,39 @@ pub struct RouterUiConfig {
     pub port: Option<u16>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct EmissaryConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmissaryConfig {
     #[serde(rename = "address-book")]
-    address_book: Option<AddressBookConfig>,
+    pub address_book: Option<AddressBookConfig>,
     #[serde(default)]
-    allow_local: bool,
-    caps: Option<String>,
-    exploratory: Option<ExploratoryConfig>,
+    pub allow_local: bool,
+    pub caps: Option<String>,
+    pub exploratory: Option<ExploratoryConfig>,
     #[serde(default)]
-    floodfill: bool,
+    pub floodfill: bool,
     #[serde(rename = "http-proxy")]
-    http_proxy: Option<HttpProxyConfig>,
+    pub http_proxy: Option<HttpProxyConfig>,
     #[serde(rename = "socks-proxy")]
-    socks_proxy: Option<SocksProxyConfig>,
-    i2cp: Option<I2cpConfig>,
+    pub socks_proxy: Option<SocksProxyConfig>,
+    pub i2cp: Option<I2cpConfig>,
     #[serde(default)]
-    insecure_tunnels: bool,
-    log: Option<String>,
-    metrics: Option<MetricsConfig>,
-    net_id: Option<u8>,
-    ntcp2: Option<Ntcp2Config>,
+    pub insecure_tunnels: bool,
+    pub log: Option<String>,
+    pub metrics: Option<MetricsConfig>,
+    pub net_id: Option<u8>,
+    pub ntcp2: Option<Ntcp2Config>,
     #[serde(rename = "port-forwarding")]
-    port_forwarding: Option<PortForwardingConfig>,
-    reseed: Option<ReseedConfig>,
-    sam: Option<SamConfig>,
-    ssu2: Option<Ssu2Config>,
-    transit: Option<TransitConfig>,
+    pub port_forwarding: Option<PortForwardingConfig>,
+    pub reseed: Option<ReseedConfig>,
+    pub sam: Option<SamConfig>,
+    pub ssu2: Option<Ssu2Config>,
+    pub transit: Option<TransitConfig>,
     #[serde(rename = "client-tunnels")]
-    client_tunnels: Option<Vec<ClientTunnelConfig>>,
+    pub client_tunnels: Option<Vec<ClientTunnelConfig>>,
     #[serde(rename = "server-tunnels")]
-    server_tunnels: Option<Vec<ServerTunnelConfig>>,
+    pub server_tunnels: Option<Vec<ServerTunnelConfig>>,
     #[serde(rename = "router-ui")]
-    router_ui: Option<RouterUiConfig>,
+    pub router_ui: Option<RouterUiConfig>,
 }
 
 impl Default for EmissaryConfig {
@@ -382,6 +382,11 @@ pub struct Config {
 
     /// Transit tunnel config.
     pub transit: Option<emissary_core::TransitConfig>,
+
+    /// Config which is stored on disk.
+    ///
+    /// This is passed onto the UI.
+    pub config: Option<EmissaryConfig>,
 }
 
 impl From<Config> for emissary_core::Config {
@@ -771,6 +776,7 @@ impl Config {
             transit: config.transit.map(|config| emissary_core::TransitConfig {
                 max_tunnels: config.max_tunnels,
             }),
+            config: Some(EmissaryConfig::default()),
         })
     }
 
@@ -797,6 +803,7 @@ impl Config {
                 config
             }
         };
+        let config_copy = config.clone();
 
         if let Some(tunnels) = &config.client_tunnels {
             // ensure each client tunnel has a unique name
@@ -917,6 +924,7 @@ impl Config {
             transit: config.transit.map(|config| emissary_core::TransitConfig {
                 max_tunnels: config.max_tunnels,
             }),
+            config: Some(config_copy),
         })
     }
 

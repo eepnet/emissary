@@ -20,9 +20,9 @@
 #![allow(clippy::too_many_arguments)]
 
 use crate::{
-    address_book::AddressBookManager,
+    address_book::{AddressBookHandle, AddressBookManager},
     cli::Arguments,
-    config::{Config, ReseedConfig, RouterUiConfig},
+    config::{Config, EmissaryConfig, ReseedConfig, RouterUiConfig},
     error::Error,
     port_mapper::PortMapper,
     proxy::{http::HttpProxy, socks::SocksProxy},
@@ -33,12 +33,12 @@ use crate::{
 
 use anyhow::anyhow;
 use clap::Parser;
-use emissary_core::{events::EventSubscriber, router::Router};
+use emissary_core::{events::EventSubscriber, router::Router, runtime::AddressBook};
 use emissary_util::{reseeder::Reseeder, runtime::tokio::Runtime, su3::ReseedRouterInfo};
 use futures::{channel::oneshot, StreamExt};
 use tokio::sync::mpsc::{channel, Receiver};
 
-use std::{fs::File, io::Write, mem, sync::Arc};
+use std::{fs::File, io::Write, mem, path::PathBuf, sync::Arc};
 
 mod address_book;
 mod cli;
@@ -66,11 +66,23 @@ struct RouterContext {
     /// Router.
     router: Router<Runtime>,
 
+    /// Base path.
+    #[allow(unused)]
+    base_path: PathBuf,
+
     /// Event subscriber.
     ///
     /// Passed onto a router UI if it has been enabled.
     #[allow(unused)]
     events: EventSubscriber,
+
+    /// Router configuration.
+    #[allow(unused)]
+    config: EmissaryConfig,
+
+    /// Address book handle, if address book was enabled.
+    #[allow(unused)]
+    address_book_handle: Option<Arc<AddressBookHandle>>,
 
     /// Port mapper for NAT-PMP and UPnP.
     port_mapper: PortMapper,
@@ -218,6 +230,8 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
     let client_tunnels = mem::take(&mut config.client_tunnels);
     let server_tunnels = mem::take(&mut config.server_tunnels);
     let router_ui_config = config.router_ui.clone();
+    let router_config = config.config.take().expect("to exist");
+    let base_path = config.base_path.clone();
 
     let (router, events, local_router_info, address_book_manager) =
         match config.address_book.take() {
@@ -248,9 +262,9 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
     File::create(path.join("router.info"))?.write_all(&local_router_info)?;
 
     // if sam was enabled, start all enabled proxies, client tunnels and the address book
-    if let Some(address) = router.protocol_address_info().sam_tcp {
+    let address_book_handle = if let Some(address) = router.protocol_address_info().sam_tcp {
         // start http proxy if it was enabled
-        if let Some(config) = http {
+        let address_book_handle = if let Some(config) = http {
             // start event loop of address book manager if address book was enabled
             //
             // address book depends on the http proxy as it downloads hosts.txt from inside i2p
@@ -274,12 +288,14 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
             };
 
             // start event loop of http proxy
+            let handle = address_book_handle.clone();
+
             tokio::spawn(async move {
                 match HttpProxy::new(
                     config,
                     address.port(),
                     http_proxy_ready_tx,
-                    address_book_handle,
+                    handle.map(|handle| handle as Arc<dyn AddressBook>),
                 )
                 .await
                 {
@@ -298,7 +314,11 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
                     ),
                 }
             });
-        }
+
+            address_book_handle
+        } else {
+            None
+        };
 
         // start socks proxy if it was enabled
         if let Some(config) = socks {
@@ -329,7 +349,11 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
                 .await
                 .run(),
         );
-    }
+
+        address_book_handle
+    } else {
+        None
+    };
 
     // create port mapper from config and transport protocol info
     //
@@ -341,9 +365,12 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
     );
 
     Ok(RouterContext {
-        router,
+        address_book_handle,
+        base_path,
+        config: router_config,
         events,
         port_mapper,
+        router,
         router_ui_config,
     })
 }
@@ -443,6 +470,9 @@ fn main() -> anyhow::Result<()> {
         port_mapper,
         events,
         router_ui_config,
+        config,
+        base_path,
+        address_book_handle,
     } = runtime.block_on(setup_router(arguments))?;
 
     match router_ui_config {
@@ -451,17 +481,13 @@ fn main() -> anyhow::Result<()> {
 
             Ok(())
         }
-        Some(RouterUiConfig {
-            theme,
-            refresh_interval,
-            ..
-        }) => {
+        Some(RouterUiConfig { .. }) => {
             std::thread::spawn(move || {
                 runtime.block_on(router_event_loop(router, port_mapper, shutdown_rx));
                 std::process::exit(0);
             });
 
-            ui::native::RouterUi::start(events, theme, refresh_interval, shutdown_tx)
+            ui::native::RouterUi::start(events, config, base_path, address_book_handle, shutdown_tx)
         }
     }
 }

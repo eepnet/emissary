@@ -1670,12 +1670,15 @@ async fn host_lookup(kind: TransportKind) {
     }
 
     impl AddressBook for AddressBookImpl {
-        fn resolve_b64(&self, _: String) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
+        fn resolve_base64(
+            &self,
+            _: String,
+        ) -> Pin<Box<dyn Future<Output = Option<String>> + Send>> {
             let dest = self.dest.clone();
             Box::pin(async move { Some(dest) })
         }
 
-        fn resolve_b32(&self, _: &str) -> Option<String> {
+        fn resolve_base32(&self, _: &str) -> Option<String> {
             let dest = emissary_core::crypto::base64_decode(self.dest.clone()).unwrap();
             let dest = emissary_core::primitives::Destination::parse(dest).unwrap();
 
