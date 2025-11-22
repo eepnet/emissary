@@ -29,6 +29,7 @@
 #![allow(clippy::option_map_unit_fn)]
 #![allow(clippy::manual_div_ceil)]
 #![allow(clippy::should_implement_trait)]
+#![allow(deprecated)]
 
 extern crate alloc;
 
