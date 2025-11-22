@@ -18,7 +18,11 @@
 
 use clap::{ArgGroup, Subcommand};
 
-pub mod base64;
+mod base64;
+mod devnet;
+
+/// Logging target for the file.
+const LOG_TARGET: &str = "emissary::tools";
 
 /// Router commands.
 ///
@@ -74,4 +78,62 @@ pub enum RouterCommand {
         #[arg(short = 'o', long, value_name = "OUTPUT")]
         output: Option<String>,
     },
+
+    /// Spawn an isolated, local I2P network.
+    Devnet {
+        /// How many floodfills the network has.
+        #[arg(short = 'f', long, value_name = "NUM_FLOODFILLS", default_value_t = 3)]
+        num_floodfills: usize,
+
+        /// How many regular routers the network has.
+        #[arg(short = 'r', long, value_name = "NUM_ROUTERS", default_value_t = 3)]
+        num_routers: usize,
+
+        /// Path where the routerInfo files are stored.
+        ///
+        /// If not specified, a random directory is created.
+        #[arg(short = 'p', long, value_name = "PATH")]
+        path: Option<String>,
+    },
+}
+
+impl RouterCommand {
+    /// Execute router command and exit.
+    pub async fn execute(self) -> ! {
+        match self {
+            RouterCommand::Base64Encode {
+                string,
+                file,
+                output,
+            } =>
+                if let Err(error) = base64::encode(string, file, output) {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "failed to base64-encode input",
+                    );
+                    std::process::exit(1);
+                },
+            RouterCommand::Base64Decode {
+                string,
+                file,
+                output,
+            } =>
+                if let Err(error) = base64::decode(string, file, output) {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "failed to base64-decode input",
+                    );
+                    std::process::exit(1);
+                },
+            RouterCommand::Devnet {
+                num_floodfills,
+                num_routers,
+                path,
+            } => devnet::spawn_network(num_floodfills, num_routers, path).await,
+        }
+
+        std::process::exit(0);
+    }
 }

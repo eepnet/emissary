@@ -27,7 +27,6 @@ use crate::{
     port_mapper::PortMapper,
     proxy::{http::HttpProxy, socks::SocksProxy},
     storage::RouterStorage,
-    tools::RouterCommand,
     tunnel::{client::ClientTunnelManager, server::ServerTunnelManager},
 };
 
@@ -96,43 +95,13 @@ struct RouterContext {
 /// caller to setup the router.
 ///
 /// If subcommand has been specified, execute the command and exit.
-fn parse_arguments() -> Arguments {
+async fn parse_arguments() -> Arguments {
     let arguments = Arguments::parse();
 
-    let Some(command) = arguments.command else {
-        return arguments;
-    };
-
-    match command {
-        RouterCommand::Base64Encode {
-            string,
-            file,
-            output,
-        } =>
-            if let Err(error) = tools::base64::encode(string, file, output) {
-                tracing::error!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "failed to base64-encode input",
-                );
-                std::process::exit(1);
-            },
-        RouterCommand::Base64Decode {
-            string,
-            file,
-            output,
-        } =>
-            if let Err(error) = tools::base64::decode(string, file, output) {
-                tracing::error!(
-                    target: LOG_TARGET,
-                    ?error,
-                    "failed to base64-decode input",
-                );
-                std::process::exit(1);
-            },
+    match arguments.command {
+        Some(command) => command.execute().await,
+        None => arguments,
     }
-
-    std::process::exit(0);
 }
 
 /// Setup router and related subsystems.
@@ -416,7 +385,7 @@ async fn router_event_loop(
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (_tx, shutdown_rx) = channel(1);
-    let arguments = parse_arguments();
+    let arguments = runtime.block_on(parse_arguments());
     let RouterContext {
         port_mapper,
         router,
@@ -432,7 +401,7 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (shutdown_tx, shutdown_rx) = channel(1);
-    let arguments = parse_arguments();
+    let arguments = runtime.block_on(parse_arguments());
     let RouterContext {
         events,
         port_mapper,
@@ -464,7 +433,7 @@ fn main() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let (shutdown_tx, shutdown_rx) = channel(1);
-    let arguments = parse_arguments();
+    let arguments = runtime.block_on(parse_arguments());
     let RouterContext {
         router,
         port_mapper,
