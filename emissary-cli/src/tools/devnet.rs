@@ -68,7 +68,7 @@ pub async fn spawn_network(num_floodfills: usize, num_routers: usize, path: Opti
     let (path, _dir) = match path {
         Some(path) => {
             if let Err(error) = tokio::fs::create_dir_all(&path).await {
-                eprintln!("failed to crate directory ({path}): {error:?}");
+                eprintln!("failed to create directory ({path}): {error:?}");
                 std::process::exit(1)
             }
 
