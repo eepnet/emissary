@@ -95,7 +95,7 @@ pub async fn spawn_network(num_floodfills: usize, num_routers: usize, path: Opti
     // store the router files in the temporary directory
     for (i, router_info) in router_infos.into_iter().enumerate() {
         if let Err(error) =
-            tokio::fs::write(path.join(&format!("routerInfo{i}.dat")), router_info).await
+            tokio::fs::write(path.join(format!("routerInfo{i}.dat")), router_info).await
         {
             eprintln!("failed to write router info for router {i} to disk: {error:?}");
         }
