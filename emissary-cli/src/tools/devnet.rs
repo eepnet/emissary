@@ -23,8 +23,6 @@ use tempfile::tempdir;
 use std::path::PathBuf;
 
 /// Network ID for devnet.
-///
-/// Used only if local network is used.
 pub const DEVNET_ID: u8 = 0xab;
 
 /// Make a router.
