@@ -13,8 +13,9 @@ categories.workspace = true
 [dependencies]
 emissary-core = { path = "../emissary-core", version = "0.2.0", default-features = false, features = ["std"] }
 flate2 = { workspace = true }
-metrics = { version = "0.24.2", optional = true }
+home = "=0.5.11"
 metrics-exporter-prometheus = { version = "0.17.2", optional = true }
+metrics = { version = "0.24.2", optional = true }
 pem = { version = "3.0.5", default-features = false }
 rsa = { version = "0.9.8", features = ["sha2"] }
 x509-parser = "0.17.0"
@@ -22,16 +23,20 @@ zip = { version = "4.2.0", default-features = false, features = ["deflate-flate2
 
 # workspace dependencies
 anyhow = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["rand_core", "fast"] }
 futures = { workspace = true }
 nom = { workspace = true, features = ["alloc"] }
 rand_core = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true, features = ["default-tls"] }
+serde = { workspace = true, features = ["derive"] }
 smol = { workspace = true, optional = true }
 tempfile = { workspace = true }
-tracing = { workspace = true, features = ["log"] }
-tokio = { workspace = true, optional = true }
 tokio-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+toml = { workspace = true }
+tracing = { workspace = true, features = ["log"] }
+x25519-dalek = { workspace = true, features = ["getrandom", "static_secrets", "precomputed-tables"] }
 
 [features]
 default = ["tokio"]

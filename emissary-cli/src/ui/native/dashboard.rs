@@ -184,7 +184,7 @@ impl RouterUi {
                         .push(Space::with_width(Length::Fill))
                         .push(
                             button(if self.show_router_id {
-                                Text::new("W3dwajBxt4U8xLcKr9bspbaEBwlJ4lXFEbp91E8UvUU=")
+                                Text::new(&self.router_id)
                                     .color(Color::from_rgb(0.8392, 0.8392, 0.8392))
                             } else {
                                 Text::new("Click to reveal")

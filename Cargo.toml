@@ -29,11 +29,13 @@ parking_lot = "0.12.4"
 rand = "0.8.5"
 rand_core = { version = "0.6.3", default-features = false }
 reqwest = { version = "0.12.21", default-features = false }
+serde = "1.0.219"
 sha2 = { version = "0.10.9", default-features = false }
 smol = "2.0.2"
 tempfile = "3.20.0"
 tokio-util = { version = "0.7.15", features = ["compat"] }
 tokio = { version = "1.45.1", features = ["full"] }
+toml = "0.8.23"
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "time"] }
 tracing = { version = "0.1.41", default-features = false }
 x25519-dalek = { version = "2.0.1", default-features = false }

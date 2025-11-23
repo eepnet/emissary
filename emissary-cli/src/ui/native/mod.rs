@@ -42,7 +42,11 @@ use crate::{
     },
 };
 
-use emissary_core::events::{Event, EventSubscriber};
+use emissary_core::{
+    crypto::base64_encode,
+    events::{Event, EventSubscriber},
+    primitives::RouterId,
+};
 use iced::{
     advanced::widget::Text,
     alignment::Vertical,
@@ -122,6 +126,9 @@ pub struct RouterUi {
     /// Client tunnels.
     client_tunnels: BTreeMap<String, ClientTunnel>,
 
+    /// Local router ID.
+    router_id: String,
+
     cache: Cache,
     outbound_bandwidth: usize,
     transit_inbound_bandwidth: usize,
@@ -187,6 +194,7 @@ impl RouterUi {
         config: Config,
         base_path: PathBuf,
         address_book_handle: Option<Arc<AddressBookHandle>>,
+        router_id: RouterId,
         shutdown_tx: Sender<()>,
     ) -> (Self, Task<Message>) {
         let ntcp2 = TransportConfig::from(&config.ntcp2);
@@ -284,6 +292,7 @@ impl RouterUi {
                 port_forwarding,
                 i2cp,
                 sam,
+                router_id: base64_encode(router_id.to_vec()),
                 server_name: String::from(""),
                 server_port: String::from(""),
                 server_path: String::from(""),
@@ -339,13 +348,21 @@ impl RouterUi {
         config: Config,
         base_path: PathBuf,
         address_book_handle: Option<Arc<AddressBookHandle>>,
+        router_id: RouterId,
         shutdown_tx: Sender<()>,
     ) -> anyhow::Result<()> {
         iced::application("emissary", RouterUi::update, RouterUi::view)
             .subscription(RouterUi::subscription)
             .theme(RouterUi::theme)
             .run_with(move || {
-                RouterUi::new(events, config, base_path, address_book_handle, shutdown_tx)
+                RouterUi::new(
+                    events,
+                    config,
+                    base_path,
+                    address_book_handle,
+                    router_id,
+                    shutdown_tx,
+                )
             })
             .map_err(From::from)
     }

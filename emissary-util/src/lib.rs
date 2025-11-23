@@ -22,4 +22,5 @@ mod certificates;
 
 pub mod reseeder;
 pub mod runtime;
+pub mod storage;
 pub mod su3;
