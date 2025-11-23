@@ -72,6 +72,7 @@ struct RouterContext {
     base_path: PathBuf,
 
     /// Local router ID.
+    #[allow(unused)]
     router_id: RouterId,
 
     /// Event subscriber.
