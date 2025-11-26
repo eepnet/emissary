@@ -387,19 +387,13 @@ impl<R: Runtime> Future for SamServer<R> {
                         continue;
                     };
 
-                    let options = if options.is_empty() {
-                        None
-                    } else {
-                        Some(Mapping::from(options))
-                    };
-
                     if let Err(error) = this.active_sessions.send_command(
                         &Arc::clone(&session_id),
                         SamSessionCommand::SendDatagram {
                             destination: Box::new(destination),
                             datagram,
                             session_id: Arc::clone(&session_id),
-                            options,
+                            options: (!options.is_empty()).then(|| Mapping::from(options)),
                         },
                     ) {
                         tracing::warn!(
