@@ -1332,6 +1332,30 @@ mod tests {
             }
         }
 
+        {
+            let command = "SESSION CREATE \
+                        STYLE=DATAGRAM2 \
+                        ID=test \
+                        PORT=8888 \
+                        HOST=127.2.2.2 \
+                        DESTINATION=TRANSIENT \
+                        SIGNATURE_TYPE=7 \
+                        i2cp.leaseSetEncType=4\n";
+
+            match SamCommand::parse::<MockRuntime>(command) {
+                Some(SamCommand::CreateSession {
+                    session_id,
+                    session_kind: SessionKind::Datagram2,
+                    options,
+                    ..
+                }) => {
+                    assert_eq!(session_id, "test");
+                    assert_eq!(options.get("HOST"), Some(&"127.2.2.2".to_string()));
+                }
+                response => panic!("invalid response: {response:?}"),
+            }
+        }
+
         // no host specified, defaults to 127.0.0.1
         {
             let command = "SESSION CREATE \
