@@ -588,7 +588,7 @@ impl<R: Runtime> Stream<R> {
                 let send_stream_id = R::rng().next_u32();
                 let packet = PacketBuilder::new(send_stream_id)
                     .with_send_stream_id(recv_stream_id)
-                    .with_from_included(destination.clone())
+                    .with_from_included(&destination)
                     .with_seq_nro(0)
                     .with_synchronize()
                     .with_signature()
@@ -799,7 +799,7 @@ impl<R: Runtime> Stream<R> {
                 .with_send_stream_id(self.recv_stream_id)
                 .with_seq_nro(0)
                 .with_synchronize()
-                .with_from_included(self.destination.clone())
+                .with_from_included(&self.destination)
                 .with_signature()
                 .build_and_sign(&self.signing_key);
 
@@ -1089,7 +1089,7 @@ impl<R: Runtime> Stream<R> {
             .with_ack_through(self.inbound_context.seq_nro)
             .with_seq_nro(seq_nro)
             .with_close()
-            .with_from_included(self.destination.clone())
+            .with_from_included(&self.destination)
             .with_signature()
             .build_and_sign(&self.signing_key)
             .to_vec();
@@ -1425,7 +1425,7 @@ impl<R: Runtime> Future for Stream<R> {
             let packet = if this.inbound_context.can_close() {
                 builder
                     .with_close()
-                    .with_from_included(this.destination.clone())
+                    .with_from_included(&this.destination)
                     .with_signature()
                     .build_and_sign(&this.signing_key)
             } else {

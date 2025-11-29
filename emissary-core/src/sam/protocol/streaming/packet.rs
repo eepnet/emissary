@@ -486,7 +486,7 @@ impl FlagsBuilder<'_> {
     }
 
     /// Specify that local destination ID is included.
-    pub fn with_from_included(mut self, destination: Destination) -> Self {
+    pub fn with_from_included(mut self, destination: &Destination) -> Self {
         self.options_len += destination.serialized_len();
         self.destination = Some(destination.serialize());
         self.flags |= 1 << 5;
@@ -666,7 +666,7 @@ impl<'a> PacketBuilder<'a> {
     }
 
     /// Specify that local destination ID is included.
-    pub fn with_from_included(mut self, destination: Destination) -> Self {
+    pub fn with_from_included(mut self, destination: &Destination) -> Self {
         self.flags_builder = self.flags_builder.with_from_included(destination);
         self
     }
@@ -820,7 +820,7 @@ mod tests {
 
         let (flags, options) = FlagsBuilder::default()
             .with_synchronize()
-            .with_from_included(destination.clone())
+            .with_from_included(&destination)
             .with_signature()
             .with_max_packet_size(1337)
             .with_delay_requested(750)
@@ -877,7 +877,7 @@ mod tests {
             .with_reset()
             .with_echo()
             .with_no_ack()
-            .with_from_included(destination.clone())
+            .with_from_included(&destination)
             .with_signature()
             .with_max_packet_size(1338)
             .with_delay_requested(800)
@@ -919,7 +919,7 @@ mod tests {
             .with_signature()
             .with_replay_protection(&recv_destination_id)
             .with_resend_delay(128)
-            .with_from_included(destination.clone())
+            .with_from_included(&destination)
             .with_payload(&payload)
             .build_and_sign(&signing_key);
 
@@ -1012,7 +1012,7 @@ mod tests {
             .with_synchronize()
             .with_replay_protection(&recv_destination_id)
             .with_resend_delay(128)
-            .with_from_included(destination.clone())
+            .with_from_included(&destination)
             .with_payload(&payload)
             .build_and_sign(&signing_key);
     }
@@ -1033,7 +1033,7 @@ mod tests {
             .with_signature()
             .with_replay_protection(&recv_destination_id)
             .with_resend_delay(128)
-            .with_from_included(destination.clone())
+            .with_from_included(&destination)
             .with_payload(&payload)
             .build();
     }
