@@ -16,8 +16,6 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::config::PortForwardingConfig;
-
 use futures::Stream;
 use tokio::sync::{mpsc, oneshot};
 
@@ -31,7 +29,22 @@ mod nat_pmp;
 mod upnp;
 
 /// Logging target for the file
-const LOG_TARGET: &str = "emissary::port-mapper";
+const LOG_TARGET: &str = "emissary-util::port-mapper";
+
+/// Port mapping config.
+#[derive(Debug)]
+pub struct PortMapperConfig {
+    /// Is NAT-PMP enabled.
+    pub nat_pmp: bool,
+
+    /// Is UPnP enabled.
+    pub upnp: bool,
+
+    /// Named used for UPnP mapping.
+    ///
+    /// Defaults to `emissary`.
+    pub name: String,
+}
 
 /// Port mapper.
 ///
@@ -53,7 +66,7 @@ pub struct PortMapper {
 impl PortMapper {
     /// Create new [`PortMapper`]
     pub fn new(
-        config: Option<PortForwardingConfig>,
+        config: Option<PortMapperConfig>,
         ntcp2_port: Option<u16>,
         ssu2_port: Option<u16>,
     ) -> Self {
@@ -62,7 +75,7 @@ impl PortMapper {
 
         let config = match config {
             None
-            | Some(PortForwardingConfig {
+            | Some(PortMapperConfig {
                 upnp: false,
                 nat_pmp: false,
                 ..
@@ -94,7 +107,7 @@ impl PortMapper {
         );
 
         match config {
-            PortForwardingConfig { nat_pmp: true, .. } => {
+            PortMapperConfig { nat_pmp: true, .. } => {
                 tokio::spawn(
                     nat_pmp::PortMapper::new(
                         config,
@@ -106,7 +119,7 @@ impl PortMapper {
                     .run(),
                 );
             }
-            PortForwardingConfig { nat_pmp: false, .. } => {
+            PortMapperConfig { nat_pmp: false, .. } => {
                 tokio::spawn(
                     upnp::PortMapper::new(config, ntcp2_port, ssu2_port, address_tx, shutdown_rx)
                         .run(),

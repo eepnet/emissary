@@ -24,7 +24,6 @@ use crate::{
     cli::Arguments,
     config::{Config, EmissaryConfig, ReseedConfig, RouterUiConfig},
     error::Error,
-    port_mapper::PortMapper,
     proxy::{http::HttpProxy, socks::SocksProxy},
     tunnel::{client::ClientTunnelManager, server::ServerTunnelManager},
 };
@@ -35,7 +34,8 @@ use emissary_core::{
     events::EventSubscriber, primitives::RouterId, router::Router, runtime::AddressBook,
 };
 use emissary_util::{
-    reseeder::Reseeder, runtime::tokio::Runtime, storage::Storage, su3::ReseedRouterInfo,
+    port_mapper::PortMapper, reseeder::Reseeder, runtime::tokio::Runtime, storage::Storage,
+    su3::ReseedRouterInfo,
 };
 use futures::{channel::oneshot, StreamExt};
 use tokio::sync::mpsc::{channel, Receiver};
@@ -47,7 +47,6 @@ mod cli;
 mod config;
 mod error;
 mod logger;
-mod port_mapper;
 mod proxy;
 mod tools;
 mod tunnel;

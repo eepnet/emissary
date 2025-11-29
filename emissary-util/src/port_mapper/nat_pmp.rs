@@ -16,7 +16,7 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::{config::PortForwardingConfig, port_mapper::upnp};
+use crate::port_mapper::{upnp, PortMapperConfig};
 
 use futures::FutureExt;
 use natpmp::{new_tokio_natpmp, NatpmpAsync, Protocol, Response};
@@ -28,7 +28,7 @@ use tokio::{
 use std::{future::Future, net::Ipv4Addr, time::Duration};
 
 /// Logging target for the file
-const LOG_TARGET: &str = "emissary::port-mapper::nat-pmp";
+const LOG_TARGET: &str = "emissary-util::port-mapper::nat-pmp";
 
 /// Timeout for responses.
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -55,7 +55,7 @@ pub struct PortMapper {
     address_tx: mpsc::Sender<Ipv4Addr>,
 
     /// Port forwarding config.
-    config: PortForwardingConfig,
+    config: PortMapperConfig,
 
     /// NTCP2 port, if the transport was enabled.
     ntcp2_port: Option<u16>,
@@ -70,7 +70,7 @@ pub struct PortMapper {
 impl PortMapper {
     /// Create new NAT-PMP [`PortMapper`].
     pub fn new(
-        config: PortForwardingConfig,
+        config: PortMapperConfig,
         ntcp2_port: Option<u16>,
         ssu2_port: Option<u16>,
         address_tx: mpsc::Sender<Ipv4Addr>,

@@ -20,6 +20,7 @@
 
 mod certificates;
 
+pub mod port_mapper;
 pub mod reseeder;
 pub mod runtime;
 pub mod storage;

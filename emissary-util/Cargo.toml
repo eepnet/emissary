@@ -14,8 +14,11 @@ categories.workspace = true
 emissary-core = { path = "../emissary-core", version = "0.2.0", default-features = false, features = ["std"] }
 flate2 = { workspace = true }
 home = "=0.5.11"
+igd-next = { version = "0.16.1", default-features = false, features = ["aio_tokio"] }
 metrics-exporter-prometheus = { version = "0.17.2", optional = true }
 metrics = { version = "0.24.2", optional = true }
+natpmp = "0.5.0"
+netdev = { version = "0.36.0", default-features = false, features = ["gateway"] }
 pem = { version = "3.0.5", default-features = false }
 rsa = { version = "0.9.8", features = ["sha2"] }
 x509-parser = "0.17.0"
