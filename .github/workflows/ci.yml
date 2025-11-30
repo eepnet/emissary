@@ -75,6 +75,12 @@ jobs:
       working-directory: emissary-cli
       run: cargo check --no-default-features --features web-ui
 
+    - name: cargo-check rust-tutorial
+      run: cargo check -p rust-tutorial
+
+    - name: cargo-check rust-chat
+      run: cargo check -p rust-chat
+
   fuzz:
     runs-on: ubuntu-latest
     steps:

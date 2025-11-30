@@ -46,6 +46,16 @@ pub struct PortMapperConfig {
     pub name: String,
 }
 
+impl Default for PortMapperConfig {
+    fn default() -> Self {
+        Self {
+            nat_pmp: true,
+            upnp: true,
+            name: String::from("emissary"),
+        }
+    }
+}
+
 /// Port mapper.
 ///
 /// `PortMapper`'s [`Stream`] implementation never returns `None` and if the underlying stream

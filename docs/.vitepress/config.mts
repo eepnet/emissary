@@ -24,6 +24,13 @@ export default defineConfig({
           { text: "Built-in tools", link: "/tooling.md" },
         ]
       },
+      {
+        text: "Embedding",
+        items: [
+          { text: "Overview", link: "/embedding-overview.md" },
+          { text: "Rust", link: "/embedding-rust.md" },
+        ]
+      },
     ],
 
     socialLinks: [

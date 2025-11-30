@@ -12,7 +12,7 @@ hero:
       link: /quick-start
     - theme: alt
       text: Embedding emissary
-      link: /embedding
+      link: /embedding-overview
     - theme: alt
       text: For developers
       link: /developers

@@ -1,0 +1,16 @@
+[package]
+name = "rust-chat"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+emissary-core = { path = "../../emissary-core", version = "0.2.0" }
+emissary-util = { path = "../../emissary-util", version = "0.2.0", default-features = false, features = ["tokio"] }
+rand = "0.9.2"
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tracing-subscriber = { workspace = true, features = ["chrono", "env-filter", "time"] }
+tracing = { workspace = true, default-features = false }
+yosemite = { workspace = true }

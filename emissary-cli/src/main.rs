@@ -160,28 +160,16 @@ async fn setup_router(arguments: Arguments) -> anyhow::Result<RouterContext> {
                     "router reseeded",
                 );
 
-                routers.into_iter().for_each(|ReseedRouterInfo { name, router_info }| {
-                    match name.strip_prefix("routerInfo-") {
-                        Some(start) => {
-                            if let Err(error) =
-                                storage.store_router_info(start.to_string(), router_info.clone())
-                            {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    ?error,
-                                    "failed to store router info to disk",
-                                );
-                            }
-                        }
-                        None => tracing::warn!(
+                for ReseedRouterInfo { name, router_info } in routers {
+                    if let Err(error) = storage.store_router_info(name, router_info.clone()).await {
+                        tracing::warn!(
                             target: LOG_TARGET,
-                            ?name,
-                            "malformed router info name, cannot store on disk",
-                        ),
+                            ?error,
+                            "failed to store router info to disk",
+                        );
                     }
-
                     config.routers.push(router_info);
-                });
+                }
             }
             Err(error) if config.routers.is_empty() => {
                 tracing::error!(

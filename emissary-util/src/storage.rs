@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use std::{
-    fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
     time::Duration,
@@ -242,9 +241,8 @@ impl Storage {
 
     /// Load router infos and peer profiles from disk.
     ///
-    /// Returns a tuple of vectors where the first element of the tuple is a vector of serialized
-    /// `routerInfo`s and the second element of the tuple is a vector of (router id, profile)
-    /// tuples.
+    /// Returns a [`StorageBundle`] object which contains all of the relevant on-disk information
+    /// needed to initialize the router.
     pub async fn load(&self) -> StorageBundle {
         let netdb_path = self.base_path.join("netDb");
         let profiles_path = self.base_path.join("peerProfiles");
@@ -436,21 +434,27 @@ impl Storage {
     }
 
     /// Store `router_info` for `router_id` in `netDb`.
-    pub fn store_router_info(&self, router_id: String, router_info: Vec<u8>) -> anyhow::Result<()> {
+    pub async fn store_router_info(
+        &self,
+        router_id: String,
+        router_info: Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let router_id = router_id.strip_prefix("routerInfo-").unwrap_or(&router_id);
+
         let dir = router_id.chars().next().ok_or(anyhow!("invalid router id"))?;
         let name = match router_id.ends_with(".dat") {
             true => self.base_path.join(format!("netDb/r{dir}/routerInfo-{router_id}")),
             false => self.base_path.join(format!("netDb/r{dir}/routerInfo-{router_id}.dat")),
         };
 
-        let mut file = File::create(name)?;
-        file.write_all(&router_info)?;
+        let mut file = tokio::fs::File::create(name).await?;
+        file.write_all(&router_info).await?;
 
         Ok(())
     }
 
     /// Store `profile` for `router_id` in `peerProfiles`.
-    fn store_profile(
+    async fn store_profile(
         &self,
         router_id: String,
         profile: emissary_core::Profile,
@@ -472,8 +476,8 @@ impl Storage {
             self.base_path.join(format!("peerProfiles/p{dir}/profile-{router_id}.toml"));
 
         let config = toml::to_string(&Profile::from(profile)).expect("to succeed");
-        let mut file = File::create(profile_name)?;
-        file.write_all(config.as_bytes())?;
+        let mut file = tokio::fs::File::create(profile_name).await?;
+        file.write_all(config.as_bytes()).await?;
 
         Ok(())
     }
@@ -491,13 +495,14 @@ impl emissary_core::runtime::Storage for Storage {
     fn save_to_disk(&self, routers: Vec<(String, Option<Vec<u8>>, emissary_core::Profile)>) {
         let storage_handle = self.clone();
 
-        tokio::task::spawn_blocking(move || {
+        tokio::spawn(async move {
             for (router_id, router_info, profile) in routers {
                 if let Some(router_info) = router_info {
                     match Storage::decompress(router_info) {
                         Some(router_info) =>
-                            if let Err(error) =
-                                storage_handle.store_router_info(router_id.clone(), router_info)
+                            if let Err(error) = storage_handle
+                                .store_router_info(router_id.clone(), router_info)
+                                .await
                             {
                                 tracing::warn!(
                                     target: LOG_TARGET,
@@ -514,7 +519,7 @@ impl emissary_core::runtime::Storage for Storage {
                     }
                 }
 
-                if let Err(error) = storage_handle.store_profile(router_id.clone(), profile) {
+                if let Err(error) = storage_handle.store_profile(router_id.clone(), profile).await {
                     tracing::warn!(
                         target: LOG_TARGET,
                         ?router_id,
@@ -746,5 +751,58 @@ mod tests {
 
         // attempt to load router info from disk
         let _ = storage.load().await;
+    }
+
+    #[tokio::test]
+    async fn strip_prefix_works() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("testdir");
+
+        assert!(tokio::fs::read_dir(&path).await.is_err());
+        let storage = Storage::new(Some(path.clone())).await.unwrap();
+
+        assert!(!path
+            .join("netDb/rr/routerInfo-r6H3ithwF0-Uh5Ll9XXkRZLnSCXDeKrEbnQM6pw9YMc=.dat")
+            .exists());
+        assert!(!path
+            .join("netDb/rD/routerInfo-D4fhz5AfEDbCDJf2WDIkw4gHyW9UvdqFOl9cAIg~Ags=.dat")
+            .exists());
+
+        // store router info without prefix
+        storage
+            .store_router_info(
+                "r6H3ithwF0-Uh5Ll9XXkRZLnSCXDeKrEbnQM6pw9YMc=".to_string(),
+                vec![1, 3, 3, 7],
+            )
+            .await
+            .unwrap();
+
+        storage
+            .store_router_info(
+                "routerInfo-D4fhz5AfEDbCDJf2WDIkw4gHyW9UvdqFOl9cAIg~Ags=.dat".to_string(),
+                vec![1, 3, 3, 8],
+            )
+            .await
+            .unwrap();
+
+        // // verify first router has been stored
+        assert_eq!(
+            tokio::fs::read(
+                path.join("netDb/rr/routerInfo-r6H3ithwF0-Uh5Ll9XXkRZLnSCXDeKrEbnQM6pw9YMc=.dat"),
+            )
+            .await
+            .unwrap(),
+            vec![1, 3, 3, 7]
+        );
+
+        // verify the second router info exists
+        assert_eq!(
+            tokio::fs::read(
+                path.join("netDb/rD/routerInfo-D4fhz5AfEDbCDJf2WDIkw4gHyW9UvdqFOl9cAIg~Ags=.dat")
+            )
+            .await
+            .unwrap(),
+            vec![1, 3, 3, 8]
+        );
     }
 }

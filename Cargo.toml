@@ -15,12 +15,15 @@ members = [
   "emissary-cli",
   "emissary-core",
   "emissary-util",
+  "examples/rust-chat",
+  "examples/rust-tutorial",
 ]
 
 default-members = ["emissary-cli"]
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+clap = "4.5.40"
 ed25519-dalek = { version = "2.1.1", default-features = false }
 flate2 = "1.1.2"
 futures = "0.3.31"
