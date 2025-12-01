@@ -16,7 +16,7 @@ jobs:
   fmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         components: rustfmt
@@ -37,7 +37,7 @@ jobs:
   clippy:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         components: clippy
@@ -60,7 +60,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: cargo-check emissary-core no-std
@@ -84,7 +84,7 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: nightly
@@ -105,7 +105,7 @@ jobs:
     needs: [fmt, clippy, check]
     timeout-minutes: 30
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     - uses: actions-rust-lang/setup-rust-toolchain@v1
 
     - name: Install fontconfig
