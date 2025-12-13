@@ -1324,7 +1324,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5547,7 +5547,7 @@ dependencies = [
  "getrandom 0.3.2",
  "once_cell",
  "rustix 1.0.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7238,9 +7238,9 @@ dependencies = [
 
 [[package]]
 name = "yosemite"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19cf621ae2b2d7e5d1e3827231fbf59ca4fb72b3589e36cdf648e820f1cf6e0d"
+checksum = "e86c748ec2dc7c046509d5a70fd5ca1978510ee6d425dd23c1b597806d83deb6"
 dependencies = [
  "futures",
  "nom",
