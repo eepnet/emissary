@@ -95,9 +95,7 @@ impl AddressBookManager {
             addresses: Arc::new(RwLock::new(addresses)),
             hosts_url: config.default,
             serialized: Arc::new(RwLock::new(serialized)),
-            subscriptions: config
-                .subscriptions
-                .map_or_else(Vec::new, |subscriptions| subscriptions),
+            subscriptions: config.subscriptions.unwrap_or_default(),
         }
     }
 
