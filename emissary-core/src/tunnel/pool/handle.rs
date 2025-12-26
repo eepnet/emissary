@@ -99,12 +99,15 @@ impl fmt::Display for TunnelPoolEvent {
             Self::InboundTunnelBuilt { .. } => write!(f, "TunnelPoolEvent::InboundTunnelBuilt"),
             Self::OutboundTunnelBuilt { .. } => write!(f, "TunnelPoolEvent::OutboundTunnelBuilt"),
             Self::InboundTunnelExpired { .. } => write!(f, "TunnelPoolEvent::InboundTunnelExpired"),
-            Self::OutboundTunnelExpired { .. } =>
-                write!(f, "TunnelPoolEvent::OutboundTunnelExpired"),
-            Self::InboundTunnelExpiring { .. } =>
-                write!(f, "TunnelPoolEvent::InboundTunnelExpiring"),
-            Self::OutboundTunnelExpiring { .. } =>
-                write!(f, "TunnelPoolEvent::OutboundTunnelExpiring"),
+            Self::OutboundTunnelExpired { .. } => {
+                write!(f, "TunnelPoolEvent::OutboundTunnelExpired")
+            }
+            Self::InboundTunnelExpiring { .. } => {
+                write!(f, "TunnelPoolEvent::InboundTunnelExpiring")
+            }
+            Self::OutboundTunnelExpiring { .. } => {
+                write!(f, "TunnelPoolEvent::OutboundTunnelExpiring")
+            }
             Self::Message { .. } => write!(f, "TunnelPoolEvent::Message"),
             Self::Dummy => write!(f, "TunnelPoolEvent::Dummy"),
         }

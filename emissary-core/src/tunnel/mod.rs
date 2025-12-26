@@ -62,6 +62,7 @@ mod transit;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+#[allow(unused)]
 pub use pool::{TunnelMessage, TunnelMessageRecycle};
 
 pub use garlic::{DeliveryInstructions, GarlicHandler};
@@ -413,7 +414,7 @@ impl<R: Runtime> TunnelManager<R> {
                         "garlic message for router delivery",
                     );
 
-                    self.send_message(&router, message, None);
+                    self.send_message(&router, message.serialize_short(), None);
                 }
                 DeliveryInstructions::Tunnel {
                     router,
@@ -427,7 +428,7 @@ impl<R: Runtime> TunnelManager<R> {
                         "garlic message for tunnel delivery",
                     );
 
-                    self.send_message(&router, message, None);
+                    self.send_message(&router, message.serialize_short(), None);
                 }
                 DeliveryInstructions::Destination => {
                     tracing::warn!(

@@ -53,7 +53,7 @@ pub enum DeliveryInstructions {
         router: RouterId,
 
         /// Serialized I2NP message.
-        message: Vec<u8>,
+        message: Message,
     },
 
     /// Message meant for tunnel delivery.
@@ -65,7 +65,7 @@ pub enum DeliveryInstructions {
         router: RouterId,
 
         /// Serialized I2NP message wrapped in `TunnelGateway` message.
-        message: Vec<u8>,
+        message: Message,
     },
 
     /// Unimplemented.
@@ -179,12 +179,12 @@ impl<R: Runtime> GarlicHandler<R> {
                         CloveDeliveryInstructions::Router { hash } =>
                             Some(DeliveryInstructions::Router {
                                 router: RouterId::from(hash),
-                                message: MessageBuilder::short()
-                                    .with_message_type(message_type)
-                                    .with_message_id(message_id)
-                                    .with_expiration(expiration)
-                                    .with_payload(message_body)
-                                    .build(),
+                                message: Message {
+                                    message_type,
+                                    message_id: *message_id,
+                                    expiration,
+                                    payload: message_body.to_vec(),
+                                },
                             }),
                         CloveDeliveryInstructions::Tunnel { hash, tunnel_id } => {
                             let message = MessageBuilder::standard()
@@ -203,12 +203,12 @@ impl<R: Runtime> GarlicHandler<R> {
                             Some(DeliveryInstructions::Tunnel {
                                 tunnel: TunnelId::from(tunnel_id),
                                 router: RouterId::from(hash),
-                                message: MessageBuilder::short()
-                                    .with_message_type(MessageType::TunnelGateway)
-                                    .with_message_id(R::rng().next_u32())
-                                    .with_expiration(expiration)
-                                    .with_payload(&message)
-                                    .build(),
+                                message: Message {
+                                    message_type: MessageType::TunnelGateway,
+                                    message_id: R::rng().next_u32(),
+                                    expiration,
+                                    payload: message.to_vec(),
+                                },
                             })
                         }
                         CloveDeliveryInstructions::Destination { hash } => {
@@ -351,7 +351,6 @@ mod tests {
             DeliveryInstructions::Router { router, message } => {
                 assert_eq!(router, router_delivery_router);
 
-                let message = Message::parse_short(&message).unwrap();
                 assert_eq!(message.message_type, MessageType::Data);
                 assert_eq!(message.message_id, *message_id_2);
                 assert_eq!(message.payload, vec![2, 2, 2, 2]);
@@ -368,7 +367,6 @@ mod tests {
                 assert_eq!(router, tunnel_delivery_router);
                 assert_eq!(tunnel, tunnel_delivery_tunnel);
 
-                let message = Message::parse_short(&message).unwrap();
                 assert_eq!(message.message_type, MessageType::TunnelGateway);
 
                 let TunnelGateway { tunnel_id, payload } =
@@ -453,7 +451,6 @@ mod tests {
             DeliveryInstructions::Router { router, message } => {
                 assert_eq!(router, router_delivery_router);
 
-                let message = Message::parse_short(&message).unwrap();
                 assert_eq!(message.message_type, MessageType::Data);
                 assert_eq!(message.message_id, *message_id_2);
                 assert_eq!(message.payload, vec![2, 2, 2, 2]);

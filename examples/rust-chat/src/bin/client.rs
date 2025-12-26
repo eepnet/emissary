@@ -18,13 +18,13 @@
 
 use anyhow::anyhow;
 use clap::Parser;
-use emissary_core::{router::Router, Config, Ntcp2Config, SamConfig};
+use emissary_core::{Config, Ntcp2Config, SamConfig, router::Router};
 use emissary_util::{reseeder::Reseeder, runtime::tokio::Runtime, su3::ReseedRouterInfo};
 use rand::prelude::*;
 use rust_chat::DEVNET_ID;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tracing_subscriber::prelude::*;
-use yosemite::{style::Stream, Session, SessionOptions};
+use yosemite::{Session, SessionOptions, style::Stream};
 
 /// Logging target for chat client
 const LOG_TARGET: &str = "chat-client";

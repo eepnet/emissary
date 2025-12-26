@@ -21,20 +21,20 @@ use std::collections::HashMap;
 use anyhow::anyhow;
 use clap::Parser;
 use emissary_core::{
+    Config, Ntcp2Config, SamConfig,
     crypto::{base32_encode, base64_decode},
     primitives::Destination,
     router::Router,
-    Config, Ntcp2Config, SamConfig,
 };
 use emissary_util::{reseeder::Reseeder, runtime::tokio::Runtime, su3::ReseedRouterInfo};
 use rand::prelude::*;
 use rust_chat::DEVNET_ID;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    sync::mpsc::{channel, error::TrySendError, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender, channel, error::TrySendError},
 };
 use tracing_subscriber::prelude::*;
-use yosemite::{style::Stream, Session, SessionOptions};
+use yosemite::{Session, SessionOptions, style::Stream};
 
 /// Logging target for chat server
 const LOG_TARGET: &str = "chat-server";
