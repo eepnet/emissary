@@ -326,7 +326,7 @@ impl thingbuf::Recycle<OutboundMessage> for OutboundMessageRecycle {
 }
 
 #[derive(Default)]
-enum SubsystemManagerEvent {
+pub enum SubsystemManagerEvent {
     #[allow(unused)]
     Message {
         router_id: RouterId,
@@ -459,6 +459,24 @@ impl SubsystemManagerHandle {
         let mut tunnels = self.tunnels.write();
         tunnels.remove(tunnel_id);
     }
+
+    #[cfg(test)]
+    pub fn new() -> (
+        Self,
+        Receiver<SubsystemManagerEvent, SubsystemManagerEventRecycle>,
+    ) {
+        let (event_tx, event_rx) = with_recycle(100, SubsystemManagerEventRecycle::default());
+
+        (
+            Self {
+                event_tx,
+                listeners: Default::default(),
+                throttle: Default::default(),
+                tunnels: Default::default(),
+            },
+            event_rx,
+        )
+    }
 }
 
 enum RouterState {
@@ -478,16 +496,19 @@ enum RouterState {
 /// Subsystem manager context.
 #[allow(unused)]
 pub struct SubsystemManagerContext<R: Runtime> {
-    /// RX channel passed to `NetDb`.
-    ///
-    /// Allows `SubsystemManager` to route messages to `NetDb`.
-    pub netdb_rx: Receiver<Vec<(RouterId, Message)>>,
+    /// RX channel for receiving dial requests from `SubsystemManager`.
+    pub dial_rx: Receiver<RouterId>,
+
+    /// Handle for interacting with subsystem manager.
+    pub handle: SubsystemManagerHandle,
 
     /// Subsystem manager.
     pub manager: SubsystemManager<R>,
 
-    /// Handle for interacting with subsystem manager.
-    pub handle: SubsystemManagerHandle,
+    /// RX channel passed to `NetDb`.
+    ///
+    /// Allows `SubsystemManager` to route messages to `NetDb`.
+    pub netdb_rx: Receiver<Vec<(RouterId, Message)>>,
 
     /// RX channel passed to `TransitTunnelManager`.
     ///
@@ -547,17 +568,13 @@ pub struct SubsystemManager<R: Runtime> {
 
 impl<R: Runtime> SubsystemManager<R> {
     #[allow(unused)]
-    pub fn new(
-        limit: usize,
-        share: f32,
-        dial_tx: Sender<RouterId>,
-        noise: NoiseContext,
-    ) -> SubsystemManagerContext<R> {
+    pub fn new(limit: usize, share: f32, noise: NoiseContext) -> SubsystemManagerContext<R> {
         assert!(share <= 1.0);
 
         let (event_tx, event_rx) = with_recycle(256, SubsystemManagerEventRecycle::default());
         let (transit_tx, transit_rx) = channel(256);
         let (netdb_tx, netdb_rx) = channel(256);
+        let (dial_tx, dial_rx) = channel(256);
         let (transport_tx, transport_rx) = channel(256);
         let throttle = Arc::new(AtomicBool::new(false));
         let listeners = Arc::new(RwLock::new(HashMap::new()));
@@ -567,6 +584,7 @@ impl<R: Runtime> SubsystemManager<R> {
             netdb_rx,
             transit_rx,
             transport_tx,
+            dial_rx,
             manager: Self {
                 dial_tx,
                 event_rx,
@@ -1032,13 +1050,11 @@ mod tests {
 
     #[test]
     fn no_bandwidth_shared() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext { manager, .. } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1048,13 +1064,11 @@ mod tests {
 
     #[test]
     fn all_bandwidth_shared() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext { manager, .. } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             1.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1064,7 +1078,6 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_router_connection_disconnection() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1077,7 +1090,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let (msg_tx, _msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
@@ -1107,7 +1119,6 @@ mod tests {
 
     #[tokio::test]
     async fn dial_router() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1116,11 +1127,11 @@ mod tests {
             handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1160,7 +1171,6 @@ mod tests {
 
     #[tokio::test]
     async fn dial_fails() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1168,12 +1178,12 @@ mod tests {
             mut manager,
             handle,
             transit_rx: _transit_rx,
+            dial_rx,
             transport_tx: tx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let (feedback_tx, feedback_rx) = oneshot::channel();
@@ -1215,7 +1225,6 @@ mod tests {
 
     #[tokio::test]
     async fn dial_fails_with_feedback() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1224,11 +1233,11 @@ mod tests {
             handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1268,7 +1277,6 @@ mod tests {
 
     #[tokio::test]
     async fn send_message_to_router() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1281,7 +1289,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let router_id = RouterId::random();
@@ -1384,7 +1391,6 @@ mod tests {
 
     #[tokio::test]
     async fn send_pending_messages_to_router() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1393,11 +1399,11 @@ mod tests {
             handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let router_id = RouterId::random();
@@ -1501,7 +1507,6 @@ mod tests {
 
     #[tokio::test]
     async fn install_listener_through_handle() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1514,7 +1519,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let handle_clone = handle.clone();
@@ -1532,7 +1536,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_active_listener_variable_tunnel_build() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1545,7 +1548,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1569,7 +1571,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_listener_short_tunnel_build() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1582,7 +1583,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1606,7 +1606,6 @@ mod tests {
 
     #[tokio::test]
     async fn no_listener_outbound_tunnel_build_reply() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1619,7 +1618,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1646,7 +1644,6 @@ mod tests {
 
     #[tokio::test]
     async fn active_listener_short_tunnel_build() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1659,7 +1656,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1692,7 +1688,6 @@ mod tests {
 
     #[tokio::test]
     async fn active_listener_outbound_tunnel_build_reply() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1705,7 +1700,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1738,7 +1732,6 @@ mod tests {
 
     #[tokio::test]
     async fn register_tunnel_through_handle() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1751,7 +1744,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1770,7 +1762,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_tunnel_data() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1783,7 +1774,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1823,7 +1813,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_tunnel_gateway() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1836,7 +1825,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1875,7 +1863,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_tunnel_data_of_non_existent_tunnel() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1888,7 +1875,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1924,7 +1910,6 @@ mod tests {
 
     #[tokio::test]
     async fn route_tunnel_gateway_of_non_existent_tunnel() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1937,7 +1922,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1974,7 +1958,6 @@ mod tests {
     #[tokio::test]
     #[should_panic]
     async fn route_message_to_closed_tunnel() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -1987,7 +1970,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -2074,7 +2056,6 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_garlic_message_triggers_a_dial() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2083,11 +2064,11 @@ mod tests {
             handle: _handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2124,7 +2105,6 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_garlic_message_pending_dial() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2133,11 +2113,11 @@ mod tests {
             handle: _handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2198,7 +2178,6 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_garlic_message_for_tunnel() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2211,7 +2190,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2268,7 +2246,6 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_garlic_message_for_router() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2281,7 +2258,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2328,7 +2304,6 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_inbound_cloves() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2341,7 +2316,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2430,7 +2404,6 @@ mod tests {
 
     #[tokio::test]
     async fn inbound_and_outbound_cloves() {
-        let (dial_tx, dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2439,11 +2412,11 @@ mod tests {
             handle,
             transit_rx: _transit_rx,
             transport_tx: tx,
+            dial_rx,
             ..
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2569,7 +2542,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn recursive_inbound_garlic_message() {
-        let (dial_tx, _dial_rx) = channel(16);
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
         let SubsystemManagerContext {
@@ -2582,7 +2554,6 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
-            dial_tx,
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 

@@ -130,6 +130,9 @@ pub struct TunnelManager<R: Runtime> {
 
     /// Transport service.
     service: TransportService<R>,
+
+    /// RX channel for receiving transit-related messages.
+    transit_rx: Receiver<Vec<(RouterId, Message)>>,
 }
 
 impl<R: Runtime> TunnelManager<R> {
@@ -144,6 +147,7 @@ impl<R: Runtime> TunnelManager<R> {
         insecure_tunnels: bool,
         transit_config: Option<TransitConfig>,
         transit_shutdown_handle: ShutdownHandle,
+        subsys_transit_rx: Receiver<Vec<(RouterId, Message)>>,
     ) -> (
         Self,
         TunnelManagerHandle,
@@ -221,6 +225,7 @@ impl<R: Runtime> TunnelManager<R> {
                 routers: HashMap::new(),
                 routing_table: routing_table.clone(),
                 service,
+                transit_rx: subsys_transit_rx,
             },
             manager_handle,
             pool_handle,
@@ -550,6 +555,25 @@ impl<R: Runtime> Future for TunnelManager<R> {
                     message,
                     tx,
                 }) => self.send_message(&router_id, message, Some(tx)),
+            }
+        }
+
+        loop {
+            match self.transit_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(Some(messages)) => {
+                    messages.into_iter().for_each(|(router_id, message)| {
+                        if let Err(error) = self.on_message(message) {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                %router_id,
+                                ?error,
+                                "failed to handle tunnel message",
+                            );
+                        }
+                    })
+                }
             }
         }
 

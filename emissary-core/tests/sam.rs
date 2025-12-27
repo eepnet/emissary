@@ -33,7 +33,7 @@ use yosemite::{
     DestinationKind, Error, I2pError, ProtocolError, RouterApi, Session, SessionOptions,
 };
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{fs::File, future::Future, io::Read, pin::Pin, sync::Arc, time::Duration};
 
 #[derive(Clone, Copy)]
 enum TransportKind {

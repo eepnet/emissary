@@ -24,7 +24,8 @@ use crate::{
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
     subsystem::{
-        InnerSubsystemEvent, SubsystemCommand, SubsystemEvent, SubsystemHandle, SubsystemKind,
+        InnerSubsystemEvent, SubsystemCommand, SubsystemEvent, SubsystemEventNew, SubsystemHandle,
+        SubsystemKind,
     },
     transport::{metrics::*, ntcp2::Ntcp2Context, ssu2::Ssu2Context},
     Ntcp2Config, Ssu2Config,
@@ -408,6 +409,9 @@ pub struct TransportManagerBuilder<R: Runtime> {
     /// TX channel passed onto other subsystems.
     cmd_tx: Sender<ProtocolCommand>,
 
+    /// RX channel for receiving dial requests.
+    dial_rx: Receiver<RouterId>,
+
     /// Local router info.
     local_router_info: RouterInfo,
 
@@ -429,6 +433,10 @@ pub struct TransportManagerBuilder<R: Runtime> {
     /// Are transit tunnels disabled.
     transit_tunnels_disabled: bool,
 
+    /// TX channel given to connections which they use to send inbound
+    /// messages to `SubsystemManager` for processing.
+    transport_tx: Sender<SubsystemEventNew>,
+
     /// Enabled transports.
     transports: Vec<Box<dyn Transport<Item = TransportEvent>>>,
 }
@@ -439,6 +447,8 @@ impl<R: Runtime> TransportManagerBuilder<R> {
         router_ctx: RouterContext<R>,
         local_router_info: RouterInfo,
         allow_local: bool,
+        dial_rx: Receiver<RouterId>,
+        transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
         let (cmd_tx, cmd_rx) = channel(256);
 
@@ -446,6 +456,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             allow_local,
             cmd_rx,
             cmd_tx,
+            dial_rx,
             local_router_info,
             netdb_handle: None,
             ntcp2_config: None,
@@ -454,6 +465,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             subsystem_handle: SubsystemHandle::new(),
             transit_tunnels_disabled: false,
             transports: Vec::with_capacity(2),
+            transport_tx,
         }
     }
 
@@ -515,6 +527,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
     pub fn build(self) -> TransportManager<R> {
         TransportManager {
             cmd_rx: self.cmd_rx,
+            dial_rx: self.dial_rx,
             event_handle: self.router_ctx.event_handle().clone(),
             external_address: None,
             local_router_info: self.local_router_info,
@@ -529,6 +542,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             // in intervals of [`ROUTER_INFO_REPUBLISH_INTERVAL`]
             router_info_republish_timer: R::timer(Duration::from_secs(10)),
             routers: HashSet::new(),
+            transport_tx: self.transport_tx,
             shutting_down: false,
             ssu2_config: self.ssu2_config,
             subsystem_handle: self.subsystem_handle,
@@ -546,6 +560,9 @@ impl<R: Runtime> TransportManagerBuilder<R> {
 pub struct TransportManager<R: Runtime> {
     /// RX channel for receiving commands from other subsystems.
     cmd_rx: Receiver<ProtocolCommand>,
+
+    /// RX channel for receiving dial requests.
+    dial_rx: Receiver<RouterId>,
 
     /// Event handle.
     event_handle: EventHandle<R>,
@@ -594,6 +611,11 @@ pub struct TransportManager<R: Runtime> {
 
     /// Are transit tunnels disabled.
     transit_tunnels_disabled: bool,
+
+    /// TX channel given to connections which they use to send inbound
+    /// messages to `SubsystemManager` for processing.
+    #[allow(unused)]
+    transport_tx: Sender<SubsystemEventNew>,
 
     /// Enabled transports.
     transports: Vec<Box<dyn Transport<Item = TransportEvent>>>,
@@ -956,6 +978,14 @@ impl<R: Runtime> Future for TransportManager<R> {
         }
 
         loop {
+            match self.dial_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(Some(router_id)) => self.on_dial_router(router_id),
+            }
+        }
+
+        loop {
             match self.cmd_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
@@ -1023,7 +1053,11 @@ mod tests {
     fn make_transport_manager(
         ntcp2: Option<Ntcp2Config>,
         ssu2: Option<Ssu2Config>,
-    ) -> TransportManagerBuilder<MockRuntime> {
+    ) -> (
+        TransportManagerBuilder<MockRuntime>,
+        Sender<RouterId>,
+        Receiver<SubsystemEventNew>,
+    ) {
         let (router_info, static_key, signing_key) = {
             let mut builder = RouterInfoBuilder::default();
 
@@ -1038,6 +1072,8 @@ mod tests {
             builder.build()
         };
         let serialized = Bytes::from(router_info.serialize(&signing_key));
+        let (dial_tx, dial_rx) = channel(100);
+        let (transport_tx, transport_rx) = channel(100);
         let (handle, _) = NetDbHandle::create();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let ctx = RouterContext::new(
@@ -1051,10 +1087,16 @@ mod tests {
             event_handle.clone(),
         );
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
 
-        builder
+        (builder, dial_tx, transport_rx)
     }
 
     #[tokio::test]
@@ -1070,7 +1112,8 @@ mod tests {
         .unwrap()
         .0
         .unwrap();
-        let mut builder = make_transport_manager(Some(context.config()), None);
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(Some(context.config()), None);
         builder.register_ntcp2(context);
         let mut manager = builder.build();
 
@@ -1132,7 +1175,8 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder = make_transport_manager(Some(context.config()), None);
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(Some(context.config()), None);
         builder.register_ntcp2(context);
         let mut manager = builder.build();
 
@@ -1187,7 +1231,8 @@ mod tests {
         };
         let context =
             Ssu2Transport::<MockRuntime>::initialize(Some(ssu2)).await.unwrap().0.unwrap();
-        let mut builder = make_transport_manager(None, Some(context.config()));
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(None, Some(context.config()));
         builder.register_ssu2(context);
         let mut manager = builder.build();
 
@@ -1233,7 +1278,8 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder = make_transport_manager(None, Some(context.config()));
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(None, Some(context.config()));
         builder.register_ssu2(context);
         let mut manager = builder.build();
 
@@ -1286,7 +1332,7 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder =
+        let (mut builder, _dial_tx, _transport_rx) =
             make_transport_manager(Some(ntcp2_context.config()), Some(ssu2_context.config()));
         builder.register_ssu2(ssu2_context);
         builder.register_ntcp2(ntcp2_context);
@@ -1366,7 +1412,8 @@ mod tests {
         .unwrap()
         .0
         .unwrap();
-        let mut builder = make_transport_manager(Some(context.config()), None);
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(Some(context.config()), None);
         builder.register_ntcp2(context);
         let mut manager = builder.build();
 
@@ -1428,7 +1475,8 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder = make_transport_manager(None, Some(context.config()));
+        let (mut builder, _dial_tx, _transport_rx) =
+            make_transport_manager(None, Some(context.config()));
         builder.register_ssu2(context);
         let mut manager = builder.build();
 
@@ -1477,7 +1525,15 @@ mod tests {
             event_handle.clone(),
         );
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
         let _handle = builder.register_subsystem(SubsystemKind::NetDb);
         let mut manager = builder.build();
@@ -1592,7 +1648,15 @@ mod tests {
         let router_id = router.identity.id();
         storage.add_router(router);
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
         let mut handle = builder.register_subsystem(SubsystemKind::NetDb);
         let mut manager = builder.build();
@@ -1720,7 +1784,15 @@ mod tests {
         );
         let router_id = RouterId::random();
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
         let mut handle = builder.register_subsystem(SubsystemKind::NetDb);
         let mut manager = builder.build();
@@ -1859,7 +1931,15 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         let _handle = builder.register_subsystem(SubsystemKind::NetDb);
         builder.register_netdb_handle(handle);
         builder.register_ntcp2(context);
@@ -1915,7 +1995,15 @@ mod tests {
         .0
         .unwrap();
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         let _handle = builder.register_subsystem(SubsystemKind::NetDb);
         builder.register_netdb_handle(handle);
         builder.register_ntcp2(context);
@@ -1953,7 +2041,15 @@ mod tests {
         );
         let router_id = RouterId::random();
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
         let mut handle = builder.register_subsystem(SubsystemKind::NetDb);
         let mut manager = builder.build();
@@ -2064,7 +2160,15 @@ mod tests {
             event_handle.clone(),
         );
 
-        let mut builder = TransportManagerBuilder::<MockRuntime>::new(ctx, router_info, true);
+        let (_dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
         builder.register_netdb_handle(handle);
         let mut handle = builder.register_subsystem(SubsystemKind::NetDb);
         let context = Ntcp2Transport::<MockRuntime>::initialize(Some(Ntcp2Config {

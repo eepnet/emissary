@@ -40,7 +40,7 @@ use crate::{
     profile::Bucket,
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
-    subsystem::SubsystemEvent,
+    subsystem::{SubsystemEvent, SubsystemManagerHandle},
     transport::TransportService,
     tunnel::{RoutingTable, TunnelPoolEvent, TunnelPoolHandle},
 };
@@ -188,6 +188,9 @@ pub struct NetDb<R: Runtime> {
     /// RX channel for receiving NetDb-related messages from [`TunnelManager`].
     netdb_msg_rx: mpsc::Receiver<Message>,
 
+    /// RX channel for receiving NetDb-related messages from `SubsystemManager`.
+    netdb_rx: mpsc::Receiver<Vec<(RouterId, Message)>>,
+
     /// TX channels of client destinations awaiting ready signal from [`NetDb`]
     pending_ready_awaits: Vec<oneshot::Sender<()>>,
 
@@ -217,6 +220,10 @@ pub struct NetDb<R: Runtime> {
 
     /// Transport service.
     service: TransportService<R>,
+
+    /// Handle for communicating with `SubsystemManager`.
+    #[allow(unused)]
+    subsystem_handle: SubsystemManagerHandle,
 }
 
 impl<R: Runtime> NetDb<R> {
@@ -228,6 +235,8 @@ impl<R: Runtime> NetDb<R> {
         exploratory_pool_handle: TunnelPoolHandle,
         routing_table: RoutingTable,
         netdb_msg_rx: mpsc::Receiver<Message>,
+        netdb_rx: mpsc::Receiver<Vec<(RouterId, Message)>>,
+        subsystem_handle: SubsystemManagerHandle,
     ) -> (Self, NetDbHandle) {
         let floodfills = router_ctx
             .profile_storage()
@@ -292,6 +301,7 @@ impl<R: Runtime> NetDb<R> {
                 maintenance_timer: R::timer(Duration::from_secs(5)),
                 message_builder: NetDbMessageBuilder::new(router_ctx.clone()),
                 netdb_msg_rx,
+                netdb_rx,
                 pending_ready_awaits: Vec::new(),
                 query_timers: R::join_set(),
                 router_ctx: router_ctx.clone(),
@@ -300,6 +310,7 @@ impl<R: Runtime> NetDb<R> {
                 routers: HashMap::new(),
                 routing_table,
                 service,
+                subsystem_handle,
             },
             NetDbHandle::new(handle_tx),
         )
@@ -1938,6 +1949,24 @@ impl<R: Runtime> Future for NetDb<R> {
         }
 
         loop {
+            match self.netdb_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(()),
+                Poll::Ready(Some(messages)) => {
+                    messages.into_iter().for_each(|(router_id, message)| {
+                        if let Err(error) = self.on_message(message, Some(router_id)) {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                ?error,
+                                "failed to handle message",
+                            );
+                        }
+                    })
+                }
+            }
+        }
+
+        loop {
             match self.netdb_msg_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
@@ -2114,7 +2143,9 @@ mod tests {
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
+        let (_netdb_tx, netdb_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2132,6 +2163,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set) = {
@@ -2233,6 +2266,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2250,6 +2285,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set) = {
@@ -2334,6 +2371,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2351,6 +2390,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set) = {
@@ -2437,6 +2478,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2454,6 +2497,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key1, expired_lease_set1) = {
@@ -2751,6 +2796,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2768,6 +2815,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, router_info) = {
@@ -2865,6 +2914,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2882,6 +2933,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, router_info) = {
@@ -2958,6 +3011,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2975,6 +3030,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set, expires) = {
@@ -3081,6 +3138,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3098,6 +3157,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let key = Bytes::from(DestinationId::random().to_vec());
@@ -3180,6 +3241,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3197,6 +3260,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, router_info) = {
@@ -3301,6 +3366,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3318,6 +3385,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let key = Bytes::from(RouterId::random().to_vec());
@@ -3380,6 +3449,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3397,6 +3468,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         // publish local router info
@@ -3465,6 +3538,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3482,6 +3557,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key1, expired_lease_set1) = {
@@ -3730,6 +3807,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3747,6 +3826,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key1, expiring_router_info) = {
@@ -3984,6 +4065,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4001,6 +4084,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, router_info) = {
@@ -4076,6 +4161,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4093,6 +4180,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set) = {
@@ -4172,6 +4261,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4189,6 +4280,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, router_info) = {
@@ -4265,6 +4358,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4282,6 +4377,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         netdb
@@ -4437,6 +4534,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4454,6 +4553,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         // publish local router info and poll netdb so the request is handled
@@ -4541,6 +4642,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4558,6 +4661,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         netdb
@@ -4613,6 +4718,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4630,6 +4737,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         netdb
@@ -4692,6 +4801,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4709,6 +4820,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         netdb
@@ -4772,6 +4885,8 @@ mod tests {
         let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
         let (transit_tx, _transit_rx) = channel(64);
         let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_tx, netdb_rx) = channel(64);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4789,6 +4904,8 @@ mod tests {
             tp_handle,
             rtbl,
             msg_rx,
+            netdb_rx,
+            handle,
         );
 
         let (key, lease_set) = {
