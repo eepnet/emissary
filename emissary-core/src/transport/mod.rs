@@ -498,6 +498,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             self.allow_local,
             self.router_ctx.clone(),
             self.subsystem_handle.clone(),
+            self.transport_tx.clone(),
         )))
     }
 
@@ -509,6 +510,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             self.allow_local,
             self.router_ctx.clone(),
             self.subsystem_handle.clone(),
+            self.transport_tx.clone(),
         )))
     }
 
@@ -542,7 +544,6 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             // in intervals of [`ROUTER_INFO_REPUBLISH_INTERVAL`]
             router_info_republish_timer: R::timer(Duration::from_secs(10)),
             routers: HashSet::new(),
-            transport_tx: self.transport_tx,
             shutting_down: false,
             ssu2_config: self.ssu2_config,
             subsystem_handle: self.subsystem_handle,
@@ -611,11 +612,6 @@ pub struct TransportManager<R: Runtime> {
 
     /// Are transit tunnels disabled.
     transit_tunnels_disabled: bool,
-
-    /// TX channel given to connections which they use to send inbound
-    /// messages to `SubsystemManager` for processing.
-    #[allow(unused)]
-    transport_tx: Sender<SubsystemEventNew>,
 
     /// Enabled transports.
     transports: Vec<Box<dyn Transport<Item = TransportEvent>>>,

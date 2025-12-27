@@ -25,7 +25,7 @@ use crate::{
     events::EventHandle,
     primitives::{RouterId, RouterInfo},
     runtime::{AsyncRead, AsyncWrite, Runtime},
-    subsystem::SubsystemCommand,
+    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemCommand, SubsystemEventNew},
     transport::{
         ntcp2::{
             message::MessageBlock,
@@ -36,7 +36,7 @@ use crate::{
 };
 
 use futures::FutureExt;
-use thingbuf::mpsc::{channel, Receiver, Sender};
+use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
 use alloc::{vec, vec::Vec};
 use core::{
@@ -105,6 +105,16 @@ pub struct Ntcp2Session<R: Runtime> {
     /// TX channel for sending commands for this connection.
     cmd_tx: Sender<SubsystemCommand>,
 
+    /// TX channel given to `SubsystemManager`.
+    msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
+
+    /// RX channel for receiving messages from `SubsystemManager`.
+    #[allow(unused)]
+    msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
+
+    /// TX channel for sending events to `SubsystemManager`.
+    transport_tx: Sender<SubsystemEventNew>,
+
     /// Direction of the session.
     direction: Direction,
 
@@ -161,6 +171,7 @@ impl<R: Runtime> Ntcp2Session<R> {
         subsystem_handle: SubsystemHandle,
         direction: Direction,
         event_handle: EventHandle<R>,
+        transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
         let KeyContext {
             send_key,
@@ -169,9 +180,12 @@ impl<R: Runtime> Ntcp2Session<R> {
         } = key_context;
 
         let (cmd_tx, cmd_rx) = channel(512);
+        let (msg_tx, msg_rx) = with_recycle(512, OutboundMessageRecycle::default());
 
         Self {
             cmd_rx,
+            msg_rx,
+            msg_tx,
             cmd_tx,
             direction,
             event_handle,
@@ -187,6 +201,7 @@ impl<R: Runtime> Ntcp2Session<R> {
             sip,
             stream,
             subsystem_handle,
+            transport_tx,
             write_state: WriteState::GetMessage,
         }
     }
@@ -213,6 +228,16 @@ impl<R: Runtime> Ntcp2Session<R> {
             "start ntcp2 event loop",
         );
 
+        // subsystem manager should never exit
+        self.transport_tx
+            .send(SubsystemEventNew::ConnectionEstablished {
+                router_id: self.router.clone(),
+                tx: self.msg_tx.clone(),
+            })
+            .await
+            .expect("manager to stay alive");
+
+        // TODO: remove eventually
         self.subsystem_handle
             .report_connection_established(self.router.clone(), self.cmd_tx.clone())
             .await;
@@ -362,6 +387,18 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 })
                                 .collect::<Vec<_>>();
 
+                            if let Err(error) =
+                                this.msg_tx.try_send(OutboundMessage::Messages(messages.clone()))
+                            {
+                                tracing::warn!(
+                                    target: LOG_TARGET,
+                                    router_id = %this.router,
+                                    ?error,
+                                    "failed to dispatch messages to subsystems",
+                                );
+                            }
+
+                            // TODO: remove eventually
                             if let Err(error) = this
                                 .subsystem_handle
                                 .dispatch_messages(this.router.clone(), messages)

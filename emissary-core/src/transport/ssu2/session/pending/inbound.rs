@@ -731,7 +731,7 @@ mod tests {
         crypto::sha256::Sha256,
         primitives::RouterInfoBuilder,
         runtime::mock::MockRuntime,
-        subsystem::SubsystemHandle,
+        subsystem::{SubsystemEventNew, SubsystemHandle},
         transport::ssu2::session::pending::outbound::{OutboundSsu2Context, OutboundSsu2Session},
     };
     use std::net::{IpAddr, Ipv4Addr};
@@ -748,6 +748,7 @@ mod tests {
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
+        transport_rx: Receiver<SubsystemEventNew>,
     }
 
     fn create_session() -> (InboundContext, OutboundContext) {
@@ -784,6 +785,7 @@ mod tests {
         let (inbound_session_tx, inbound_session_rx) = channel(128);
         let (outbound_socket_tx, outbound_socket_rx) = channel(128);
         let (outbound_session_tx, outbound_session_rx) = channel(128);
+        let (transport_tx, transport_rx) = channel(128);
 
         let (router_info, _, signing_key) = RouterInfoBuilder::default()
             .with_ssu2(crate::Ssu2Config {
@@ -812,6 +814,7 @@ mod tests {
             state: inbound_state.clone(),
             static_key: inbound_static_key.public(),
             subsystem_handle: SubsystemHandle::new(),
+            transport_tx,
         });
 
         let (pkt, pkt_num, dst_id, src_id) = {
@@ -854,6 +857,7 @@ mod tests {
                 outbound_socket_rx,
                 outbound_session_tx,
                 outbound_session: outbound,
+                transport_rx,
             },
         )
     }
@@ -1086,6 +1090,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                transport_rx: _transport_rx,
             },
         ) = create_session();
 

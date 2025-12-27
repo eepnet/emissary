@@ -24,7 +24,7 @@ use crate::{
     error::Ssu2Error,
     primitives::RouterId,
     runtime::Runtime,
-    subsystem::SubsystemHandle,
+    subsystem::{SubsystemEventNew, SubsystemHandle},
     transport::ssu2::{
         message::{
             handshake::{SessionConfirmedBuilder, SessionRequestBuilder, TokenRequestBuilder},
@@ -103,6 +103,9 @@ pub struct OutboundSsu2Context {
 
     /// Subsystem handle.
     pub subsystem_handle: SubsystemHandle,
+
+    /// TX channel for communicating with `SubsystemManager`.
+    pub transport_tx: Sender<SubsystemEventNew>,
 }
 
 /// State for a pending outbound SSU2 session.
@@ -197,6 +200,9 @@ pub struct OutboundSsu2Session<R: Runtime> {
 
     /// Subsystem handle.
     subsystem_handle: SubsystemHandle,
+
+    /// TX channel for communicating with `SubsystemManager`.
+    transport_tx: Sender<SubsystemEventNew>,
 }
 
 impl<R: Runtime> OutboundSsu2Session<R> {
@@ -218,6 +224,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             state,
             static_key,
             subsystem_handle,
+            transport_tx,
         } = context;
 
         tracing::trace!(
@@ -270,6 +277,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 static_key,
             },
             subsystem_handle,
+            transport_tx,
         }
     }
 
@@ -661,6 +669,22 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 | PendingSsu2SessionStatus::Timeout { .. }
                 | PendingSsu2SessionStatus::SocketClosed { .. }
         ) {
+            if let Err(error) = self
+                .transport_tx
+                .send(SubsystemEventNew::ConnectionFailure {
+                    router_id: self.router_id.clone(),
+                })
+                .await
+            {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?error,
+                    "failed to report connection failure to subsystem manager",
+                );
+            }
+
+            // TODO: remove eventually
             self.subsystem_handle.report_connection_failure(self.router_id.clone()).await;
         }
 
@@ -773,6 +797,7 @@ mod tests {
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
+        transport_rx: Receiver<SubsystemEventNew>,
     }
 
     fn create_session() -> (InboundContext, OutboundContext) {
@@ -809,6 +834,7 @@ mod tests {
         let (inbound_session_tx, inbound_session_rx) = channel(128);
         let (outbound_socket_tx, outbound_socket_rx) = channel(128);
         let (outbound_session_tx, outbound_session_rx) = channel(128);
+        let (transport_tx, transport_rx) = channel(128);
         let (event_rx, subsystem_handle) = {
             let (event_tx, event_rx) = channel(128);
             let mut handle = SubsystemHandle::new();
@@ -844,6 +870,7 @@ mod tests {
             state: inbound_state.clone(),
             static_key: inbound_static_key.public(),
             subsystem_handle,
+            transport_tx,
         });
 
         let (pkt, pkt_num, dst_id, src_id) = {
@@ -883,6 +910,7 @@ mod tests {
             },
             OutboundContext {
                 event_rx,
+                transport_rx,
                 outbound_session: outbound,
                 outbound_session_tx,
                 outbound_socket_rx,
@@ -899,6 +927,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: _ob_sess_tx,
                 outbound_socket_rx,
+                transport_rx: _transport_rx,
             },
         ) = create_session();
         let router_id = outbound_session.router_id.clone();
@@ -942,6 +971,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                transport_rx: _transport_rx,
             },
         ) = create_session();
 
@@ -996,6 +1026,7 @@ mod tests {
                 outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                transport_rx: _transport_rx,
             },
         ) = create_session();
 
@@ -1068,6 +1099,7 @@ mod tests {
                 mut outbound_session,
                 outbound_session_tx: ob_sess_tx,
                 outbound_socket_rx,
+                transport_rx: _transport_rx,
             },
         ) = create_session();
 

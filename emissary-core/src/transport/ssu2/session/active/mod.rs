@@ -22,7 +22,10 @@ use crate::{
     i2np::Message,
     primitives::RouterId,
     runtime::{Counter, MetricsHandle, Runtime},
-    subsystem::{SubsystemCommand, SubsystemHandle},
+    subsystem::{
+        OutboundMessage, OutboundMessageRecycle, SubsystemCommand, SubsystemEventNew,
+        SubsystemHandle,
+    },
     transport::{
         ssu2::{
             message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
@@ -44,7 +47,7 @@ use crate::{
 };
 
 use futures::FutureExt;
-use thingbuf::mpsc::{channel, Receiver, Sender};
+use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
@@ -188,6 +191,12 @@ pub struct Ssu2Session<R: Runtime> {
     /// TX channel for sending commands for this connection.
     cmd_tx: Sender<SubsystemCommand>,
 
+    /// RX channel for receiving messages from `SubsystemManager`.
+    msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
+    /// TX channel given to `SubsystemManager` which it uses
+    /// to send messages to this connection.
+    msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
+
     /// Destination connection ID.
     dst_id: u64,
 
@@ -239,6 +248,9 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Transmission manager.
     transmission: TransmissionManager<R>,
+
+    /// TX channel for communicating with `SubsystemManager`.
+    transport_tx: Sender<SubsystemEventNew>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -247,9 +259,11 @@ impl<R: Runtime> Ssu2Session<R> {
         context: Ssu2SessionContext,
         pkt_tx: Sender<Packet>,
         subsystem_handle: SubsystemHandle,
+        transport_tx: Sender<SubsystemEventNew>,
         metrics: R::MetricsHandle,
     ) -> Self {
         let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
+        let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
         let pkt_num = Arc::new(AtomicU32::new(1u32));
 
         tracing::debug!(
@@ -270,6 +284,8 @@ impl<R: Runtime> Ssu2Session<R> {
             intro_key: context.intro_key,
             last_immediate_ack: 0u32,
             metrics: metrics.clone(),
+            msg_rx,
+            msg_tx,
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             pkt_tx,
@@ -280,6 +296,7 @@ impl<R: Runtime> Ssu2Session<R> {
             send_key_ctx: context.send_key_ctx,
             subsystem_handle,
             transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
+            transport_tx,
         }
     }
 
@@ -313,6 +330,18 @@ impl<R: Runtime> Ssu2Session<R> {
             return;
         }
 
+        if let Err(error) = self.transport_tx.try_send(SubsystemEventNew::Message {
+            messages: vec![(self.router_id.clone(), message.clone())],
+        }) {
+            tracing::warn!(
+                target: LOG_TARGET,
+                router_id = %self.router_id,
+                ?error,
+                "failed to dispatch messages to subsystems",
+            );
+        }
+
+        // TODO: remove eventually
         if let Err(error) =
             self.subsystem_handle.dispatch_messages(self.router_id.clone(), vec![message])
         {
@@ -611,6 +640,16 @@ impl<R: Runtime> Ssu2Session<R> {
 
     /// Run the event loop of an active SSU2 session.
     pub async fn run(mut self) -> TerminationContext {
+        // subsystem manager doesn't exit
+        self.transport_tx
+            .send(SubsystemEventNew::ConnectionEstablished {
+                router_id: self.router_id.clone(),
+                tx: self.msg_tx.clone(),
+            })
+            .await
+            .expect("manager to stay alive");
+
+        // TODO: remove eventually
         self.subsystem_handle
             .report_connection_established(self.router_id.clone(), self.cmd_tx.clone())
             .await;
@@ -621,6 +660,15 @@ impl<R: Runtime> Ssu2Session<R> {
         // inform other subsystems of the disconnection
         let reason = (&mut self).await;
 
+        // subsystem manager doesn't exit
+        self.transport_tx
+            .send(SubsystemEventNew::ConnectionClosed {
+                router_id: self.router_id.clone(),
+            })
+            .await
+            .expect("manager to stay alive");
+
+        // TODO: remove eventually
         self.subsystem_handle.report_connection_closed(self.router_id.clone()).await;
 
         TerminationContext {
@@ -678,6 +726,14 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                 Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
                     self.send_message(message),
                 Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
+            }
+        }
+
+        loop {
+            match self.msg_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
+                Poll::Ready(Some(_)) => {}
             }
         }
 
@@ -793,12 +849,14 @@ mod tests {
 
                 (handle, cmd_rx)
             };
+            let (transport_tx, _transport_rx) = channel(16);
 
             tokio::spawn(
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
                     to_socket_tx,
                     handle,
+                    transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
                 .run(),
@@ -925,6 +983,7 @@ mod tests {
     async fn session_terminated_after_too_many_resends() {
         let (_from_socket_tx, from_socket_rx) = channel(128);
         let (to_socket_tx, to_socket_rx) = channel(128);
+        let (transport_tx, _transport_rx) = channel(16);
 
         let ctx = Ssu2SessionContext {
             address: "127.0.0.1:8888".parse().unwrap(),
@@ -957,6 +1016,7 @@ mod tests {
                     ctx,
                     to_socket_tx,
                     handle,
+                    transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
                 .run(),

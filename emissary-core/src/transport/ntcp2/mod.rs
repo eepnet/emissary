@@ -22,7 +22,7 @@ use crate::{
     primitives::{RouterAddress, RouterId, RouterInfo},
     router::context::RouterContext,
     runtime::{Counter, JoinSet, MetricType, MetricsHandle, Runtime, TcpListener},
-    subsystem::SubsystemHandle,
+    subsystem::{SubsystemEventNew, SubsystemHandle},
     transport::{
         metrics::*,
         ntcp2::{
@@ -42,6 +42,7 @@ use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
+use thingbuf::mpsc::Sender;
 
 mod listener;
 mod message;
@@ -111,6 +112,7 @@ impl<R: Runtime> Ntcp2Transport<R> {
         allow_local: bool,
         router_ctx: RouterContext<R>,
         subsystem_handle: SubsystemHandle,
+        transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
         let Ntcp2Context {
             config,
@@ -124,6 +126,7 @@ impl<R: Runtime> Ntcp2Transport<R> {
             router_ctx.clone(),
             subsystem_handle,
             allow_local,
+            transport_tx,
         );
 
         tracing::info!(
