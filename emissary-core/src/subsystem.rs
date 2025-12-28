@@ -547,6 +547,9 @@ pub struct SubsystemManager<R: Runtime> {
     /// Measured outbound traffic, in bytes.
     outbound: usize,
 
+    /// Local router ID.
+    router_id: RouterId,
+
     /// Connected routers.
     routers: HashMap<RouterId, RouterState>,
 
@@ -568,7 +571,12 @@ pub struct SubsystemManager<R: Runtime> {
 
 impl<R: Runtime> SubsystemManager<R> {
     #[allow(unused)]
-    pub fn new(limit: usize, share: f32, noise: NoiseContext) -> SubsystemManagerContext<R> {
+    pub fn new(
+        limit: usize,
+        share: f32,
+        router_id: RouterId,
+        noise: NoiseContext,
+    ) -> SubsystemManagerContext<R> {
         assert!(share <= 1.0);
 
         let (event_tx, event_rx) = with_recycle(256, SubsystemManagerEventRecycle::default());
@@ -593,6 +601,7 @@ impl<R: Runtime> SubsystemManager<R> {
                 netdb_tx,
                 noise,
                 outbound: limit,
+                router_id,
                 routers: HashMap::new(),
                 throttle: Arc::clone(&throttle),
                 transit_tx,
@@ -619,6 +628,25 @@ impl<R: Runtime> SubsystemManager<R> {
     /// and queue the pending `message`. If connection succeeds, all pending messages are sent
     /// in order to the remote router. If the connection fails, all pending messages are dropped.
     fn on_outbound_message(&mut self, router_id: RouterId, message: OutboundMessage) {
+        if router_id == self.router_id {
+            return match message {
+                OutboundMessage::Message(message) => {
+                    self.on_inbound_message(vec![(router_id, message)])
+                }
+                OutboundMessage::Messages(messages) => self.on_inbound_message(
+                    messages
+                        .into_iter()
+                        .map(|message| (router_id.clone(), message))
+                        .collect(),
+                ),
+                OutboundMessage::MessageWithFeedback(message, feedback_tx) => {
+                    self.on_inbound_message(vec![(router_id, message)]);
+                    let _ = feedback_tx.send(());
+                }
+                OutboundMessage::Dummy => unreachable!(),
+            };
+        }
+
         match self.routers.get_mut(&router_id) {
             Some(RouterState::Dialing { pending }) => {
                 tracing::trace!(
@@ -1055,6 +1083,7 @@ mod tests {
         let SubsystemManagerContext { manager, .. } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1069,6 +1098,7 @@ mod tests {
         let SubsystemManagerContext { manager, .. } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             1.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1090,6 +1120,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let (msg_tx, _msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
@@ -1132,6 +1163,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1184,6 +1216,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let (feedback_tx, feedback_rx) = oneshot::channel();
@@ -1238,6 +1271,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1289,6 +1323,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let router_id = RouterId::random();
@@ -1404,6 +1439,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let router_id = RouterId::random();
@@ -1519,6 +1555,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
         let handle_clone = handle.clone();
@@ -1548,6 +1585,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1583,6 +1621,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1618,6 +1657,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1656,6 +1696,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1700,6 +1741,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1744,6 +1786,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1774,6 +1817,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1825,6 +1869,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1875,6 +1920,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1922,6 +1968,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -1970,6 +2017,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
@@ -2069,6 +2117,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2118,6 +2167,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2190,6 +2240,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2258,6 +2309,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2316,6 +2368,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2417,6 +2470,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2554,6 +2608,7 @@ mod tests {
         } = SubsystemManager::<MockRuntime>::new(
             100 * 1024,
             0.,
+            router_id.clone(),
             NoiseContext::new(private_key.clone(), Bytes::from(router_id.to_vec())),
         );
 
@@ -2602,5 +2657,54 @@ mod tests {
                 MessageType::DatabaseStore
             );
         }
+    }
+
+    #[tokio::test]
+    async fn route_message_locally() {
+        let private_key = StaticPrivateKey::random(rand_core::OsRng);
+        let router_id = RouterId::random();
+        let SubsystemManagerContext {
+            netdb_rx: _netdb_rx,
+            mut manager,
+            handle,
+            transit_rx: _transit_rx,
+            transport_tx: _tx,
+            ..
+        } = SubsystemManager::<MockRuntime>::new(
+            100 * 1024,
+            0.,
+            router_id.clone(),
+            NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
+        );
+
+        let (tunnel_id, tunnel_rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let message = {
+            let mut data = BytesMut::with_capacity(4 + 16 + 1008);
+            data.put_u32(*tunnel_id);
+            data.put_slice(&[0xaa; 16]);
+            data.put_slice(&[0xbb; 1008]);
+
+            data.to_vec()
+        };
+
+        // route message to self
+        //
+        // this can happen, when e.g., OBEP and IBGW are the same router
+        handle
+            .send(
+                router_id.clone(),
+                Message {
+                    message_type: MessageType::TunnelData,
+                    payload: message,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        poll_manager!(manager);
+
+        let message = tunnel_rx.try_recv().unwrap();
+        let message = EncryptedTunnelData::parse(&message.payload).unwrap();
+        assert_eq!(message.iv(), &[0xaa; 16]);
+        assert_eq!(message.ciphertext(), &[0xbb; 1008]);
     }
 }

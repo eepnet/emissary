@@ -36,6 +36,7 @@ use crate::{
 };
 
 use futures::FutureExt;
+use futures_channel::oneshot;
 use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
 use alloc::{vec, vec::Vec};
@@ -82,6 +83,11 @@ enum WriteState {
 
         /// I2NP message.
         message: Vec<u8>,
+
+        /// TX channel for sending feedback of the send operation.
+        ///
+        /// `None` if feedback was not requested.
+        feedback_tx: Option<oneshot::Sender<()>>,
     },
 
     /// Send message.
@@ -91,6 +97,11 @@ enum WriteState {
 
         /// I2NP message, potentially partially written.
         message: Vec<u8>,
+
+        /// TX channel for sending feedback of the send operation.
+        ///
+        /// `None` if feedback was not requested.
+        feedback_tx: Option<oneshot::Sender<()>>,
     },
 
     /// [`WriteState`] has been poisoned due to a bug.
@@ -159,6 +170,11 @@ pub struct Ntcp2Session<R: Runtime> {
 
     /// Write state.
     write_state: WriteState,
+
+    /// New write state.
+    //
+    // TODO: remove eventually
+    new_write_state: WriteState,
 }
 
 impl<R: Runtime> Ntcp2Session<R> {
@@ -203,6 +219,7 @@ impl<R: Runtime> Ntcp2Session<R> {
             subsystem_handle,
             transport_tx,
             write_state: WriteState::GetMessage,
+            new_write_state: WriteState::GetMessage,
         }
     }
 
@@ -388,7 +405,12 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 .collect::<Vec<_>>();
 
                             if let Err(error) =
-                                this.msg_tx.try_send(OutboundMessage::Messages(messages.clone()))
+                                this.transport_tx.try_send(SubsystemEventNew::Message {
+                                    messages: messages
+                                        .iter()
+                                        .map(|message| (this.router.clone(), message.clone()))
+                                        .collect(),
+                                })
                             {
                                 tracing::warn!(
                                     target: LOG_TARGET,
@@ -440,6 +462,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                             size: size.to_be_bytes().to_vec(),
                             offset: 0usize,
                             message: data_block,
+                            feedback_tx: None,
                         };
                     }
                 },
@@ -447,12 +470,14 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                     offset,
                     size,
                     message,
+                    feedback_tx,
                 } => match stream.as_mut().poll_write(cx, &size[offset..]) {
                     Poll::Pending => {
                         this.write_state = WriteState::SendSize {
                             offset,
                             size,
                             message,
+                            feedback_tx,
                         };
                         break;
                     }
@@ -466,6 +491,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 this.write_state = WriteState::SendMessage {
                                     offset: 0usize,
                                     message,
+                                    feedback_tx,
                                 };
                             }
                             false => {
@@ -473,36 +499,201 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                     size,
                                     offset: offset + nwritten,
                                     message,
+                                    feedback_tx,
                                 };
                             }
                         }
                     }
                 },
-                WriteState::SendMessage { offset, message } => {
-                    match stream.as_mut().poll_write(cx, &message[offset..]) {
-                        Poll::Pending => {
-                            this.write_state = WriteState::SendMessage { offset, message };
-                            break;
-                        }
-                        Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
-                        Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
-                        Poll::Ready(Ok(nwritten)) => {
-                            this.outbound_bandwidth += nwritten;
+                WriteState::SendMessage {
+                    offset,
+                    message,
+                    feedback_tx,
+                } => match stream.as_mut().poll_write(cx, &message[offset..]) {
+                    Poll::Pending => {
+                        this.write_state = WriteState::SendMessage {
+                            offset,
+                            message,
+                            feedback_tx,
+                        };
+                        break;
+                    }
+                    Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(nwritten)) => {
+                        this.outbound_bandwidth += nwritten;
 
-                            match nwritten + offset == message.len() {
-                                true => {
-                                    this.write_state = WriteState::GetMessage;
+                        match nwritten + offset == message.len() {
+                            true => {
+                                if let Some(tx) = feedback_tx {
+                                    let _ = tx.send(());
                                 }
-                                false => {
-                                    this.write_state = WriteState::SendMessage {
-                                        offset: offset + nwritten,
-                                        message,
-                                    };
-                                }
+                                this.write_state = WriteState::GetMessage;
+                            }
+                            false => {
+                                this.write_state = WriteState::SendMessage {
+                                    offset: offset + nwritten,
+                                    message,
+                                    feedback_tx,
+                                };
                             }
                         }
                     }
+                },
+                WriteState::Poisoned => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        router = %this.router,
+                        "write state is poisoned",
+                    );
+                    debug_assert!(false);
+                    return Poll::Ready(TerminationReason::Unspecified);
                 }
+            }
+        }
+
+        loop {
+            match mem::replace(&mut this.new_write_state, WriteState::Poisoned) {
+                WriteState::GetMessage => match this.msg_rx.poll_recv(cx) {
+                    Poll::Pending => {
+                        this.new_write_state = WriteState::GetMessage;
+                        break;
+                    }
+                    Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
+                    Poll::Ready(Some(OutboundMessage::Message(message))) => {
+                        let message = message.serialize_short();
+                        assert!(message.len() as u16 <= u16::MAX, "too large message");
+
+                        // TODO: in-place?
+                        let test = MessageBlock::new_i2np_message(&message);
+                        let data_block = this.send_cipher.encrypt(&test).unwrap();
+                        let size = this.sip.obfuscate(data_block.len() as u16);
+
+                        this.new_write_state = WriteState::SendSize {
+                            size: size.to_be_bytes().to_vec(),
+                            offset: 0usize,
+                            message: data_block,
+                            feedback_tx: None,
+                        };
+                    }
+                    Poll::Ready(Some(OutboundMessage::MessageWithFeedback(
+                        message,
+                        feedback_tx,
+                    ))) => {
+                        let message = message.serialize_short();
+                        assert!(message.len() as u16 <= u16::MAX, "too large message");
+
+                        // TODO: in-place?
+                        let test = MessageBlock::new_i2np_message(&message);
+                        let data_block = this.send_cipher.encrypt(&test).unwrap();
+                        let size = this.sip.obfuscate(data_block.len() as u16);
+
+                        this.new_write_state = WriteState::SendSize {
+                            size: size.to_be_bytes().to_vec(),
+                            offset: 0usize,
+                            message: data_block,
+                            feedback_tx: Some(feedback_tx),
+                        };
+                    }
+                    Poll::Ready(Some(OutboundMessage::Messages(mut messages))) => {
+                        assert!(!messages.is_empty());
+
+                        // TODO: add support for packing multiple message blocks
+                        if messages.len() > 1 {
+                            todo!("not implemented")
+                        }
+
+                        let message = messages.pop().expect("message to exist").serialize_short();
+                        assert!(message.len() as u16 <= u16::MAX, "too large message");
+
+                        // TODO: in-place?
+                        let test = MessageBlock::new_i2np_message(&message);
+                        let data_block = this.send_cipher.encrypt(&test).unwrap();
+                        let size = this.sip.obfuscate(data_block.len() as u16);
+
+                        this.new_write_state = WriteState::SendSize {
+                            size: size.to_be_bytes().to_vec(),
+                            offset: 0usize,
+                            message: data_block,
+                            feedback_tx: None,
+                        };
+                    }
+                    Poll::Ready(Some(OutboundMessage::Dummy)) => unreachable!(),
+                },
+                WriteState::SendSize {
+                    offset,
+                    size,
+                    message,
+                    feedback_tx,
+                } => match stream.as_mut().poll_write(cx, &size[offset..]) {
+                    Poll::Pending => {
+                        this.new_write_state = WriteState::SendSize {
+                            offset,
+                            size,
+                            message,
+                            feedback_tx,
+                        };
+                        break;
+                    }
+                    Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(nwritten)) => {
+                        this.outbound_bandwidth += nwritten;
+
+                        match nwritten + offset == size.len() {
+                            true => {
+                                this.new_write_state = WriteState::SendMessage {
+                                    offset: 0usize,
+                                    message,
+                                    feedback_tx,
+                                };
+                            }
+                            false => {
+                                this.new_write_state = WriteState::SendSize {
+                                    size,
+                                    offset: offset + nwritten,
+                                    message,
+                                    feedback_tx,
+                                };
+                            }
+                        }
+                    }
+                },
+                WriteState::SendMessage {
+                    offset,
+                    message,
+                    feedback_tx,
+                } => match stream.as_mut().poll_write(cx, &message[offset..]) {
+                    Poll::Pending => {
+                        this.new_write_state = WriteState::SendMessage {
+                            offset,
+                            message,
+                            feedback_tx,
+                        };
+                        break;
+                    }
+                    Poll::Ready(Err(_)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(0)) => return Poll::Ready(TerminationReason::IoError),
+                    Poll::Ready(Ok(nwritten)) => {
+                        this.outbound_bandwidth += nwritten;
+
+                        match nwritten + offset == message.len() {
+                            true => {
+                                if let Some(tx) = feedback_tx {
+                                    let _ = tx.send(());
+                                }
+                                this.new_write_state = WriteState::GetMessage;
+                            }
+                            false => {
+                                this.new_write_state = WriteState::SendMessage {
+                                    offset: offset + nwritten,
+                                    message,
+                                    feedback_tx,
+                                };
+                            }
+                        }
+                    }
+                },
                 WriteState::Poisoned => {
                     tracing::warn!(
                         target: LOG_TARGET,

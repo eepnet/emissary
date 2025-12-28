@@ -289,7 +289,12 @@ impl<R: Runtime> Router<R> {
             transit_rx,
             transport_tx,
             dial_rx,
-        } = SubsystemManager::<R>::new(100, 0., router_ctx.noise().clone());
+        } = SubsystemManager::<R>::new(
+            100,
+            0.,
+            router_ctx.router_id().clone(),
+            router_ctx.noise().clone(),
+        );
 
         // spawn subsystem manager in the background
         R::spawn(manager);
