@@ -193,6 +193,7 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// RX channel for receiving messages from `SubsystemManager`.
     msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
+
     /// TX channel given to `SubsystemManager` which it uses
     /// to send messages to this connection.
     msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
@@ -726,6 +727,33 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                 Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
                     self.send_message(message),
                 Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
+            }
+        }
+
+        while self.transmission.has_capacity() {
+            match self.msg_rx.poll_recv(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
+                Poll::Ready(Some(OutboundMessage::Message(message))) => {
+                    self.send_message(message.serialize_short()); // TODO: remove `serialize()`
+                }
+                Poll::Ready(Some(OutboundMessage::MessageWithFeedback(message, feedback_tx))) => {
+                    self.send_message(message.serialize_short()); // TODO: remove `serialize()`
+                    let _ = feedback_tx.send(());
+                }
+                Poll::Ready(Some(OutboundMessage::Messages(mut messages))) => {
+                    assert!(!messages.is_empty());
+
+                    // TODO: add support for packing multiple message blocks
+                    if messages.len() > 1 {
+                        todo!("not implemented")
+                    }
+
+                    // TODO: remove `serialize()`
+                    let message = messages.pop().expect("message to exist").serialize_short();
+                    self.send_message(message);
+                }
+                Poll::Ready(Some(OutboundMessage::Dummy)) => {}
             }
         }
 

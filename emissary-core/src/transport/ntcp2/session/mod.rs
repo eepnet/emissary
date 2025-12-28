@@ -461,7 +461,7 @@ mod tests {
     use crate::{
         crypto::{SigningPrivateKey, StaticPrivateKey},
         events::EventManager,
-        i2np::{MessageBuilder, MessageType, I2NP_MESSAGE_EXPIRATION},
+        i2np::{Message, MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::{
             Capabilities, Date, Mapping, RouterAddress, RouterIdentity, RouterInfo, Str,
             TransportKind,
@@ -471,7 +471,7 @@ mod tests {
             mock::{MockRuntime, MockTcpListener, MockTcpStream},
             Runtime, TcpListener as _,
         },
-        subsystem::{InnerSubsystemEvent, SubsystemCommand, SubsystemHandle},
+        subsystem::{OutboundMessage, SubsystemHandle},
         transport::ntcp2::{listener::Ntcp2Listener, session::SessionManager},
     };
     use bytes::Bytes;
@@ -855,16 +855,9 @@ mod tests {
     #[tokio::test]
     async fn received_expired_message() {
         let local = Ntcp2Builder::new().build();
-        let mut local_handle = SubsystemHandle::new();
+        let local_handle = SubsystemHandle::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (transport_tx1, _transport_rx1) = channel(16);
-
-        let (_local_tunnel_tx, _local_tunnel_rx) = channel(64);
-        local_handle.register_subsystem(_local_tunnel_tx);
-
-        let (local_tx, local_rx) = channel(64);
-        local_handle.register_subsystem(local_tx);
-
+        let (local_tx, local_rx) = channel(16);
         let local_manager = SessionManager::new(
             local.ntcp2_key,
             local.ntcp2_iv,
@@ -880,22 +873,15 @@ mod tests {
             ),
             local_handle,
             true,
-            transport_tx1,
+            local_tx,
         );
 
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let remote = Ntcp2Builder::new()
             .with_router_address(listener.local_addr().unwrap().port())
             .build();
-        let (transport_tx2, _transport_rx2) = channel(16);
-
-        let mut remote_handle = SubsystemHandle::new();
-
-        let (_remote_tunnel_tx, _remote_tunnel_rx) = channel(64);
-        remote_handle.register_subsystem(_remote_tunnel_tx);
-
-        let (remote_tx, remote_rx) = channel(64);
-        remote_handle.register_subsystem(remote_tx);
+        let (remote_tx, remote_rx) = channel(16);
+        let remote_handle = SubsystemHandle::new();
 
         let remote_manager = SessionManager::new(
             remote.ntcp2_key,
@@ -912,7 +898,7 @@ mod tests {
             ),
             remote_handle.clone(),
             true,
-            transport_tx2,
+            remote_tx,
         );
 
         let handle =
@@ -935,7 +921,8 @@ mod tests {
         let (_local_router, remote_command_tx) =
             tokio::time::timeout(Duration::from_secs(5), async {
                 match remote_rx.recv().await {
-                    Some(InnerSubsystemEvent::ConnectionEstablished { router, tx }) => (router, tx),
+                    Some(SubsystemEventNew::ConnectionEstablished { router_id, tx }) =>
+                        (router_id, tx),
                     _ => panic!("invalid event received"),
                 }
             })
@@ -944,7 +931,8 @@ mod tests {
         let (_remote_router, _local_command_tx) =
             tokio::time::timeout(Duration::from_secs(5), async {
                 match local_rx.recv().await {
-                    Some(InnerSubsystemEvent::ConnectionEstablished { router, tx }) => (router, tx),
+                    Some(SubsystemEventNew::ConnectionEstablished { router_id, tx }) =>
+                        (router_id, tx),
                     _ => panic!("invalid event received"),
                 }
             })
@@ -953,20 +941,18 @@ mod tests {
 
         // send non-expired database message
         remote_command_tx
-            .send(SubsystemCommand::SendMessage {
-                message: MessageBuilder::short()
-                    .with_expiration(MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-                    .with_message_type(MessageType::DatabaseStore)
-                    .with_message_id(1337u32)
-                    .with_payload(&vec![1, 1, 1, 1])
-                    .build(),
-            })
+            .send(OutboundMessage::Message(Message {
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                message_type: MessageType::DatabaseStore,
+                message_id: 1337u32,
+                payload: vec![1, 1, 1, 1],
+            }))
             .await
             .unwrap();
 
         tokio::time::timeout(Duration::from_secs(5), async {
             match local_rx.recv().await {
-                Some(InnerSubsystemEvent::I2Np { mut messages }) => {
+                Some(SubsystemEventNew::Message { mut messages }) => {
                     assert_eq!(messages.len(), 1);
                     let (_, message) = messages.pop().unwrap();
 
@@ -982,14 +968,12 @@ mod tests {
 
         // send expired database message
         remote_command_tx
-            .send(SubsystemCommand::SendMessage {
-                message: MessageBuilder::short()
-                    .with_expiration(MockRuntime::time_since_epoch() - Duration::from_secs(5))
-                    .with_message_type(MessageType::DatabaseStore)
-                    .with_message_id(1338u32)
-                    .with_payload(&vec![2, 2, 2, 2])
-                    .build(),
-            })
+            .send(OutboundMessage::Message(Message {
+                expiration: MockRuntime::time_since_epoch() - Duration::from_secs(5),
+                message_type: MessageType::DatabaseStore,
+                message_id: 1338u32,
+                payload: vec![2, 2, 2, 2],
+            }))
             .await
             .unwrap();
 
@@ -1004,20 +988,18 @@ mod tests {
 
         // send another non-expired database message
         remote_command_tx
-            .send(SubsystemCommand::SendMessage {
-                message: MessageBuilder::short()
-                    .with_expiration(MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-                    .with_message_type(MessageType::DatabaseStore)
-                    .with_message_id(1339u32)
-                    .with_payload(&vec![3, 3, 3, 3])
-                    .build(),
-            })
+            .send(OutboundMessage::Message(Message {
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                message_type: MessageType::DatabaseStore,
+                message_id: 1339u32,
+                payload: vec![3, 3, 3, 3],
+            }))
             .await
             .unwrap();
 
         tokio::time::timeout(Duration::from_secs(5), async {
             match local_rx.recv().await {
-                Some(InnerSubsystemEvent::I2Np { mut messages }) => {
+                Some(SubsystemEventNew::Message { mut messages }) => {
                     assert_eq!(messages.len(), 1);
                     let (_, message) = messages.pop().unwrap();
 

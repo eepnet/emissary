@@ -152,7 +152,6 @@ impl<R: Runtime> TunnelManager<R> {
         Self,
         TunnelManagerHandle,
         TunnelPoolHandle,
-        RoutingTable,
         Receiver<Message>,
     ) {
         tracing::info!(
@@ -223,13 +222,12 @@ impl<R: Runtime> TunnelManager<R> {
                 netdb_tx,
                 router_ctx,
                 routers: HashMap::new(),
-                routing_table: routing_table.clone(),
+                routing_table,
                 service,
                 transit_rx: subsys_transit_rx,
             },
             manager_handle,
             pool_handle,
-            routing_table,
             netdb_rx,
         )
     }
@@ -562,7 +560,7 @@ impl<R: Runtime> Future for TunnelManager<R> {
             match self.transit_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some(messages)) => {
+                Poll::Ready(Some(messages)) =>
                     messages.into_iter().for_each(|(router_id, message)| {
                         if let Err(error) = self.on_message(message) {
                             tracing::debug!(
@@ -572,8 +570,7 @@ impl<R: Runtime> Future for TunnelManager<R> {
                                 "failed to handle tunnel message",
                             );
                         }
-                    })
-                }
+                    }),
             }
         }
 

@@ -561,6 +561,11 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                     }
                     Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
                     Poll::Ready(Some(OutboundMessage::Message(message))) => {
+                        if message.is_expired::<R>() {
+                            this.new_write_state = WriteState::GetMessage;
+                            continue;
+                        }
+
                         let message = message.serialize_short();
                         assert!(message.len() as u16 <= u16::MAX, "too large message");
 
@@ -580,6 +585,11 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                         message,
                         feedback_tx,
                     ))) => {
+                        if message.is_expired::<R>() {
+                            this.new_write_state = WriteState::GetMessage;
+                            continue;
+                        }
+
                         let message = message.serialize_short();
                         assert!(message.len() as u16 <= u16::MAX, "too large message");
 
@@ -603,7 +613,13 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                             todo!("not implemented")
                         }
 
-                        let message = messages.pop().expect("message to exist").serialize_short();
+                        let message = messages.pop().expect("message to exist");
+                        if message.is_expired::<R>() {
+                            this.new_write_state = WriteState::GetMessage;
+                            continue;
+                        }
+
+                        let message = message.serialize_short();
                         assert!(message.len() as u16 <= u16::MAX, "too large message");
 
                         // TODO: in-place?

@@ -347,32 +347,6 @@ impl<R: Runtime> TransportService<R> {
             (error, inner)
         })
     }
-
-    /// Create new [`TransportService`] for testing.
-    #[cfg(test)]
-    pub fn new() -> (
-        Self,
-        Receiver<ProtocolCommand>,
-        Sender<InnerSubsystemEvent>,
-        crate::profile::ProfileStorage<R>,
-    ) {
-        let (event_tx, event_rx) = channel(64);
-        let (cmd_tx, cmd_rx) = channel(64);
-        let profile_storage = crate::profile::ProfileStorage::new(&Vec::new(), &Vec::new());
-
-        (
-            TransportService {
-                cmd_tx,
-                event_rx,
-                pending_events: VecDeque::new(),
-                routers: HashMap::new(),
-                _runtime: Default::default(),
-            },
-            cmd_rx,
-            event_tx,
-            profile_storage,
-        )
-    }
 }
 
 impl<R: Runtime> Stream for TransportService<R> {

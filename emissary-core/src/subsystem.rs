@@ -178,6 +178,27 @@ pub enum SubsystemEventNew {
     Dummy,
 }
 
+/// Subsystem events that are relevant to NetDb.
+#[derive(Default, Debug, Clone)]
+pub enum NetDbEvent {
+    /// Connection established.
+    #[allow(unused)]
+    ConnectionEstablished {
+        /// Router ID.
+        router_id: RouterId,
+    },
+
+    /// One or more I2NP messages.
+    #[allow(unused)]
+    Message {
+        /// Raw, unparsed I2NP messages
+        messages: Vec<(RouterId, Message)>,
+    },
+
+    #[default]
+    Dummy,
+}
+
 #[derive(Clone)]
 pub struct SubsystemHandle {
     subsystems: Vec<Sender<InnerSubsystemEvent>>,
@@ -238,37 +259,21 @@ impl SubsystemHandle {
         router_id: RouterId,
         messages: Vec<Message>,
     ) -> crate::Result<()> {
-        let (tunnel_messages, netdb_messages): (Vec<_>, Vec<_>) = messages
+        let messages = messages
             .into_iter()
-            .map(|message| match message.destination() {
-                SubsystemKind::NetDb => (None, Some((router_id.clone(), message))),
-                SubsystemKind::Tunnel => (Some((router_id.clone(), message)), None),
+            .filter_map(|message| match message.destination() {
+                SubsystemKind::NetDb => None,
+                SubsystemKind::Tunnel => Some((router_id.clone(), message)),
             })
-            .unzip();
+            .collect::<Vec<_>>();
 
-        let tunnel_messages = tunnel_messages.into_iter().flatten().collect::<Vec<_>>();
-        let netdb_messages = netdb_messages.into_iter().flatten().collect::<Vec<_>>();
-
-        if !tunnel_messages.is_empty() {
-            if let Err(error) = self.subsystems[0].try_send(InnerSubsystemEvent::I2Np {
-                messages: tunnel_messages,
-            }) {
+        if !messages.is_empty() {
+            if let Err(error) = self.subsystems[0].try_send(InnerSubsystemEvent::I2Np { messages })
+            {
                 tracing::debug!(
                     target: LOG_TARGET,
                     %error,
                     "failed to dispatch mesage to `TunnelManager`",
-                );
-            }
-        }
-
-        if !netdb_messages.is_empty() {
-            if let Err(error) = self.subsystems[1].try_send(InnerSubsystemEvent::I2Np {
-                messages: netdb_messages,
-            }) {
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    %error,
-                    "failed to dispatch mesage to `NetDb`",
                 );
             }
         }
@@ -374,10 +379,10 @@ impl SubsystemManagerHandle {
     }
 
     /// Send message to router.
-    pub fn send(&self, router_id: RouterId, message: Message) -> Result<(), ChannelError> {
+    pub fn send(&self, router_id: &RouterId, message: Message) -> Result<(), ChannelError> {
         self.event_tx
             .try_send(SubsystemManagerEvent::Message {
-                router_id,
+                router_id: router_id.clone(),
                 message: OutboundMessage::Message(message),
             })
             .map_err(From::from)
@@ -386,12 +391,12 @@ impl SubsystemManagerHandle {
     /// Send one or more messages to router.
     pub fn send_many(
         &self,
-        router_id: RouterId,
+        router_id: &RouterId,
         messages: Vec<Message>,
     ) -> Result<(), ChannelError> {
         self.event_tx
             .try_send(SubsystemManagerEvent::Message {
-                router_id,
+                router_id: router_id.clone(),
                 message: OutboundMessage::Messages(messages),
             })
             .map_err(From::from)
@@ -404,13 +409,13 @@ impl SubsystemManagerHandle {
     /// the channel is dropped.
     pub fn send_with_feedback(
         &self,
-        router_id: RouterId,
+        router_id: &RouterId,
         message: Message,
         feedback_tx: oneshot::Sender<()>,
     ) -> Result<(), ChannelError> {
         self.event_tx
             .try_send(SubsystemManagerEvent::Message {
-                router_id,
+                router_id: router_id.clone(),
                 message: OutboundMessage::MessageWithFeedback(message, feedback_tx),
             })
             .map_err(From::from)
@@ -458,6 +463,27 @@ impl SubsystemManagerHandle {
     pub fn unregister_tunnel(&self, tunnel_id: &TunnelId) {
         let mut tunnels = self.tunnels.write();
         tunnels.remove(tunnel_id);
+    }
+
+    /// Attempt to register tunnel with `tunnel_id` and return `Ok(receiver)` if `tunnel_id`
+    /// is not taken.
+    ///
+    /// If `Err(RoutingError)` is returned, the tunnel is not added to routing table.
+    pub fn try_register_tunnel<const SIZE: usize>(
+        &self,
+        tunnel_id: TunnelId,
+    ) -> Result<Receiver<Message>, RoutingError> {
+        let mut tunnels = self.tunnels.write();
+
+        match tunnels.contains_key(&tunnel_id) {
+            true => Err(RoutingError::TunnelExists(tunnel_id)),
+            false => {
+                let (tx, rx) = channel(SIZE);
+                tunnels.insert(tunnel_id, tx);
+
+                Ok(rx)
+            }
+        }
     }
 
     #[cfg(test)]
@@ -508,7 +534,7 @@ pub struct SubsystemManagerContext<R: Runtime> {
     /// RX channel passed to `NetDb`.
     ///
     /// Allows `SubsystemManager` to route messages to `NetDb`.
-    pub netdb_rx: Receiver<Vec<(RouterId, Message)>>,
+    pub netdb_rx: Receiver<NetDbEvent>,
 
     /// RX channel passed to `TransitTunnelManager`.
     ///
@@ -539,7 +565,7 @@ pub struct SubsystemManager<R: Runtime> {
     max_transit: usize,
 
     /// TX channel for routing messages to `NetDb`.
-    netdb_tx: Sender<Vec<(RouterId, Message)>>,
+    netdb_tx: Sender<NetDbEvent>,
 
     /// Noise context.
     noise: NoiseContext,
@@ -630,14 +656,10 @@ impl<R: Runtime> SubsystemManager<R> {
     fn on_outbound_message(&mut self, router_id: RouterId, message: OutboundMessage) {
         if router_id == self.router_id {
             return match message {
-                OutboundMessage::Message(message) => {
-                    self.on_inbound_message(vec![(router_id, message)])
-                }
+                OutboundMessage::Message(message) =>
+                    self.on_inbound_message(vec![(router_id, message)]),
                 OutboundMessage::Messages(messages) => self.on_inbound_message(
-                    messages
-                        .into_iter()
-                        .map(|message| (router_id.clone(), message))
-                        .collect(),
+                    messages.into_iter().map(|message| (router_id.clone(), message)).collect(),
                 ),
                 OutboundMessage::MessageWithFeedback(message, feedback_tx) => {
                     self.on_inbound_message(vec![(router_id, message)]);
@@ -769,7 +791,7 @@ impl<R: Runtime> SubsystemManager<R> {
         }
 
         if !netdb.is_empty() {
-            if let Err(error) = self.netdb_tx.try_send(netdb) {
+            if let Err(error) = self.netdb_tx.try_send(NetDbEvent::Message { messages: netdb }) {
                 tracing::warn!(
                     target: LOG_TARGET,
                     ?error,
@@ -1009,6 +1031,22 @@ impl<R: Runtime> Future for SubsystemManager<R> {
                             "connection opened",
                         );
 
+                        // TODO: handle this more gracefully by buffering events
+                        if let Err(error) =
+                            self.netdb_tx.try_send(NetDbEvent::ConnectionEstablished {
+                                router_id: router_id.clone(),
+                            })
+                        {
+                            tracing::warn!(
+                                target: LOG_TARGET,
+                                %router_id,
+                                ?error,
+                                "failed to inform netdb of the connection",
+                            );
+                            self.routers.remove(&router_id);
+                            continue;
+                        }
+
                         // send all pending messages to router
                         if let Some(RouterState::Dialing { pending }) =
                             self.routers.remove(&router_id)
@@ -1168,7 +1206,7 @@ mod tests {
         );
 
         let router_id = RouterId::random();
-        handle.send(router_id.clone(), Message::default()).unwrap();
+        handle.send(&router_id, Message::default()).unwrap();
         poll_manager!(manager);
 
         // verify the router is being dialed
@@ -1222,10 +1260,8 @@ mod tests {
         let (feedback_tx, feedback_rx) = oneshot::channel();
 
         let router_id = RouterId::random();
-        handle.send(router_id.clone(), Message::default()).unwrap();
-        handle
-            .send_with_feedback(router_id.clone(), Message::default(), feedback_tx)
-            .unwrap();
+        handle.send(&router_id, Message::default()).unwrap();
+        handle.send_with_feedback(&router_id, Message::default(), feedback_tx).unwrap();
         poll_manager!(manager);
 
         // verify the router is being dialed
@@ -1277,9 +1313,7 @@ mod tests {
 
         let router_id = RouterId::random();
         let (feedback_tx, feedback_rx) = oneshot::channel();
-        handle
-            .send_with_feedback(router_id.clone(), Message::default(), feedback_tx)
-            .unwrap();
+        handle.send_with_feedback(&router_id, Message::default(), feedback_tx).unwrap();
         poll_manager!(manager);
 
         // verify the router is being dialed
@@ -1347,7 +1381,7 @@ mod tests {
         // send normal message
         handle
             .send(
-                router_id.clone(),
+                &router_id,
                 Message {
                     message_id: 1337u32,
                     ..Default::default()
@@ -1358,7 +1392,7 @@ mod tests {
         // send multiple message
         handle
             .send_many(
-                router_id.clone(),
+                &router_id,
                 vec![
                     Message {
                         message_id: 1338u32,
@@ -1380,7 +1414,7 @@ mod tests {
         let (feedback_tx, feedback_rx) = oneshot::channel();
         handle
             .send_with_feedback(
-                router_id.clone(),
+                &router_id,
                 Message {
                     message_id: 1341u32,
                     ..Default::default()
@@ -1447,7 +1481,7 @@ mod tests {
         // send normal message
         handle
             .send(
-                router_id.clone(),
+                &router_id,
                 Message {
                     message_id: 1337u32,
                     ..Default::default()
@@ -1458,7 +1492,7 @@ mod tests {
         // send multiple message
         handle
             .send_many(
-                router_id.clone(),
+                &router_id,
                 vec![
                     Message {
                         message_id: 1338u32,
@@ -1480,7 +1514,7 @@ mod tests {
         let (feedback_tx, feedback_rx) = oneshot::channel();
         handle
             .send_with_feedback(
-                router_id.clone(),
+                &router_id,
                 Message {
                     message_id: 1341u32,
                     ..Default::default()
@@ -2426,11 +2460,15 @@ mod tests {
 
         // verify netdb receives the database store
         {
-            let message = netdb_rx.try_recv().unwrap();
-            assert_eq!(
-                message[0].clone().1.message_type,
-                MessageType::DatabaseStore
-            );
+            match netdb_rx.try_recv().unwrap() {
+                NetDbEvent::Message { messages } => {
+                    assert_eq!(
+                        messages[0].clone().1.message_type,
+                        MessageType::DatabaseStore
+                    );
+                }
+                _ => panic!("invalid event"),
+            }
         }
 
         // verify transit tunnel receives the variable tunnel build request
@@ -2488,6 +2526,9 @@ mod tests {
         .await
         .unwrap();
         poll_manager!(manager);
+
+        // ignore connection established event
+        assert!(netdb_rx.try_recv().is_ok());
 
         // send multiple cloves
         //  - one for an active local tunnel
@@ -2579,11 +2620,15 @@ mod tests {
 
         // verify netdb receives the database store
         {
-            let message = netdb_rx.try_recv().unwrap();
-            assert_eq!(
-                message[0].clone().1.message_type,
-                MessageType::DatabaseStore
-            );
+            match netdb_rx.try_recv().unwrap() {
+                NetDbEvent::Message { messages } => {
+                    assert_eq!(
+                        messages[0].clone().1.message_type,
+                        MessageType::DatabaseStore
+                    );
+                }
+                _ => panic!("invalid event"),
+            }
         }
 
         // verify the active tunnel receives the tunnel data message
@@ -2651,11 +2696,15 @@ mod tests {
 
         // verify netdb receives the database store
         {
-            let message = netdb_rx.try_recv().unwrap();
-            assert_eq!(
-                message[0].clone().1.message_type,
-                MessageType::DatabaseStore
-            );
+            match netdb_rx.try_recv().unwrap() {
+                NetDbEvent::Message { messages } => {
+                    assert_eq!(
+                        messages[0].clone().1.message_type,
+                        MessageType::DatabaseStore
+                    );
+                }
+                _ => panic!("invalid event"),
+            }
         }
     }
 
@@ -2692,7 +2741,7 @@ mod tests {
         // this can happen, when e.g., OBEP and IBGW are the same router
         handle
             .send(
-                router_id.clone(),
+                &router_id,
                 Message {
                     message_type: MessageType::TunnelData,
                     payload: message,

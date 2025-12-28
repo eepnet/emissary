@@ -40,9 +40,8 @@ use crate::{
     profile::Bucket,
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
-    subsystem::{SubsystemEvent, SubsystemManagerHandle},
-    transport::TransportService,
-    tunnel::{RoutingTable, TunnelPoolEvent, TunnelPoolHandle},
+    subsystem::{NetDbEvent, SubsystemManagerHandle},
+    tunnel::{TunnelPoolEvent, TunnelPoolHandle},
 };
 
 use bytes::{Bytes, BytesMut};
@@ -52,9 +51,8 @@ use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc;
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use core::{
-    fmt,
     future::Future,
     mem,
     pin::Pin,
@@ -99,59 +97,6 @@ const EXPLORATION_INTERVAL_LOW_ROUTER_COUNT: usize = 55usize;
 /// How often should router exploration be performed if the known peer count is high
 const EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT: usize = 170usize;
 
-/// Message kind.
-#[derive(Clone)]
-enum MessageKind {
-    /// Expiring message, e.g., flooded [`DatabaseStore`] for a [`LeaseSet2`] or [`RouterInfo`].
-    Expiring {
-        /// Serialized I2NP message.
-        message: Vec<u8>,
-
-        /// When does the payload of the message expires.
-        expires: Duration,
-    },
-
-    /// Non-expiring message, e.g, router exploration.
-    NonExpiring {
-        /// Serialized I2NP message.
-        message: Vec<u8>,
-    },
-}
-
-impl MessageKind {
-    /// Convert [`MessageKind`] into serialized I2NP message.
-    pub fn into_inner(self) -> Vec<u8> {
-        match self {
-            Self::Expiring { message, .. } => message,
-            Self::NonExpiring { message } => message,
-        }
-    }
-}
-
-/// Routere state.
-enum RouterState {
-    /// Router is connected.
-    Connected,
-
-    /// Router is being dialed.
-    Dialing {
-        /// Pending messages.
-        pending_messages: Vec<MessageKind>,
-    },
-}
-
-impl fmt::Debug for RouterState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Connected => f.debug_struct("RouterState::Connected").finish(),
-            Self::Dialing { pending_messages } => f
-                .debug_struct("RouterState::Dialing")
-                .field("num_pending", &pending_messages.len())
-                .finish(),
-        }
-    }
-}
-
 /// Network database (NetDB).
 pub struct NetDb<R: Runtime> {
     /// Active queries.
@@ -189,7 +134,7 @@ pub struct NetDb<R: Runtime> {
     netdb_msg_rx: mpsc::Receiver<Message>,
 
     /// RX channel for receiving NetDb-related messages from `SubsystemManager`.
-    netdb_rx: mpsc::Receiver<Vec<(RouterId, Message)>>,
+    netdb_rx: mpsc::Receiver<NetDbEvent>,
 
     /// TX channels of client destinations awaiting ready signal from [`NetDb`]
     pending_ready_awaits: Vec<oneshot::Sender<()>>,
@@ -212,17 +157,7 @@ pub struct NetDb<R: Runtime> {
     /// This contains entries only if `floodfill` is true.
     router_infos: HashMap<Bytes, (Bytes, Duration)>,
 
-    /// Connected routers.
-    routers: HashMap<RouterId, RouterState>,
-
-    /// Routing table.
-    routing_table: RoutingTable,
-
-    /// Transport service.
-    service: TransportService<R>,
-
     /// Handle for communicating with `SubsystemManager`.
-    #[allow(unused)]
     subsystem_handle: SubsystemManagerHandle,
 }
 
@@ -231,11 +166,9 @@ impl<R: Runtime> NetDb<R> {
     pub fn new(
         router_ctx: RouterContext<R>,
         floodfill: bool,
-        service: TransportService<R>,
         exploratory_pool_handle: TunnelPoolHandle,
-        routing_table: RoutingTable,
         netdb_msg_rx: mpsc::Receiver<Message>,
-        netdb_rx: mpsc::Receiver<Vec<(RouterId, Message)>>,
+        netdb_rx: mpsc::Receiver<NetDbEvent>,
         subsystem_handle: SubsystemManagerHandle,
     ) -> (Self, NetDbHandle) {
         let floodfills = router_ctx
@@ -307,9 +240,6 @@ impl<R: Runtime> NetDb<R> {
                 router_ctx: router_ctx.clone(),
                 router_dht,
                 router_infos: HashMap::new(),
-                routers: HashMap::new(),
-                routing_table,
-                service,
                 subsystem_handle,
             },
             NetDbHandle::new(handle_tx),
@@ -321,150 +251,15 @@ impl<R: Runtime> NetDb<R> {
         metrics::register_metrics(metrics)
     }
 
-    /// Handle established connection to `router`.
-    fn on_connection_established(&mut self, router_id: RouterId) {
-        let is_floodfill = self.router_ctx.profile_storage().is_floodfill(&router_id);
-
-        // send any pending messages to the connected router
-        //
-        // if the message was of the expiring kind (flooding) and the payload inside the i2np
-        // message has expired, the message is skipped
-        if let Some(RouterState::Dialing { pending_messages }) = self.routers.remove(&router_id) {
-            let now = R::time_since_epoch();
-
-            tracing::trace!(
-                target: LOG_TARGET,
-                floodfill = %router_id,
-                num_pending = ?pending_messages.len(),
-                "router with pending messages connected",
-            );
-
-            pending_messages.into_iter().for_each(|message| {
-                let message = match message {
-                    MessageKind::NonExpiring { message } => Some(message),
-                    MessageKind::Expiring { message, expires } if expires > now => Some(message),
-                    MessageKind::Expiring { expires, .. } => {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            ?expires,
-                            "message has expired, will not send",
-                        );
-                        None
-                    }
-                };
-
-                if let Some(message) = message {
-                    if let Err((error, _)) = self.service.send(&router_id, message) {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            ?error,
-                            "failed to send message",
-                        );
-                    }
-                }
-            });
-        }
-
-        if is_floodfill {
-            self.floodfill_dht.add_router(router_id.clone());
-            self.router_ctx.metrics_handle().gauge(NUM_CONNECTED_FLOODFILLS).increment(1);
-        } else {
-            self.router_dht.as_mut().map(|dht| dht.add_router(router_id.clone()));
-        }
-
-        self.routers.insert(router_id, RouterState::Connected);
-    }
-
-    /// Handle closed connection to `router`.
-    fn on_connection_closed(&mut self, router_id: RouterId) {
-        self.routers.remove(&router_id);
-    }
-
-    // Handle connection failure to `router_id`.
-    fn on_connection_failure(&mut self, router_id: RouterId) {
-        if let Some(RouterState::Dialing { pending_messages }) = self.routers.remove(&router_id) {
-            tracing::trace!(
-                target: LOG_TARGET,
-                %router_id,
-                num_pending_messages = ?pending_messages.len(),
-                "failed to establish connection",
-            );
-        }
-    }
-
     /// Flood `message` to `routers`.
-    fn send_message(&mut self, routers: &[RouterId], message: MessageKind) {
+    fn send_message(&mut self, routers: &[RouterId], message: Message) {
         for router_id in routers {
-            // check if `router_id` is us
-            //
-            // this can happen if the reply instructions of the message contained a tunnel
-            // for which we're acting as the IBGW
-            if router_id == self.router_ctx.router_id() {
-                // `Message::parse_short()` is expected to succeed as the message was created by us
-                let message = Message::parse_short(match &message {
-                    MessageKind::Expiring { message, .. } => message,
-                    MessageKind::NonExpiring { message } => message,
-                })
-                .expect("to succeed");
-
-                match message.message_type {
-                    MessageType::TunnelGateway => match self.routing_table.route_message(message) {
-                        Ok(_) => tracing::debug!(
-                            target: LOG_TARGET,
-                            "route `TunnelGateway` to self",
-                        ),
-                        Err(error) => tracing::warn!(
-                            target: LOG_TARGET,
-                            %error,
-                            "failed to route `TunnelGateway` to self",
-                        ),
-                    },
-                    message_type => {
-                        tracing::warn!(
-                            target: LOG_TARGET,
-                            ?message_type,
-                            "unable to route non-tunnel message to self",
-                        );
-                        debug_assert!(false);
-                    }
-                }
-
-                continue;
-            }
-
-            match self.routers.get_mut(router_id) {
-                None => match self.service.connect(router_id) {
-                    Err(error) => tracing::trace!(
-                        target: LOG_TARGET,
-                        %router_id,
-                        ?error,
-                        "failed to connect to router",
-                    ),
-                    Ok(()) => {
-                        self.routers.insert(
-                            router_id.clone(),
-                            RouterState::Dialing {
-                                pending_messages: vec![message.clone()],
-                            },
-                        );
-                    }
-                },
-                Some(RouterState::Dialing { pending_messages }) => {
-                    pending_messages.push(message.clone());
-                }
-                Some(RouterState::Connected) => {
-                    if let Err((error, _)) =
-                        self.service.send(router_id, message.clone().into_inner())
-                    {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            %router_id,
-                            ?error,
-                            "failed to send message to router",
-                        );
-                    }
-                }
+            if let Err(error) = self.subsystem_handle.send(&router_id, message.clone()) {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    ?error,
+                    "failed to send message",
+                )
             }
         }
     }
@@ -575,41 +370,34 @@ impl<R: Runtime> NetDb<R> {
                     )
                     .build();
 
-                let message = MessageBuilder::short()
-                    .with_expiration(expires)
-                    .with_message_type(MessageType::TunnelGateway)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(
-                        &TunnelGateway {
-                            tunnel_id,
-                            payload: &message,
-                        }
-                        .serialize(),
-                    )
-                    .build();
-
-                self.send_message(&[router_id], MessageKind::Expiring { message, expires });
+                let message = Message {
+                    expiration: expires,
+                    message_type: MessageType::TunnelGateway,
+                    message_id: R::rng().next_u32(),
+                    payload: TunnelGateway {
+                        tunnel_id,
+                        payload: &message,
+                    }
+                    .serialize(),
+                };
+                self.send_message(&[router_id], message);
             }
             StoreReplyType::Router {
                 reply_token,
                 router_id,
             } => {
-                let expires = R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION;
-
-                let message = MessageBuilder::short()
-                    .with_expiration(expires)
-                    .with_message_type(MessageType::DeliveryStatus)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(
-                        &DeliveryStatus {
-                            message_id: reply_token,
-                            timestamp: R::time_since_epoch(),
-                        }
-                        .serialize(),
-                    )
-                    .build();
-
-                self.send_message(&[router_id], MessageKind::Expiring { message, expires });
+                let message = Message {
+                    expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    message_type: MessageType::DeliveryStatus,
+                    message_id: R::rng().next_u32(),
+                    payload: DeliveryStatus {
+                        message_id: reply_token,
+                        timestamp: R::time_since_epoch(),
+                    }
+                    .serialize()
+                    .to_vec(),
+                };
+                self.send_message(&[router_id], message);
             }
         }
 
@@ -623,23 +411,20 @@ impl<R: Runtime> NetDb<R> {
             return;
         }
 
-        let message = DatabaseStoreBuilder::new(
-            key,
-            DatabaseStoreKind::RouterInfo {
-                router_info: raw_router_info,
-            },
-        )
-        .build();
-
-        let message_id = R::rng().next_u32();
-        let message = MessageBuilder::short()
-            .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-            .with_message_type(MessageType::DatabaseStore)
-            .with_message_id(message_id)
-            .with_payload(&message)
-            .build();
-
-        self.send_message(&floodfills, MessageKind::Expiring { message, expires });
+        let message = Message {
+            expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            message_type: MessageType::DatabaseStore,
+            message_id: R::rng().next_u32(),
+            payload: DatabaseStoreBuilder::new(
+                key,
+                DatabaseStoreKind::RouterInfo {
+                    router_info: raw_router_info,
+                },
+            )
+            .build()
+            .to_vec(),
+        };
+        self.send_message(&floodfills, message);
     }
 
     /// Handle [`DatabaseStore`] for [`LeasetSet2`] if the local router is run as a floodfill.
@@ -703,41 +488,35 @@ impl<R: Runtime> NetDb<R> {
                     )
                     .build();
 
-                let message = MessageBuilder::short()
-                    .with_expiration(expires)
-                    .with_message_type(MessageType::TunnelGateway)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(
-                        &TunnelGateway {
-                            tunnel_id,
-                            payload: &message,
-                        }
-                        .serialize(),
-                    )
-                    .build();
-
-                self.send_message(&[router_id], MessageKind::Expiring { message, expires });
+                let message = Message {
+                    expiration: expires,
+                    message_type: MessageType::TunnelGateway,
+                    message_id: R::rng().next_u32(),
+                    payload: TunnelGateway {
+                        tunnel_id,
+                        payload: &message,
+                    }
+                    .serialize(),
+                };
+                self.send_message(&[router_id], message);
             }
             StoreReplyType::Router {
                 reply_token,
                 router_id,
             } => {
-                let expires = R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION;
+                let message = Message {
+                    expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    message_type: MessageType::DeliveryStatus,
+                    message_id: R::rng().next_u32(),
+                    payload: DeliveryStatus {
+                        message_id: reply_token,
+                        timestamp: R::time_since_epoch(),
+                    }
+                    .serialize()
+                    .to_vec(),
+                };
 
-                let message = MessageBuilder::short()
-                    .with_expiration(expires)
-                    .with_message_type(MessageType::DeliveryStatus)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(
-                        &DeliveryStatus {
-                            message_id: reply_token,
-                            timestamp: R::time_since_epoch(),
-                        }
-                        .serialize(),
-                    )
-                    .build();
-
-                self.send_message(&[router_id], MessageKind::Expiring { message, expires });
+                self.send_message(&[router_id], message);
             }
         }
 
@@ -751,23 +530,21 @@ impl<R: Runtime> NetDb<R> {
             return;
         }
 
-        let message = DatabaseStoreBuilder::new(
-            key,
-            DatabaseStoreKind::LeaseSet2 {
-                lease_set: raw_lease_set,
-            },
-        )
-        .build();
+        let message = Message {
+            expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            message_type: MessageType::DatabaseStore,
+            message_id: R::rng().next_u32(),
+            payload: DatabaseStoreBuilder::new(
+                key,
+                DatabaseStoreKind::LeaseSet2 {
+                    lease_set: raw_lease_set,
+                },
+            )
+            .build()
+            .to_vec(),
+        };
 
-        let message_id = R::rng().next_u32();
-        let message = MessageBuilder::short()
-            .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-            .with_message_type(MessageType::DatabaseStore)
-            .with_message_id(message_id)
-            .with_payload(&message)
-            .build();
-
-        self.send_message(&floodfills, MessageKind::Expiring { message, expires });
+        self.send_message(&floodfills, message);
     }
 
     /// Handle [`DatabaseLookup`] for a [`LeaseSet2`].
@@ -855,14 +632,14 @@ impl<R: Runtime> NetDb<R> {
                 }
             }
             ReplyType::Router { router_id } => {
-                let message = MessageBuilder::short()
-                    .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-                    .with_message_type(message_type)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(&message)
-                    .build();
+                let message = Message {
+                    expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    message_type: message_type,
+                    message_id: R::rng().next_u32(),
+                    payload: message.to_vec(),
+                };
 
-                if let Err((error, _)) = self.service.send(&router_id, message) {
+                if let Err(error) = self.subsystem_handle.send(&router_id, message) {
                     tracing::debug!(
                         target: LOG_TARGET,
                         %router_id,
@@ -959,14 +736,14 @@ impl<R: Runtime> NetDb<R> {
                 }
             }
             ReplyType::Router { router_id } => {
-                let message = MessageBuilder::short()
-                    .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-                    .with_message_type(message_type)
-                    .with_message_id(R::rng().next_u32())
-                    .with_payload(&message)
-                    .build();
+                let message = Message {
+                    expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    message_type: message_type,
+                    message_id: R::rng().next_u32(),
+                    payload: message.to_vec(),
+                };
 
-                if let Err((error, _)) = self.service.send(&router_id, message) {
+                if let Err(error) = self.subsystem_handle.send(&router_id, message) {
                     tracing::debug!(
                         target: LOG_TARGET,
                         %router_id,
@@ -1022,23 +799,22 @@ impl<R: Runtime> NetDb<R> {
                 router_id,
             } => (
                 router_id,
-                MessageBuilder::short()
-                    .with_message_type(MessageType::TunnelGateway)
-                    .with_message_id(R::rng().next_u32())
-                    .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-                    .with_payload(
-                        &TunnelGateway {
-                            tunnel_id,
-                            payload: &message.serialize_standard(),
-                        }
-                        .serialize(),
-                    )
-                    .build(),
+                Message {
+                    message_type: MessageType::TunnelGateway,
+                    message_id: R::rng().next_u32(),
+                    expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: TunnelGateway {
+                        tunnel_id,
+                        payload: &message.serialize_standard(),
+                    }
+                    .serialize()
+                    .to_vec(),
+                },
             ),
-            ReplyType::Router { router_id } => (router_id, message.serialize_short()),
+            ReplyType::Router { router_id } => (router_id, message),
         };
 
-        self.send_message(&[router_id], MessageKind::NonExpiring { message });
+        self.send_message(&[router_id], message);
     }
 
     /// Handle `DatabaaseStore` message.
@@ -1673,13 +1449,6 @@ impl<R: Runtime> NetDb<R> {
         })
         .build();
 
-        let message = MessageBuilder::short()
-            .with_expiration(R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION)
-            .with_message_type(MessageType::DatabaseStore)
-            .with_message_id(R::rng().next_u32())
-            .with_payload(&message)
-            .build();
-
         tracing::info!(
             target: LOG_TARGET,
             %router_id,
@@ -1688,7 +1457,14 @@ impl<R: Runtime> NetDb<R> {
             "publish router info",
         );
 
-        self.send_message(&floodfills, MessageKind::NonExpiring { message });
+        let message = Message {
+            expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            message_type: MessageType::DatabaseStore,
+            message_id: R::rng().next_u32(),
+            payload: message.to_vec(),
+        };
+
+        self.send_message(&floodfills, message);
     }
 
     /// Perform general maintenance of [`NetDb`].
@@ -1925,10 +1701,22 @@ impl<R: Runtime> Future for NetDb<R> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            match self.service.poll_next_unpin(cx) {
+            match self.netdb_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some(SubsystemEvent::I2Np { messages })) =>
+                Poll::Ready(Some(NetDbEvent::ConnectionEstablished { router_id })) => {
+                    let is_floodfill = self.router_ctx.profile_storage().is_floodfill(&router_id);
+                    if is_floodfill {
+                        self.floodfill_dht.add_router(router_id.clone());
+                        self.router_ctx
+                            .metrics_handle()
+                            .gauge(NUM_CONNECTED_FLOODFILLS)
+                            .increment(1);
+                    } else {
+                        self.router_dht.as_mut().map(|dht| dht.add_router(router_id.clone()));
+                    }
+                }
+                Poll::Ready(Some(NetDbEvent::Message { messages })) =>
                     messages.into_iter().for_each(|(router_id, message)| {
                         if let Err(error) = self.on_message(message, Some(router_id)) {
                             tracing::debug!(
@@ -1938,31 +1726,7 @@ impl<R: Runtime> Future for NetDb<R> {
                             );
                         }
                     }),
-                Poll::Ready(Some(SubsystemEvent::ConnectionEstablished { router })) =>
-                    self.on_connection_established(router),
-                Poll::Ready(Some(SubsystemEvent::ConnectionClosed { router })) =>
-                    self.on_connection_closed(router),
-                Poll::Ready(Some(SubsystemEvent::ConnectionFailure { router })) =>
-                    self.on_connection_failure(router),
-                Poll::Ready(Some(SubsystemEvent::Dummy)) => {}
-            }
-        }
-
-        loop {
-            match self.netdb_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some(messages)) => {
-                    messages.into_iter().for_each(|(router_id, message)| {
-                        if let Err(error) = self.on_message(message, Some(router_id)) {
-                            tracing::debug!(
-                                target: LOG_TARGET,
-                                ?error,
-                                "failed to handle message",
-                            );
-                        }
-                    })
-                }
+                Poll::Ready(Some(NetDbEvent::Dummy)) => {}
             }
         }
 
@@ -2114,17 +1878,20 @@ mod tests {
             RouterAddress, RouterIdentity, RouterInfo, RouterInfoBuilder, Str, TransportKind,
             TunnelId,
         },
+        profile::ProfileStorage,
         runtime::mock::MockRuntime,
-        subsystem::{InnerSubsystemEvent, SubsystemCommand},
-        transport::ProtocolCommand,
-        tunnel::{RoutingKindRecycle, TunnelMessage},
+        subsystem::{
+            OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+            SubsystemManagerContext, SubsystemManagerEvent,
+        },
+        tunnel::{NoiseContext, TunnelMessage},
     };
     use std::collections::VecDeque;
     use thingbuf::mpsc::{channel, with_recycle};
 
     #[tokio::test]
     async fn lease_set_store_to_floodfill() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -2139,13 +1906,25 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx: _transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2159,13 +1938,12 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
 
         let (key, lease_set) = {
             let sgk = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
@@ -2224,29 +2002,25 @@ mod tests {
             )
             .is_ok());
         assert_eq!(netdb.lease_sets.len(), 1);
-        match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => {
-                assert_eq!(router_id, reply_router);
-            }
-            _ => panic!("invalid event"),
+
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(router, reply_router);
+
+        for _ in 0..3 {
+            let router_id = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(floodfills.remove(&router_id));
         }
-        assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => {
-                assert!(floodfills.remove(&router_id));
-                true
-            }
-            _ => false,
-        }));
-        assert_eq!(netdb.routers.len(), 4);
-        assert!(netdb
-            .routers
-            .values()
-            .all(|state| std::matches!(state, RouterState::Dialing { .. })));
     }
 
     #[tokio::test]
     async fn lease_set_store_to_non_floodfill() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -2261,11 +2035,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2281,10 +2052,8 @@ mod tests {
                 event_handle.clone(),
             ),
             false,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2345,13 +2114,11 @@ mod tests {
             )
             .is_ok());
         assert!(netdb.lease_sets.is_empty());
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn expired_lease_set_store() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -2366,11 +2133,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2386,10 +2150,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2452,17 +2214,15 @@ mod tests {
             )
             .is_ok());
         assert!(netdb.lease_sets.is_empty());
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn expired_lease_sets_are_pruned() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
-        let mut floodfills = (0..3)
+        let floodfills = (0..3)
             .map(|_| {
                 let info = RouterInfoBuilder::default().as_floodfill().build().0;
                 let id = info.identity.id();
@@ -2473,13 +2233,10 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2493,10 +2250,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2612,6 +2367,7 @@ mod tests {
 
         // store first lease set that is about to expire
         {
+            let mut floodfills_clone = floodfills.clone();
             let reply_router = RouterId::random();
             let message = DatabaseStoreBuilder::new(
                 key1,
@@ -2638,23 +2394,15 @@ mod tests {
                 )
                 .is_ok());
             assert_eq!(netdb.lease_sets.len(), 1);
-            assert_eq!(netdb.routers.len(), 4);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
+            match event_rx.try_recv().unwrap() {
+                SubsystemManagerEvent::Message { router_id, .. } => {
+                    assert_eq!(router_id, reply_router)
                 }
                 _ => panic!("invalid event"),
             }
-            assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert!(floodfills.remove(&router_id));
-                    true
-                }
-                _ => false,
-            }));
-            assert!(netdb.routers.values().all(|state| match state {
-                RouterState::Dialing { pending_messages } => {
-                    assert_eq!(pending_messages.len(), 1);
+            assert!((0..3).all(|_| match event_rx.try_recv().unwrap() {
+                SubsystemManagerEvent::Message { router_id, .. } => {
+                    assert!(floodfills_clone.remove(&router_id));
                     true
                 }
                 _ => false,
@@ -2663,6 +2411,7 @@ mod tests {
 
         // store second expiring lease set and verify floodfills are pending
         {
+            let mut floodfills_clone = floodfills.clone();
             let reply_router = RouterId::random();
             let message = DatabaseStoreBuilder::new(
                 key2,
@@ -2689,30 +2438,27 @@ mod tests {
                 )
                 .is_ok());
             assert_eq!(netdb.lease_sets.len(), 2);
-            assert_eq!(netdb.routers.len(), 5);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
+            match event_rx.try_recv().unwrap() {
+                SubsystemManagerEvent::Message { router_id, .. } => {
+                    assert_eq!(router_id, reply_router)
                 }
                 _ => panic!("invalid event"),
             }
-            assert!(rx.try_recv().is_err());
-            assert!(netdb.routers.iter().all(|(router_id, state)| match state {
-                RouterState::Dialing { pending_messages } => {
-                    if netdb.router_ctx.profile_storage().is_floodfill(router_id) {
-                        assert_eq!(pending_messages.len(), 2);
-                    } else {
-                        assert_eq!(pending_messages.len(), 1);
-                    }
 
-                    true
+            // verify all floodfills have another pending message
+            assert!(floodfills.iter().all(|_| {
+                match event_rx.try_recv().unwrap() {
+                    SubsystemManagerEvent::Message { router_id, .. } =>
+                        floodfills_clone.remove(&router_id),
+                    _ => panic!("invalid event"),
                 }
-                _ => false,
             }));
+            assert!(event_rx.try_recv().is_err());
         }
 
         // store non-expiring lease set and verify floodfills are pending
         {
+            let mut floodfills_clone = floodfills.clone();
             let reply_router = RouterId::random();
             let message = DatabaseStoreBuilder::new(
                 key3,
@@ -2739,25 +2485,22 @@ mod tests {
                 )
                 .is_ok());
             assert_eq!(netdb.lease_sets.len(), 3);
-            assert_eq!(netdb.routers.len(), 6);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
+            match event_rx.try_recv().unwrap() {
+                SubsystemManagerEvent::Message { router_id, .. } => {
+                    assert_eq!(router_id, reply_router)
                 }
                 _ => panic!("invalid event"),
             }
-            assert!(rx.try_recv().is_err());
-            assert!(netdb.routers.iter().all(|(router_id, state)| match state {
-                RouterState::Dialing { pending_messages } => {
-                    if netdb.router_ctx.profile_storage().is_floodfill(router_id) {
-                        assert_eq!(pending_messages.len(), 3);
-                    } else {
-                        assert_eq!(pending_messages.len(), 1);
-                    }
-                    true
+
+            // verify all floodfills have another pending message
+            assert!(floodfills.iter().all(|_| {
+                match event_rx.try_recv().unwrap() {
+                    SubsystemManagerEvent::Message { router_id, .. } =>
+                        floodfills_clone.remove(&router_id),
+                    _ => panic!("invalid event"),
                 }
-                _ => false,
             }));
+            assert!(event_rx.try_recv().is_err());
         }
 
         // poll netdb until it does its maintenance
@@ -2776,7 +2519,7 @@ mod tests {
 
     #[tokio::test]
     async fn router_info_store_to_floodfill() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -2791,13 +2534,25 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx: _transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2811,13 +2566,12 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
 
         let (key, router_info) = {
             let (identity, _sk, sgk) = RouterIdentity::random();
@@ -2872,29 +2626,25 @@ mod tests {
             )
             .is_ok());
         assert_eq!(netdb.router_infos.len(), 1);
-        match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => {
-                assert_eq!(router_id, reply_router);
-            }
-            _ => panic!("invalid event"),
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            reply_router
+        );
+        for _ in 0..3 {
+            let router_id = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(floodfills.remove(&router_id));
         }
-        assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => {
-                assert!(floodfills.remove(&router_id));
-                true
-            }
-            _ => false,
-        }));
-        assert_eq!(netdb.routers.len(), 4);
-        assert!(netdb
-            .routers
-            .values()
-            .all(|state| std::matches!(state, RouterState::Dialing { .. })));
     }
 
     #[tokio::test]
     async fn stale_router_info_not_stored_nor_flooded() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -2909,11 +2659,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2929,10 +2676,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2985,13 +2730,11 @@ mod tests {
             )
             .is_ok());
         assert!(netdb.router_infos.is_empty());
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn lease_set_query() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -3006,11 +2749,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3026,10 +2766,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3118,7 +2856,7 @@ mod tests {
 
     #[tokio::test]
     async fn lease_set_query_value_not_found() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -3133,11 +2871,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3153,10 +2888,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3210,19 +2943,8 @@ mod tests {
 
     #[tokio::test]
     async fn router_info_query() {
-        let (mut service, _rx, tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
-
-        // register new router into `service`
-        let router_id = RouterId::random();
-        let (conn_tx, conn_rx) = channel(16);
-        tx.send(InnerSubsystemEvent::ConnectionEstablished {
-            router: router_id.clone(),
-            tx: conn_tx,
-        })
-        .await
-        .unwrap();
-        let _ = tokio::time::timeout(Duration::from_millis(200), service.next()).await;
 
         // add few floodfills to router storage
         let _floodfills = (0..3)
@@ -3236,13 +2958,25 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3256,13 +2990,24 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
+
+        // register new router into subsystem manager
+        let router_id = RouterId::random();
+        let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
+        transport_tx
+            .send(SubsystemEventNew::ConnectionEstablished {
+                router_id: router_id.clone(),
+                tx: conn_tx,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2000)).await;
 
         let (key, router_info) = {
             let (identity, _sk, sgk) = RouterIdentity::random();
@@ -3317,9 +3062,12 @@ mod tests {
 
         assert!(tm_rx.try_recv().is_err());
 
-        match conn_rx.try_recv().unwrap() {
-            SubsystemCommand::SendMessage { message } => {
-                let message = Message::parse_short(&message).unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), conn_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            OutboundMessage::Message(message) => {
                 assert_eq!(message.message_type, MessageType::DatabaseStore);
 
                 match DatabaseStore::<MockRuntime>::parse(&message.payload).unwrap().payload {
@@ -3335,19 +3083,8 @@ mod tests {
 
     #[tokio::test]
     async fn router_info_query_value_not_found() {
-        let (mut service, _rx, tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
-
-        // register new router into `service`
-        let router_id = RouterId::random();
-        let (conn_tx, conn_rx) = channel(16);
-        tx.send(InnerSubsystemEvent::ConnectionEstablished {
-            router: router_id.clone(),
-            tx: conn_tx,
-        })
-        .await
-        .unwrap();
-        let _ = tokio::time::timeout(Duration::from_millis(200), service.next()).await;
 
         // add few floodfills to router storage
         let floodfills = (0..3)
@@ -3361,13 +3098,25 @@ mod tests {
             .collect::<Vec<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3381,13 +3130,24 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
+
+        // register new router into subsystem manager
+        let router_id = RouterId::random();
+        let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
+        transport_tx
+            .send(SubsystemEventNew::ConnectionEstablished {
+                router_id: router_id.clone(),
+                tx: conn_tx,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         let key = Bytes::from(RouterId::random().to_vec());
         let message = DatabaseLookupBuilder::new(key.clone(), LookupType::Router)
@@ -3410,9 +3170,12 @@ mod tests {
 
         assert!(tm_rx.try_recv().is_err());
 
-        match conn_rx.try_recv().unwrap() {
-            SubsystemCommand::SendMessage { message } => {
-                let message = Message::parse_short(&message).unwrap();
+        match tokio::time::timeout(Duration::from_secs(5), conn_rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            OutboundMessage::Message(message) => {
                 assert_eq!(message.message_type, MessageType::DatabaseSearchReply);
 
                 let message = DatabaseSearchReply::parse(&message.payload).unwrap();
@@ -3428,7 +3191,7 @@ mod tests {
 
     #[tokio::test]
     async fn pending_messages_sent_when_floodfill_connects() {
-        let (service, _rx, tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -3443,14 +3206,26 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3464,13 +3239,12 @@ mod tests {
                 event_handle.clone(),
             ),
             false,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
 
         // publish local router info
         handle.publish_router_info(router_info.identity.id(), serialized);
@@ -3478,31 +3252,27 @@ mod tests {
         // wait until netdb processes the publish request
         tokio::time::timeout(Duration::from_secs(5), &mut netdb).await.unwrap_err();
 
-        let selected_floodfill = netdb
-            .routers
-            .iter()
-            .find(|(_, state)| match state {
-                RouterState::Dialing { pending_messages } if pending_messages.len() == 1 => true,
-                _ => false,
-            })
+        let selected_floodfill = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
             .unwrap()
-            .0;
+            .unwrap();
 
         // register the selected floodfill into netdb
-        let (conn_tx, conn_rx) = channel(16);
-        tx.send(InnerSubsystemEvent::ConnectionEstablished {
-            router: selected_floodfill.clone(),
-            tx: conn_tx,
-        })
-        .await
-        .unwrap();
+        let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
+        transport_tx
+            .send(SubsystemEventNew::ConnectionEstablished {
+                router_id: selected_floodfill.clone(),
+                tx: conn_tx,
+            })
+            .await
+            .unwrap();
 
         let future = async {
             loop {
                 tokio::select! {
                     _ = &mut netdb => {}
                     event = conn_rx.recv() => match event.unwrap() {
-                        SubsystemCommand::SendMessage { message } => break message,
+                        OutboundMessage::Message(message) => break message,
                         _ => panic!("invalid command"),
                     }
                 }
@@ -3510,542 +3280,14 @@ mod tests {
         };
 
         let message = tokio::time::timeout(Duration::from_secs(2), future).await.unwrap();
-        let message = Message::parse_short(&message).unwrap();
 
         assert_eq!(message.message_type, MessageType::DatabaseStore);
         assert!(DatabaseStore::<MockRuntime>::parse(&message.payload).is_ok());
     }
 
     #[tokio::test]
-    async fn expired_pending_lease_sets_not_flooded() {
-        let (service, rx, tx, storage) = TransportService::new();
-        let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
-
-        // add few floodfills to router storage
-        let mut floodfills = (0..3)
-            .map(|_| {
-                let info = RouterInfoBuilder::default().as_floodfill().build().0;
-                let id = info.identity.id();
-                storage.add_router(info);
-
-                id
-            })
-            .collect::<HashSet<_>>();
-
-        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
-        let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
-
-        let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
-            RouterContext::new(
-                MockRuntime::register_metrics(vec![], None),
-                storage,
-                router_info.identity.id(),
-                Bytes::from(router_info.serialize(&signing_key)),
-                static_key,
-                signing_key,
-                2u8,
-                event_handle.clone(),
-            ),
-            true,
-            service,
-            tp_handle,
-            rtbl,
-            msg_rx,
-            netdb_rx,
-            handle,
-        );
-
-        let (key1, expired_lease_set1) = {
-            let sgk = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
-            let sk = StaticPrivateKey::random(&mut MockRuntime::rng());
-            let destination = Destination::new::<MockRuntime>(sgk.public());
-            let id = destination.id();
-
-            let lease1 = Lease {
-                router_id: RouterId::random(),
-                tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
-            };
-            let lease2 = Lease {
-                router_id: RouterId::random(),
-                tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
-            };
-
-            (
-                Bytes::from(id.to_vec()),
-                Bytes::from(
-                    LeaseSet2 {
-                        header: LeaseSet2Header {
-                            destination,
-                            expires: Duration::from_secs(5).as_secs() as u32,
-                            is_unpublished: false,
-                            offline_signature: None,
-                            published: MockRuntime::time_since_epoch().as_secs() as u32,
-                        },
-                        public_keys: vec![sk.public()],
-                        leases: vec![lease1.clone(), lease2.clone()],
-                    }
-                    .serialize(&sgk),
-                ),
-            )
-        };
-
-        let (key2, valid_lease_set) = {
-            let sgk = SigningPrivateKey::from_bytes(&[2u8; 32]).unwrap();
-            let sk = StaticPrivateKey::random(&mut MockRuntime::rng());
-            let destination = Destination::new::<MockRuntime>(sgk.public());
-            let id = destination.id();
-
-            let lease1 = Lease {
-                router_id: RouterId::random(),
-                tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(80),
-            };
-            let lease2 = Lease {
-                router_id: RouterId::random(),
-                tunnel_id: TunnelId::random(),
-                expires: MockRuntime::time_since_epoch() + Duration::from_secs(60),
-            };
-
-            (
-                Bytes::from(id.to_vec()),
-                Bytes::from(
-                    LeaseSet2 {
-                        header: LeaseSet2Header {
-                            destination,
-                            expires: (Duration::from_secs(5 * 60)).as_secs() as u32,
-                            is_unpublished: false,
-                            offline_signature: None,
-                            published: (MockRuntime::time_since_epoch() - Duration::from_secs(60))
-                                .as_secs() as u32,
-                        },
-                        public_keys: vec![sk.public()],
-                        leases: vec![lease1.clone(), lease2.clone()],
-                    }
-                    .serialize(&sgk),
-                ),
-            )
-        };
-
-        // store first lease set that is about to expire
-        let reply_router = RouterId::random();
-        {
-            let message = DatabaseStoreBuilder::new(
-                key1,
-                DatabaseStoreKind::LeaseSet2 {
-                    lease_set: expired_lease_set1,
-                },
-            )
-            .with_reply_type(StoreReplyType::Tunnel {
-                reply_token: MockRuntime::rng().next_u32(),
-                tunnel_id: TunnelId::random(),
-                router_id: reply_router.clone(),
-            })
-            .build();
-
-            assert!(netdb.lease_sets.is_empty());
-            assert!(netdb
-                .on_message(
-                    Message {
-                        payload: message.to_vec(),
-                        message_type: MessageType::DatabaseStore,
-                        ..Default::default()
-                    },
-                    None
-                )
-                .is_ok());
-            assert_eq!(netdb.lease_sets.len(), 1);
-            assert_eq!(netdb.routers.len(), 4);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
-                }
-                _ => panic!("invalid event"),
-            }
-            assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert!(floodfills.remove(&router_id));
-                    true
-                }
-                _ => false,
-            }));
-            assert!(netdb.routers.values().all(|state| match state {
-                RouterState::Dialing { pending_messages } => {
-                    assert_eq!(pending_messages.len(), 1);
-                    true
-                }
-                _ => false,
-            }));
-        }
-
-        // store second expiring lease set and verify floodfills are pending
-        {
-            let reply_router = RouterId::random();
-            let message = DatabaseStoreBuilder::new(
-                key2.clone(),
-                DatabaseStoreKind::LeaseSet2 {
-                    lease_set: valid_lease_set,
-                },
-            )
-            .with_reply_type(StoreReplyType::Tunnel {
-                reply_token: MockRuntime::rng().next_u32(),
-                tunnel_id: TunnelId::random(),
-                router_id: reply_router.clone(),
-            })
-            .build();
-
-            assert_eq!(netdb.lease_sets.len(), 1);
-            assert!(netdb
-                .on_message(
-                    Message {
-                        payload: message.to_vec(),
-                        message_type: MessageType::DatabaseStore,
-                        ..Default::default()
-                    },
-                    None
-                )
-                .is_ok());
-            assert_eq!(netdb.lease_sets.len(), 2);
-            assert_eq!(netdb.routers.len(), 5);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
-                }
-                _ => panic!("invalid event"),
-            }
-            assert!(rx.try_recv().is_err());
-            assert!(netdb.routers.iter().all(|(router_id, state)| match state {
-                RouterState::Dialing { pending_messages } => {
-                    if netdb.router_ctx.profile_storage().is_floodfill(router_id) {
-                        assert_eq!(pending_messages.len(), 2);
-                    } else {
-                        assert_eq!(pending_messages.len(), 1);
-                    }
-                    true
-                }
-                _ => false,
-            }));
-        }
-
-        // wait for 10 seconds so the first lease set expires
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        // register all floodfills to netdb and spawn it int the background
-        let channels = floodfills
-            .iter()
-            .map(|router_id| {
-                let (conn_tx, conn_rx) = channel(16);
-                tx.try_send(InnerSubsystemEvent::ConnectionEstablished {
-                    router: router_id.clone(),
-                    tx: conn_tx,
-                })
-                .unwrap();
-
-                conn_rx
-            })
-            .collect::<Vec<_>>();
-        tokio::spawn(netdb);
-
-        // verify that all floodfillls receive one lease set store, for the still valid lease set
-        for channel in channels {
-            match tokio::time::timeout(Duration::from_secs(1), channel.recv())
-                .await
-                .expect("no timeout")
-                .expect("to succeed")
-            {
-                SubsystemCommand::SendMessage { message } => {
-                    let message = Message::parse_short(&message).unwrap();
-                    assert_eq!(message.message_type, MessageType::DatabaseStore);
-
-                    let DatabaseStore { key, payload, .. } =
-                        DatabaseStore::<MockRuntime>::parse(&message.payload).unwrap();
-
-                    assert_eq!(key, key2);
-                    assert!(std::matches!(
-                        payload,
-                        DatabaseStorePayload::LeaseSet2 { .. }
-                    ));
-                }
-                _ => panic!("invalid event"),
-            }
-
-            // verify there are no other messages pending
-            match tokio::time::timeout(Duration::from_secs(1), channel.recv()).await {
-                Err(_) => {}
-                _ => panic!("expected timeout"),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn expired_pending_router_infos_not_flooded() {
-        let (service, rx, tx, storage) = TransportService::new();
-        let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
-
-        // add few floodfills to router storage
-        let mut floodfills = (0..3)
-            .map(|_| {
-                let info = RouterInfoBuilder::default().as_floodfill().build().0;
-                let id = info.identity.id();
-
-                storage.add_router(info);
-
-                id
-            })
-            .collect::<HashSet<_>>();
-
-        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
-        let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
-
-        let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
-            RouterContext::new(
-                MockRuntime::register_metrics(vec![], None),
-                storage,
-                router_info.identity.id(),
-                Bytes::from(router_info.serialize(&signing_key)),
-                static_key,
-                signing_key,
-                2u8,
-                event_handle.clone(),
-            ),
-            true,
-            service,
-            tp_handle,
-            rtbl,
-            msg_rx,
-            netdb_rx,
-            handle,
-        );
-
-        let (key1, expiring_router_info) = {
-            let (identity, _sk, sgk) = RouterIdentity::random();
-            let id = identity.id();
-
-            (
-                Bytes::from(id.to_vec()),
-                Bytes::from(
-                    MockRuntime::gzip_compress(
-                        RouterInfo {
-                            identity,
-                            published: Date::new(
-                                (MockRuntime::time_since_epoch() + Duration::from_secs(5))
-                                    .as_millis() as u64,
-                            ),
-                            addresses: HashMap::from_iter([(
-                                TransportKind::Ntcp2,
-                                RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
-                            )]),
-                            options: Mapping::from_iter([
-                                (Str::from("netId"), Str::from("2")),
-                                (Str::from("caps"), Str::from("L")),
-                            ]),
-                            net_id: 2,
-                            capabilities: Capabilities::parse(&Str::from("L")).unwrap(),
-                        }
-                        .serialize(&sgk),
-                    )
-                    .unwrap(),
-                ),
-            )
-        };
-
-        let (key2, valid_router_info) = {
-            let (identity, _sk, sgk) = RouterIdentity::random();
-            let id = identity.id();
-
-            (
-                Bytes::from(id.to_vec()),
-                Bytes::from(
-                    MockRuntime::gzip_compress(
-                        RouterInfo {
-                            identity,
-                            published: Date::new(
-                                (MockRuntime::time_since_epoch()
-                                    + Duration::from_secs(60 * 60 + 60))
-                                .as_millis() as u64,
-                            ),
-                            addresses: HashMap::from_iter([(
-                                TransportKind::Ntcp2,
-                                RouterAddress::new_unpublished_ntcp2([1u8; 32], 8888),
-                            )]),
-                            options: Mapping::from_iter([
-                                (Str::from("netId"), Str::from("2")),
-                                (Str::from("caps"), Str::from("L")),
-                            ]),
-                            net_id: 2,
-                            capabilities: Capabilities::parse(&Str::from("L")).unwrap(),
-                        }
-                        .serialize(&sgk),
-                    )
-                    .unwrap(),
-                ),
-            )
-        };
-
-        // store first lease set that is about to expire
-        let reply_router = RouterId::random();
-        {
-            let message = DatabaseStoreBuilder::new(
-                key1,
-                DatabaseStoreKind::RouterInfo {
-                    router_info: expiring_router_info,
-                },
-            )
-            .with_reply_type(StoreReplyType::Router {
-                reply_token: MockRuntime::rng().next_u32(),
-                router_id: reply_router.clone(),
-            })
-            .build();
-
-            assert!(netdb.lease_sets.is_empty());
-            assert!(netdb
-                .on_message(
-                    Message {
-                        payload: message.to_vec(),
-                        message_type: MessageType::DatabaseStore,
-                        ..Default::default()
-                    },
-                    None
-                )
-                .is_ok());
-            assert_eq!(netdb.router_infos.len(), 1);
-            assert_eq!(netdb.routers.len(), 4);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
-                }
-                _ => panic!("invalid event"),
-            }
-            assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert!(floodfills.remove(&router_id));
-                    true
-                }
-                _ => false,
-            }));
-            assert!(netdb.routers.values().all(|state| match state {
-                RouterState::Dialing { pending_messages } => {
-                    assert_eq!(pending_messages.len(), 1);
-                    true
-                }
-                _ => false,
-            }));
-        }
-
-        // store second expiring lease set and verify floodfills are pending
-        let reply_router = RouterId::random();
-        {
-            let message = DatabaseStoreBuilder::new(
-                key2.clone(),
-                DatabaseStoreKind::RouterInfo {
-                    router_info: valid_router_info,
-                },
-            )
-            .with_reply_type(StoreReplyType::Router {
-                reply_token: MockRuntime::rng().next_u32(),
-                router_id: reply_router.clone(),
-            })
-            .build();
-
-            assert_eq!(netdb.router_infos.len(), 1);
-            assert!(netdb
-                .on_message(
-                    Message {
-                        payload: message.to_vec(),
-                        message_type: MessageType::DatabaseStore,
-                        ..Default::default()
-                    },
-                    None
-                )
-                .is_ok());
-            assert_eq!(netdb.router_infos.len(), 2);
-            assert_eq!(netdb.routers.len(), 5);
-            match rx.try_recv().unwrap() {
-                ProtocolCommand::Connect { router_id } => {
-                    assert_eq!(router_id, reply_router);
-                }
-                _ => panic!("invalid event"),
-            }
-            assert!(rx.try_recv().is_err());
-            assert!(netdb.routers.iter().all(|(router_id, state)| match state {
-                RouterState::Dialing { pending_messages } => {
-                    if netdb.router_ctx.profile_storage().is_floodfill(router_id) {
-                        assert_eq!(pending_messages.len(), 2);
-                    } else {
-                        assert_eq!(pending_messages.len(), 1);
-                    }
-                    true
-                }
-                _ => false,
-            }));
-        }
-
-        // wait for 10 seconds so the first lease set expires
-        tokio::time::sleep(Duration::from_secs(10)).await;
-
-        // register all floodfills to netdb and spawn it int the background
-        let channels = floodfills
-            .iter()
-            .map(|router_id| {
-                let (conn_tx, conn_rx) = channel(16);
-                tx.try_send(InnerSubsystemEvent::ConnectionEstablished {
-                    router: router_id.clone(),
-                    tx: conn_tx,
-                })
-                .unwrap();
-
-                conn_rx
-            })
-            .collect::<Vec<_>>();
-        tokio::spawn(netdb);
-
-        // verify that all floodfillls receive one lease set store, for the still valid lease set
-        for channel in channels {
-            match tokio::time::timeout(Duration::from_secs(1), channel.recv())
-                .await
-                .expect("no timeout")
-                .expect("to succeed")
-            {
-                SubsystemCommand::SendMessage { message } => {
-                    let message = Message::parse_short(&message).unwrap();
-                    assert_eq!(message.message_type, MessageType::DatabaseStore);
-
-                    let DatabaseStore { key, payload, .. } =
-                        DatabaseStore::<MockRuntime>::parse(&message.payload).unwrap();
-
-                    assert_eq!(key, key2);
-                    assert!(std::matches!(
-                        payload,
-                        DatabaseStorePayload::RouterInfo { .. }
-                    ));
-                }
-                _ => panic!("invalid event"),
-            }
-
-            // verify there are no other messages pending
-            match tokio::time::timeout(Duration::from_secs(1), channel.recv()).await {
-                Err(_) => {}
-                _ => panic!("expected timeout"),
-            }
-        }
-    }
-
-    #[tokio::test]
     async fn router_info_with_different_network_id_ignored() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4060,11 +3302,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4080,10 +3319,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4135,13 +3372,11 @@ mod tests {
             )
             .is_ok());
         assert!(netdb.router_infos.is_empty());
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn lease_set_store_with_zero_reply_token() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4156,11 +3391,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4176,10 +3408,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4235,13 +3465,11 @@ mod tests {
             )
             .is_ok());
         assert_eq!(netdb.lease_sets.len(), 1);
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn router_info_store_with_zero_reply_token() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4256,11 +3484,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4276,10 +3501,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4332,13 +3555,11 @@ mod tests {
             )
             .is_ok());
         assert_eq!(netdb.router_infos.len(), 1);
-        assert!(rx.try_recv().is_err());
-        assert!(netdb.routers.is_empty());
     }
 
     #[tokio::test]
     async fn recursive_lease_set_query_with_duplicate_floodfills() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4353,11 +3574,8 @@ mod tests {
             .collect::<VecDeque<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4373,10 +3591,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4513,7 +3729,7 @@ mod tests {
 
     #[tokio::test]
     async fn local_router_info_store() {
-        let (service, rx, subsys_tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4528,14 +3744,26 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4549,39 +3777,35 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
 
         // publish local router info and poll netdb so the request is handled
         handle.publish_router_info(router_info.identity.id(), serialized.clone());
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut netdb).await.is_err());
 
         // verify all floodfills are being dialed
-        assert!(netdb.routers.iter().all(|(id, state)| match state {
-            RouterState::Dialing { pending_messages } if pending_messages.len() == 1 => {
-                floodfills.contains(id)
-            }
-            _ => false,
-        }));
-        assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => floodfills.contains(&router_id),
-            _ => false,
-        }));
+        for _ in 0..3 {
+            let router_id = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(floodfills.contains(&router_id));
+        }
 
         // register floodfills
         let receivers = floodfills
             .iter()
             .map(|router_id| {
-                let (tx, rx) = channel(64);
+                let (tx, rx) = with_recycle(64, OutboundMessageRecycle::default());
 
-                subsys_tx
-                    .try_send(InnerSubsystemEvent::ConnectionEstablished {
-                        router: router_id.clone(),
+                transport_tx
+                    .try_send(SubsystemEventNew::ConnectionEstablished {
+                        router_id: router_id.clone(),
                         tx,
                     })
                     .unwrap();
@@ -4594,8 +3818,7 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut netdb).await.is_err());
         assert!(
             receivers.into_iter().all(|rx| match rx.try_recv().unwrap() {
-                SubsystemCommand::SendMessage { message } => {
-                    let message = Message::parse_short(&message).unwrap();
+                OutboundMessage::Message(message) => {
                     assert_eq!(message.message_type, MessageType::DatabaseStore);
 
                     let store = DatabaseStore::<MockRuntime>::parse(&message.payload).unwrap();
@@ -4622,7 +3845,7 @@ mod tests {
 
     #[tokio::test]
     async fn router_exploration_works() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4637,11 +3860,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4657,10 +3877,8 @@ mod tests {
                 event_handle.clone(),
             ),
             false,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4698,7 +3916,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_lease_set_query() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4713,11 +3931,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4733,10 +3948,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4781,7 +3994,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_router_info_query() {
-        let (service, _rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4796,11 +4009,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4816,10 +4026,8 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4865,7 +4073,7 @@ mod tests {
 
     #[tokio::test]
     async fn floodfill_is_ibgw() {
-        let (service, rx, _tx, storage) = TransportService::new();
+        let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
 
         // add few floodfills to router storage
@@ -4880,13 +4088,26 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_msg_tx, msg_rx) = channel(64);
+
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx: _transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id().clone(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (tm_mgr_tx, _tm_mgr_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = channel(64);
-        let rtbl = RoutingTable::new(router_info.identity.id(), tm_mgr_tx, transit_tx);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4900,13 +4121,12 @@ mod tests {
                 event_handle.clone(),
             ),
             true,
-            service,
             tp_handle,
-            rtbl,
-            msg_rx,
+            netdb_msg_rx,
             netdb_rx,
             handle,
         );
+        tokio::spawn(manager);
 
         let (key, lease_set) = {
             let sgk = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
@@ -4947,13 +4167,13 @@ mod tests {
         // add ibgw for the floodfill and make reply go through this tunnel
         let reply_tunnel_id = TunnelId::random();
         let reply_router_id = netdb.router_ctx.router_id().clone();
-        let ibgw_rx = netdb.routing_table.try_add_tunnel::<16>(reply_tunnel_id).unwrap();
+        let ibgw_rx = netdb.subsystem_handle.try_register_tunnel::<16>(reply_tunnel_id).unwrap();
 
         let message = DatabaseStoreBuilder::new(key, DatabaseStoreKind::LeaseSet2 { lease_set })
             .with_reply_type(StoreReplyType::Tunnel {
                 reply_token: MockRuntime::rng().next_u32(),
                 tunnel_id: reply_tunnel_id,
-                router_id: reply_router_id,
+                router_id: reply_router_id.clone(),
             })
             .build();
 
@@ -4970,25 +4190,19 @@ mod tests {
             .is_ok());
         assert_eq!(netdb.lease_sets.len(), 1);
 
-        assert!((0..3).all(|_| match rx.try_recv().unwrap() {
-            ProtocolCommand::Connect { router_id } => {
-                assert!(floodfills.remove(&router_id));
-                true
-            }
-            _ => false,
-        }));
+        for _ in 0..3 {
+            let router_id = dial_rx.recv().await.unwrap();
+            assert!(floodfills.remove(&router_id));
+        }
 
         // verify that there are no more dials since the reply is supposed to go through an ibgw
         // that the floodfill is part of
-        assert!(rx.try_recv().is_err());
+        assert!(dial_rx.try_recv().is_err());
 
-        assert_eq!(netdb.routers.len(), 3);
-        assert!(netdb
-            .routers
-            .values()
-            .all(|state| std::matches!(state, RouterState::Dialing { .. })));
-
-        let message = ibgw_rx.try_recv().unwrap();
+        let message = tokio::time::timeout(Duration::from_secs(5), ibgw_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
         let message = TunnelGateway::parse(&message.payload).unwrap();
         let message = Message::parse_standard(message.payload).unwrap();
 
