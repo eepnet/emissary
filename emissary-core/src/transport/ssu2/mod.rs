@@ -23,7 +23,7 @@ use crate::{
     primitives::{RouterAddress, RouterId, RouterInfo},
     router::context::RouterContext,
     runtime::{MetricType, Runtime, UdpSocket},
-    subsystem::{SubsystemEventNew, SubsystemHandle},
+    subsystem::SubsystemEventNew,
     transport::{ssu2::socket::Ssu2Socket, Transport, TransportEvent},
 };
 
@@ -99,7 +99,6 @@ impl<R: Runtime> Ssu2Transport<R> {
         context: Ssu2Context<R>,
         allow_local: bool,
         router_ctx: RouterContext<R>,
-        subsystem_handle: SubsystemHandle,
         transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
         let Ssu2Context {
@@ -120,7 +119,6 @@ impl<R: Runtime> Ssu2Transport<R> {
                 socket,
                 StaticPrivateKey::from(config.static_key),
                 config.intro_key,
-                subsystem_handle,
                 transport_tx,
                 router_ctx.clone(),
             ),
@@ -288,20 +286,6 @@ mod tests {
             &signing2,
             false,
         );
-        let (handle1, _event_rx1) = {
-            let (tx, rx) = channel(64);
-            let mut handle = SubsystemHandle::new();
-            handle.register_subsystem(tx);
-
-            (handle, rx)
-        };
-        let (handle2, _event_rx2) = {
-            let (tx, rx) = channel(64);
-            let mut handle = SubsystemHandle::new();
-            handle.register_subsystem(tx);
-
-            (handle, rx)
-        };
         let (event1_tx, _event1_rx) = channel(64);
         let (event2_tx, _event2_rx) = channel(64);
 
@@ -318,7 +302,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            handle1,
             event1_tx,
         );
         let mut transport2 = Ssu2Transport::<MockRuntime>::new(
@@ -334,7 +317,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            handle2,
             event2_tx,
         );
         tokio::spawn(async move {
@@ -412,20 +394,6 @@ mod tests {
             &signing2,
             false,
         );
-        let (handle1, _event_rx1) = {
-            let (tx, rx) = channel(64);
-            let mut handle = SubsystemHandle::new();
-            handle.register_subsystem(tx);
-
-            (handle, rx)
-        };
-        let (handle2, _event_rx2) = {
-            let (tx, rx) = channel(64);
-            let mut handle = SubsystemHandle::new();
-            handle.register_subsystem(tx);
-
-            (handle, rx)
-        };
         let (event1_tx, _event1_rx) = channel(64);
         let (event2_tx, _event2_rx) = channel(64);
 
@@ -442,7 +410,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            handle1,
             event1_tx,
         );
         let mut transport2 = Ssu2Transport::<MockRuntime>::new(
@@ -458,7 +425,6 @@ mod tests {
                 5u8, // wrong network
                 event_handle.clone(),
             ),
-            handle2,
             event2_tx,
         );
         tokio::spawn(async move { while let Some(_) = transport2.next().await {} });

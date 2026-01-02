@@ -22,10 +22,7 @@ use crate::{
     i2np::Message,
     primitives::RouterId,
     runtime::{Counter, MetricsHandle, Runtime},
-    subsystem::{
-        OutboundMessage, OutboundMessageRecycle, SubsystemCommand, SubsystemEventNew,
-        SubsystemHandle,
-    },
+    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEventNew},
     transport::{
         ssu2::{
             message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
@@ -47,9 +44,9 @@ use crate::{
 };
 
 use futures::FutureExt;
-use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
+use thingbuf::mpsc::{with_recycle, Receiver, Sender};
 
-use alloc::{sync::Arc, vec, vec::Vec};
+use alloc::{sync::Arc, vec};
 use core::{
     cmp::min,
     future::Future,
@@ -185,12 +182,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Socket address of the remote router.
     address: SocketAddr,
 
-    /// RX channel for receiving messages from subsystems.
-    cmd_rx: Receiver<SubsystemCommand>,
-
-    /// TX channel for sending commands for this connection.
-    cmd_tx: Sender<SubsystemCommand>,
-
     /// RX channel for receiving messages from `SubsystemManager`.
     msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
 
@@ -244,9 +235,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Key context for outbound packets.
     send_key_ctx: KeyContext,
 
-    /// Subsystem handle.
-    subsystem_handle: SubsystemHandle,
-
     /// Transmission manager.
     transmission: TransmissionManager<R>,
 
@@ -259,11 +247,9 @@ impl<R: Runtime> Ssu2Session<R> {
     pub fn new(
         context: Ssu2SessionContext,
         pkt_tx: Sender<Packet>,
-        subsystem_handle: SubsystemHandle,
         transport_tx: Sender<SubsystemEventNew>,
         metrics: R::MetricsHandle,
     ) -> Self {
-        let (cmd_tx, cmd_rx) = channel(CMD_CHANNEL_SIZE);
         let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
         let pkt_num = Arc::new(AtomicU32::new(1u32));
 
@@ -277,8 +263,6 @@ impl<R: Runtime> Ssu2Session<R> {
         Self {
             ack_timer: AckTimer::<R>::new(),
             address: context.address,
-            cmd_rx,
-            cmd_tx,
             dst_id: context.dst_id,
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(metrics.clone()),
@@ -295,7 +279,6 @@ impl<R: Runtime> Ssu2Session<R> {
             resend_timer: None,
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
-            subsystem_handle,
             transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
             transport_tx,
         }
@@ -334,18 +317,6 @@ impl<R: Runtime> Ssu2Session<R> {
         if let Err(error) = self.transport_tx.try_send(SubsystemEventNew::Message {
             messages: vec![(self.router_id.clone(), message.clone())],
         }) {
-            tracing::warn!(
-                target: LOG_TARGET,
-                router_id = %self.router_id,
-                ?error,
-                "failed to dispatch messages to subsystems",
-            );
-        }
-
-        // TODO: remove eventually
-        if let Err(error) =
-            self.subsystem_handle.dispatch_messages(self.router_id.clone(), vec![message])
-        {
             tracing::warn!(
                 target: LOG_TARGET,
                 router_id = %self.router_id,
@@ -534,9 +505,7 @@ impl<R: Runtime> Ssu2Session<R> {
     }
 
     /// Send `message` to remote router.
-    fn send_message(&mut self, message: Vec<u8>) {
-        // TODO: this makes no sense, get unserialized message from subsystem
-        let message = Message::parse_short(&message).unwrap();
+    fn send_message(&mut self, message: Message) {
         let AckInfo {
             highest_seen,
             num_acks,
@@ -650,11 +619,6 @@ impl<R: Runtime> Ssu2Session<R> {
             .await
             .expect("manager to stay alive");
 
-        // TODO: remove eventually
-        self.subsystem_handle
-            .report_connection_established(self.router_id.clone(), self.cmd_tx.clone())
-            .await;
-
         // run the event loop until it returns which happens only when
         // the peer has disconnected or an error was encoutered
         //
@@ -668,9 +632,6 @@ impl<R: Runtime> Ssu2Session<R> {
             })
             .await
             .expect("manager to stay alive");
-
-        // TODO: remove eventually
-        self.subsystem_handle.report_connection_closed(self.router_id.clone()).await;
 
         TerminationContext {
             address: self.address,
@@ -721,24 +682,14 @@ impl<R: Runtime> Future for Ssu2Session<R> {
         }
 
         while self.transmission.has_capacity() {
-            match self.cmd_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
-                Poll::Ready(Some(SubsystemCommand::SendMessage { message })) =>
-                    self.send_message(message),
-                Poll::Ready(Some(SubsystemCommand::Dummy)) => {}
-            }
-        }
-
-        while self.transmission.has_capacity() {
             match self.msg_rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
                 Poll::Ready(Some(OutboundMessage::Message(message))) => {
-                    self.send_message(message.serialize_short()); // TODO: remove `serialize()`
+                    self.send_message(message);
                 }
                 Poll::Ready(Some(OutboundMessage::MessageWithFeedback(message, feedback_tx))) => {
-                    self.send_message(message.serialize_short()); // TODO: remove `serialize()`
+                    self.send_message(message);
                     let _ = feedback_tx.send(());
                 }
                 Poll::Ready(Some(OutboundMessage::Messages(mut messages))) => {
@@ -749,19 +700,9 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                         todo!("not implemented")
                     }
 
-                    // TODO: remove `serialize()`
-                    let message = messages.pop().expect("message to exist").serialize_short();
-                    self.send_message(message);
+                    self.send_message(messages.pop().expect("message to exist"));
                 }
                 Poll::Ready(Some(OutboundMessage::Dummy)) => {}
-            }
-        }
-
-        loop {
-            match self.msg_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::Unspecified),
-                Poll::Ready(Some(_)) => {}
             }
         }
 
@@ -846,6 +787,7 @@ mod tests {
         primitives::MessageId,
         runtime::mock::MockRuntime,
     };
+    use thingbuf::mpsc::channel;
 
     #[tokio::test]
     async fn backpressure_works() {
@@ -869,29 +811,20 @@ mod tests {
         };
 
         let cmd_tx = {
-            // register one subsystem, start active session andn poll command handle
-            let (handle, cmd_rx) = {
-                let (cmd_tx, cmd_rx) = channel(16);
-                let mut handle = SubsystemHandle::new();
-                handle.register_subsystem(cmd_tx);
-
-                (handle, cmd_rx)
-            };
-            let (transport_tx, _transport_rx) = channel(16);
+            let (transport_tx, transport_rx) = channel(16);
 
             tokio::spawn(
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
                     to_socket_tx,
-                    handle,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
                 .run(),
             );
 
-            match cmd_rx.recv().await.unwrap() {
-                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } => tx,
+            match transport_rx.recv().await.unwrap() {
+                SubsystemEventNew::ConnectionEstablished { tx, .. } => tx,
                 _ => panic!("invalid event"),
             }
         };
@@ -899,29 +832,23 @@ mod tests {
         // send maximum amount of messages to the channel
         for _ in 0..CMD_CHANNEL_SIZE {
             cmd_tx
-                .try_send(SubsystemCommand::SendMessage {
-                    message: Message {
-                        message_type: MessageType::Data,
-                        message_id: *MessageId::random(),
-                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                        payload: vec![1, 2, 3, 4],
-                    }
-                    .serialize_short(),
-                })
+                .try_send(OutboundMessage::Message(Message {
+                    message_type: MessageType::Data,
+                    message_id: *MessageId::random(),
+                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: vec![1, 2, 3, 4],
+                }))
                 .unwrap();
         }
 
         // try to send one more packet and verify the call fails because window is full
         assert!(cmd_tx
-            .try_send(SubsystemCommand::SendMessage {
-                message: Message {
-                    message_type: MessageType::Data,
-                    message_id: *MessageId::random(),
-                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                    payload: vec![1, 2, 3, 4],
-                }
-                .serialize_short(),
-            })
+            .try_send(OutboundMessage::Message(Message {
+                message_type: MessageType::Data,
+                message_id: *MessageId::random(),
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                payload: vec![1, 2, 3, 4],
+            }))
             .is_err());
 
         // read and parse all packets
@@ -937,29 +864,23 @@ mod tests {
         // verify that 16 more messags can be sent to the channel
         for _ in 0..16 {
             assert!(cmd_tx
-                .try_send(SubsystemCommand::SendMessage {
-                    message: Message {
-                        message_type: MessageType::Data,
-                        message_id: *MessageId::random(),
-                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                        payload: vec![1, 2, 3, 4],
-                    }
-                    .serialize_short(),
-                })
+                .try_send(OutboundMessage::Message(Message {
+                    message_type: MessageType::Data,
+                    message_id: *MessageId::random(),
+                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: vec![1, 2, 3, 4],
+                }))
                 .is_ok());
         }
 
         // verify that the excess messages are rejected
         assert!(cmd_tx
-            .try_send(SubsystemCommand::SendMessage {
-                message: Message {
-                    message_type: MessageType::Data,
-                    message_id: *MessageId::random(),
-                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                    payload: vec![1, 2, 3, 4],
-                }
-                .serialize_short(),
-            })
+            .try_send(OutboundMessage::Message(Message {
+                message_type: MessageType::Data,
+                message_id: *MessageId::random(),
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                payload: vec![1, 2, 3, 4],
+            }))
             .is_err());
 
         // send ack
@@ -990,15 +911,12 @@ mod tests {
         let future = async move {
             for _ in 0..6 {
                 cmd_tx
-                    .send(SubsystemCommand::SendMessage {
-                        message: Message {
-                            message_type: MessageType::Data,
-                            message_id: *MessageId::random(),
-                            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                            payload: vec![1, 2, 3, 4],
-                        }
-                        .serialize_short(),
-                    })
+                    .send(OutboundMessage::Message(Message {
+                        message_type: MessageType::Data,
+                        message_id: *MessageId::random(),
+                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                        payload: vec![1, 2, 3, 4],
+                    }))
                     .await
                     .unwrap();
             }
@@ -1011,7 +929,7 @@ mod tests {
     async fn session_terminated_after_too_many_resends() {
         let (_from_socket_tx, from_socket_rx) = channel(128);
         let (to_socket_tx, to_socket_rx) = channel(128);
-        let (transport_tx, _transport_rx) = channel(16);
+        let (transport_tx, transport_rx) = channel(16);
 
         let ctx = Ssu2SessionContext {
             address: "127.0.0.1:8888".parse().unwrap(),
@@ -1030,29 +948,18 @@ mod tests {
         };
 
         let (cmd_tx, handle) = {
-            // register one subsystem, start active session andn poll command handle
-            let (handle, cmd_rx) = {
-                let (cmd_tx, cmd_rx) = channel(16);
-                let mut handle = SubsystemHandle::new();
-                handle.register_subsystem(cmd_tx);
-
-                (handle, cmd_rx)
-            };
-
             let handle = tokio::spawn(
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
                     to_socket_tx,
-                    handle,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
                 .run(),
             );
 
-            match cmd_rx.recv().await.unwrap() {
-                crate::subsystem::InnerSubsystemEvent::ConnectionEstablished { tx, .. } =>
-                    (tx, handle),
+            match transport_rx.recv().await.unwrap() {
+                SubsystemEventNew::ConnectionEstablished { tx, .. } => (tx, handle),
                 _ => panic!("invalid event"),
             }
         };
@@ -1060,15 +967,12 @@ mod tests {
         // send maximum amount of messages to the channel
         for _ in 0..CMD_CHANNEL_SIZE {
             cmd_tx
-                .try_send(SubsystemCommand::SendMessage {
-                    message: Message {
-                        message_type: MessageType::Data,
-                        message_id: *MessageId::random(),
-                        expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                        payload: vec![1, 2, 3, 4],
-                    }
-                    .serialize_short(),
-                })
+                .try_send(OutboundMessage::Message(Message {
+                    message_type: MessageType::Data,
+                    message_id: *MessageId::random(),
+                    expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                    payload: vec![1, 2, 3, 4],
+                }))
                 .unwrap();
         }
 

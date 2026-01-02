@@ -369,7 +369,8 @@ mod tests {
     use crate::{
         i2np::{tunnel::gateway::TunnelGateway, MessageBuilder, MessageType},
         runtime::{mock::MockRuntime, Runtime},
-        tunnel::{routing_table::RoutingKind, tests::build_inbound_tunnel},
+        subsystem::OutboundMessage,
+        tunnel::tests::{build_inbound_tunnel, connect_routers},
     };
     use core::time::Duration;
     use rand_core::RngCore;
@@ -395,8 +396,13 @@ mod tests {
 
     #[tokio::test]
     async fn fragment_reception_works() {
-        let (_, mut tunnel, mut hops) = build_inbound_tunnel(true, 3usize);
+        let (local_hash, mut tunnel, mut hops) = build_inbound_tunnel(true, 3usize);
+        let local_router_id = RouterId::from(local_hash);
         let original = (0..3 * 1028usize).map(|i| (i % 256) as u8).collect::<Vec<_>>();
+
+        // connect all transit routers together
+        connect_routers(hops.iter_mut());
+        hops[2].connect_router(&local_router_id);
 
         let message = MessageBuilder::standard()
             .with_expiration(MockRuntime::time_since_epoch() + Duration::from_secs(8))
@@ -420,15 +426,14 @@ mod tests {
 
         // 1st hop (ibgw)
         let messages = {
-            let _ = hops[0].routing_table().route_message(message).unwrap();
+            let _ = hops[0].routing_table().send_message(hops[0].router(), message).unwrap();
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[0]).await.is_err());
 
             let mut messages = vec![];
+            let rx = hops[0].router_rx(&hops[1].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                hops[0].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push((hops[1].router(), message));
             }
 
             messages
@@ -439,18 +444,16 @@ mod tests {
         let messages = {
             for (router, message) in messages {
                 assert_eq!(router, RouterId::from(hops[1].router_hash()));
-                let message = Message::parse_short(&message).unwrap();
 
-                let _ = hops[1].routing_table().route_message(message).unwrap();
+                let _ = hops[1].routing_table().send_message(hops[1].router(), message).unwrap();
             }
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[1]).await.is_err());
 
             let mut messages = vec![];
+            let rx = hops[1].router_rx(&hops[2].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                hops[1].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push((hops[2].router(), message));
             }
 
             messages
@@ -461,28 +464,23 @@ mod tests {
         let messages = {
             for (router, message) in messages {
                 assert_eq!(router, RouterId::from(hops[2].router_hash()));
-                let message = Message::parse_short(&message).unwrap();
 
-                let _ = hops[2].routing_table().route_message(message).unwrap();
+                let _ = hops[2].routing_table().send_message(hops[2].router(), message).unwrap();
             }
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[2]).await.is_err());
 
             let mut messages = vec![];
+            let rx = hops[2].router_rx(&local_router_id).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                hops[2].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push((local_router_id.clone(), message));
             }
 
             messages
         };
         assert_eq!(messages.len(), 4);
 
-        let messages = messages
-            .into_iter()
-            .map(|(_, message)| Message::parse_short(&message).unwrap())
-            .collect::<Vec<_>>();
+        let messages = messages.into_iter().map(|(_, message)| message).collect::<Vec<_>>();
 
         assert_eq!(tunnel.handle_tunnel_data(&messages[0]).unwrap().count(), 0);
         assert_eq!(tunnel.handle_tunnel_data(&messages[1]).unwrap().count(), 0);

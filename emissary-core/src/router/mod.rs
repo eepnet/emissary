@@ -29,7 +29,7 @@ use crate::{
     runtime::{AddressBook, Runtime, Storage},
     sam::SamServer,
     shutdown::ShutdownContext,
-    subsystem::{SubsystemKind, SubsystemManager, SubsystemManagerContext},
+    subsystem::{SubsystemManager, SubsystemManagerContext},
     transport::{Ntcp2Transport, Ssu2Transport, TransportManager, TransportManagerBuilder},
     tunnel::{TunnelManager, TunnelManagerHandle},
 };
@@ -318,33 +318,28 @@ impl<R: Runtime> Router<R> {
         // initialize and start tunnel manager
         //
         // acquire handle to exploratory tunnel pool which is given to `NetDb`
-        let (tunnel_manager_handle, exploratory_pool_handle, netdb_msg_rx) = {
-            let transport_service =
-                transport_manager_builder.register_subsystem(SubsystemKind::Tunnel);
-            let (tunnel_manager, tunnel_manager_handle, tunnel_pool_handle, netdb_msg_rx) =
+        let (tunnel_manager_handle, exploratory_pool_handle) = {
+            let (tunnel_manager, tunnel_manager_handle, tunnel_pool_handle) =
                 TunnelManager::<R>::new(
-                    transport_service,
                     router_ctx.clone(),
                     exploratory.into(),
                     insecure_tunnels,
                     transit,
                     transit_shutdown_handle,
+                    handle.clone(),
                     transit_rx,
                 );
             R::spawn(tunnel_manager);
 
-            (tunnel_manager_handle, tunnel_pool_handle, netdb_msg_rx)
+            (tunnel_manager_handle, tunnel_pool_handle)
         };
 
         // initialize and start netdb
         let netdb_handle = {
-            // let _transport_service =
-            //     transport_manager_builder.register_subsystem(SubsystemKind::NetDb);
             let (netdb, netdb_handle) = NetDb::<R>::new(
                 router_ctx,
                 floodfill,
                 exploratory_pool_handle,
-                netdb_msg_rx,
                 netdb_rx,
                 handle,
             );

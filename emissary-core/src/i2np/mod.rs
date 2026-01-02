@@ -20,10 +20,7 @@
 //!
 //! https://geti2p.net/spec/i2np
 
-use crate::{
-    crypto::sha256::Sha256, error::parser::I2npParseError, runtime::Runtime,
-    subsystem::SubsystemKind,
-};
+use crate::{crypto::sha256::Sha256, error::parser::I2npParseError, runtime::Runtime};
 
 use bytes::{BufMut, BytesMut};
 use nom::{
@@ -469,16 +466,6 @@ impl Message {
     /// Attempt to parse I2NP message with standard header from `input`.
     pub fn parse_standard(input: &[u8]) -> Result<Message, I2npParseError> {
         Ok(Self::parse_frame_standard(input)?.1)
-    }
-
-    /// Get destination subsystem of the message based on its message type.
-    pub fn destination(&self) -> SubsystemKind {
-        match self.message_type {
-            MessageType::DatabaseStore
-            | MessageType::DatabaseLookup
-            | MessageType::DatabaseSearchReply => SubsystemKind::NetDb,
-            _ => SubsystemKind::Tunnel,
-        }
     }
 
     /// Serialize `self` into an I2NP message with short header.

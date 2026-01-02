@@ -726,18 +726,19 @@ mod test {
         router::context::RouterContext,
         runtime::mock::MockRuntime,
         shutdown::ShutdownContext,
+        subsystem::SubsystemManagerHandle,
         tunnel::{
             garlic::{DeliveryInstructions as GarlicDeliveryInstructions, GarlicHandler},
             hop::inbound::InboundTunnel,
             noise::NoiseContext,
             pool::TunnelPoolBuildParameters,
-            routing_table::{RoutingKindRecycle, RoutingTable},
+            routing_table::RoutingTable,
             tests::{make_router, TestTransitTunnelManager},
             transit::TransitTunnelManager,
         },
     };
     use bytes::Bytes;
-    use thingbuf::mpsc::{channel, with_recycle};
+    use thingbuf::mpsc::channel;
 
     #[tokio::test]
     async fn create_outbound_tunnel() {
@@ -781,8 +782,7 @@ mod test {
         let message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), transit_manager)| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
         assert_eq!(message.message_type, MessageType::TunnelGateway);
@@ -814,12 +814,11 @@ mod test {
             .into_iter()
             .map(
                 |(router_hash, static_key, signing_key, noise_context, router_info)| {
-                    let (transit_tx, transit_rx) = channel(16);
-                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let routing_table =
-                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -896,8 +895,7 @@ mod test {
         let message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), (_, transit_manager))| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
 
@@ -1157,8 +1155,7 @@ mod test {
         let message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), transit_manager)| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
         assert_eq!(message.message_type, MessageType::TunnelGateway);
@@ -1236,13 +1233,11 @@ mod test {
             let (router_hash, static_key, signing_key, _noise_context, router_info) =
                 make_router(true);
 
-            let (transit_tx, transit_rx) = channel(16);
-            let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+            let (_transit_tx, transit_rx) = channel(16);
             let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
             let shutdown_handle = shutdown_ctx.handle();
-
-            let routing_table =
-                RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+            let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+            let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
             ctxs.push(shutdown_ctx);
@@ -1289,9 +1284,7 @@ mod test {
             .unwrap();
 
         let message = (0..transit_managers.len() - 1).fold(message, |message, i| {
-            let (_, msg, _) = transit_managers[i].handle_short_tunnel_build(message).unwrap();
-
-            Message::parse_short(&msg).unwrap()
+            transit_managers[i].handle_short_tunnel_build(message).unwrap().1
         });
 
         let (_, msg, _) = transit_managers[2].handle_short_tunnel_build(message).unwrap();
@@ -1300,7 +1293,7 @@ mod test {
             message_type,
             payload,
             ..
-        } = Message::parse_short(&msg).unwrap();
+        } = msg;
 
         assert_eq!(message_type, MessageType::TunnelGateway);
 
@@ -1493,12 +1486,11 @@ mod test {
             .into_iter()
             .map(
                 |(router_hash, static_key, signing_key, noise_context, router_info)| {
-                    let (transit_tx, transit_rx) = channel(16);
-                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let routing_table =
-                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1573,8 +1565,7 @@ mod test {
         let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), (_, transit_manager))| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
 
@@ -1650,12 +1641,11 @@ mod test {
             .into_iter()
             .map(
                 |(router_hash, static_key, signing_key, noise_context, router_info)| {
-                    let (transit_tx, transit_rx) = channel(16);
-                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let routing_table =
-                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1732,8 +1722,7 @@ mod test {
         let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), (_, transit_manager))| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
 
@@ -1770,12 +1759,11 @@ mod test {
             .into_iter()
             .map(
                 |(router_hash, static_key, signing_key, noise_context, router_info)| {
-                    let (transit_tx, transit_rx) = channel(16);
-                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let routing_table =
-                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1852,8 +1840,7 @@ mod test {
         let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), (_, transit_manager))| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
 
@@ -1890,12 +1877,11 @@ mod test {
             .into_iter()
             .map(
                 |(router_hash, static_key, signing_key, noise_context, router_info)| {
-                    let (transit_tx, transit_rx) = channel(16);
-                    let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
+                    let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let routing_table =
-                        RoutingTable::new(RouterId::from(&router_hash), manager_tx, transit_tx);
+                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1972,8 +1958,7 @@ mod test {
         let mut message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), (_, transit_manager))| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
 
@@ -2032,8 +2017,7 @@ mod test {
         let message = hops.iter().zip(transit_managers.iter_mut()).fold(
             message,
             |acc, ((_, _), transit_manager)| {
-                let (_, message, _) = transit_manager.handle_short_tunnel_build(acc).unwrap();
-                Message::parse_short(&message).unwrap()
+                transit_manager.handle_short_tunnel_build(acc).unwrap().1
             },
         );
         assert_eq!(message.message_type, MessageType::TunnelGateway);

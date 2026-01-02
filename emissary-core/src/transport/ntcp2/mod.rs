@@ -22,7 +22,7 @@ use crate::{
     primitives::{RouterAddress, RouterId, RouterInfo},
     router::context::RouterContext,
     runtime::{Counter, JoinSet, MetricType, MetricsHandle, Runtime, TcpListener},
-    subsystem::{SubsystemEventNew, SubsystemHandle},
+    subsystem::SubsystemEventNew,
     transport::{
         metrics::*,
         ntcp2::{
@@ -111,7 +111,6 @@ impl<R: Runtime> Ntcp2Transport<R> {
         context: Ntcp2Context<R>,
         allow_local: bool,
         router_ctx: RouterContext<R>,
-        subsystem_handle: SubsystemHandle,
         transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
         let Ntcp2Context {
@@ -124,7 +123,6 @@ impl<R: Runtime> Ntcp2Transport<R> {
             config.key,
             config.iv,
             router_ctx.clone(),
-            subsystem_handle,
             allow_local,
             transport_tx,
         );

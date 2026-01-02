@@ -17,6 +17,12 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
+    i2np::Message,
+    primitives::{RouterId, TunnelId},
+};
+
+#[cfg(test)]
+use crate::{
     crypto::{chachapoly::ChaChaPoly, EphemeralPublicKey},
     error::{Error, TunnelError},
     i2np::{
@@ -24,19 +30,22 @@ use crate::{
             DeliveryInstructions as CloveDeliveryInstructions, GarlicMessage, GarlicMessageBlock,
         },
         tunnel::gateway::TunnelGateway,
-        Message, MessageBuilder, MessageType,
+        MessageBuilder, MessageType,
     },
-    primitives::{RouterId, TunnelId},
     runtime::Runtime,
     tunnel::noise::NoiseContext,
 };
 
+#[cfg(test)]
 use rand_core::RngCore;
+#[cfg(test)]
 use zeroize::Zeroize;
 
+#[cfg(test)]
 use alloc::vec::Vec;
 
 /// Logging target for the file.
+#[cfg(test)]
 const LOG_TARGET: &str = "emissary::tunnel::garlic";
 
 /// Garlic clove delivery instructions
@@ -59,6 +68,7 @@ pub enum DeliveryInstructions {
     /// Message meant for tunnel delivery.
     Tunnel {
         /// Tunnel ID.
+        #[allow(unused)]
         tunnel: TunnelId,
 
         /// Router.
@@ -74,6 +84,7 @@ pub enum DeliveryInstructions {
 }
 
 /// Garlic message handler.
+#[cfg(test)]
 pub struct GarlicHandler<R: Runtime> {
     /// Noise context.
     noise: NoiseContext,
@@ -83,6 +94,7 @@ pub struct GarlicHandler<R: Runtime> {
     metrics_handle: R::MetricsHandle,
 }
 
+#[cfg(test)]
 impl<R: Runtime> GarlicHandler<R> {
     /// Create new [`GarlicHandler`].
     pub fn new(noise: NoiseContext, metrics_handle: R::MetricsHandle) -> Self {

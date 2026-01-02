@@ -437,11 +437,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 .gauge(NUM_PENDING_OUTBOUND_TUNNELS)
                                 .increment(1);
 
-                            if let Err(error) = self.routing_table.send_message_with_feedback(
-                                router_id,
-                                message.serialize_short(),
-                                dial_tx,
-                            ) {
+                            if let Err(error) = self
+                                .routing_table
+                                .send_message_with_feedback(router_id, message, dial_tx)
+                            {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     ?error,
@@ -538,11 +537,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 .gauge(NUM_PENDING_OUTBOUND_TUNNELS)
                                 .increment(1);
 
-                            if let Err(error) = self.routing_table.send_message_with_feedback(
-                                router_id,
-                                message.serialize_short(),
-                                dial_tx,
-                            ) {
+                            if let Err(error) = self
+                                .routing_table
+                                .send_message_with_feedback(router_id, message, dial_tx)
+                            {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     ?error,
@@ -640,11 +638,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 "no outbound tunnel available, send build request to router",
                             );
 
-                            if let Err(error) = self.routing_table.send_message_with_feedback(
-                                router,
-                                message.serialize_short(),
-                                dial_tx,
-                            ) {
+                            if let Err(error) = self
+                                .routing_table
+                                .send_message_with_feedback(router, message, dial_tx)
+                            {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     ?error,
@@ -1476,18 +1473,21 @@ mod tests {
     use crate::{
         error::RoutingError,
         events::EventManager,
-        i2np::Message,
         primitives::{RouterId, RouterInfoBuilder},
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
+        subsystem::{
+            OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+            SubsystemManagerContext,
+        },
         tunnel::{
             garlic::DeliveryInstructions as GarlicDeliveryInstructions,
             pool::selector::ClientSelector,
-            routing_table::{RoutingKind, RoutingKindRecycle},
-            tests::TestTransitTunnelManager,
+            tests::{connect_routers, TestTransitTunnelManager},
+            NoiseContext,
         },
     };
-    use thingbuf::mpsc;
+    use thingbuf::mpsc::{channel, with_recycle};
 
     #[tokio::test]
     async fn build_outbound_exploratory_tunnel() {
@@ -1513,9 +1513,24 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
@@ -1537,18 +1552,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_outbound.len(), 1);
 
-        // 1st outbound hop (participant)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (participant)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1556,7 +1583,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1564,16 +1590,14 @@ mod tests {
         }
 
         // 3rd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
         // route tunnel build response to the fake 0-hop inbound tunnel
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.outbound.len(), 1);
@@ -1603,9 +1627,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1629,18 +1668,31 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_outbound.len(), 1);
 
-        // 1st outbound hop (participant)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (participant)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
+        // 1st outbound hop (participant)
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1648,7 +1700,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1656,7 +1707,6 @@ mod tests {
         }
 
         // 3rd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
         let (_router, _message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1690,9 +1740,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1716,18 +1781,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_inbound.len(), 1);
 
-        // 1st outbound hop (ibgw)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (ibgw)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         assert_eq!(message.message_type, MessageType::Garlic);
         let message = match routers
             .get_mut(&router)
@@ -1747,7 +1824,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1755,16 +1831,14 @@ mod tests {
         }
 
         // 3rd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
         // route tunnel build response to the tunnel build response listener
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.inbound.len(), 1);
@@ -1794,9 +1868,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1820,18 +1909,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_inbound.len(), 1);
 
-        // 1st outbound hop (ibgw)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (ibgw)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         assert_eq!(message.message_type, MessageType::Garlic);
         let message = match routers
             .get_mut(&router)
@@ -1851,7 +1952,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1859,7 +1959,6 @@ mod tests {
         }
 
         // 3rd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (_router, _message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1899,9 +1998,32 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+
+        // spawn subsystem manager in the background
+        tokio::spawn(manager);
+
+        // connect all routers together
+        connect_routers(routers.iter_mut().map(|(_, router)| router));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1932,18 +2054,47 @@ mod tests {
         );
         assert_eq!(exploratory_pool.pending_outbound.len(), 1);
 
-        // 1st outbound hop (participant)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect all routers
+        let (msg_tx, msg_rx) = channel(128);
 
-        let message = Message::parse_short(&message).unwrap();
+        for (router_id, router) in &mut routers {
+            let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+            let conn_tx = msg_tx.clone();
+
+            transport_tx
+                .send(SubsystemEventNew::ConnectionEstablished {
+                    router_id: router_id.clone(),
+                    tx,
+                })
+                .await
+                .unwrap();
+            router.connect_router(&router_info.identity.id());
+
+            let router_id = router_id.clone();
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        OutboundMessage::Message(message) => {
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::MessageWithFeedback(message, tx) => {
+                            tx.send(()).unwrap();
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::Messages(_) => panic!("not implemented"),
+                        OutboundMessage::Dummy => unreachable!(),
+                    }
+                }
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // 1st outbound hop (participant)
+        let (router, message) = tokio::time::timeout(Duration::from_secs(5), msg_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1951,7 +2102,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -1959,16 +2109,14 @@ mod tests {
         }
 
         // 3rd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
         // route tunnel build response to the fake 0-hop inbound tunnel
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_secs(2), &mut exploratory_pool)
@@ -2012,75 +2160,50 @@ mod tests {
             // so it's split into two fragments
             let mut obep = Option::<RouterId>::None;
 
-            while let Ok(RoutingKind::ExternalWithFeedback {
-                router_id,
-                message,
-                tx,
-            }) = manager_rx.try_recv()
-            {
-                tx.send(()).unwrap();
-
+            while let Ok((router_id, message)) = msg_rx.try_recv() {
                 // 1st hop (participant)
                 let (router_id, message) = {
-                    let message = Message::parse_short(&message).unwrap();
                     let mut router = routers.get_mut(&router_id).unwrap();
 
-                    router.routing_table().route_message(message).unwrap();
+                    router.routing_table().send_message(router_id, message).unwrap();
                     assert!(
                         tokio::time::timeout(Duration::from_millis(250), &mut router)
                             .await
                             .is_err()
                     );
 
-                    let RoutingKind::External { router_id, message } =
-                        router.message_rx().try_recv().unwrap()
-                    else {
-                        panic!("invalid routing kind");
-                    };
-                    (router_id, message)
+                    router.select_message().unwrap()
                 };
 
                 // 2nd hop (participant)
                 let (router_id, message) = {
-                    let message = Message::parse_short(&message).unwrap();
                     let mut router = routers.get_mut(&router_id).unwrap();
 
-                    router.routing_table().route_message(message).unwrap();
+                    router.routing_table().send_message(router_id, message).unwrap();
                     assert!(
                         tokio::time::timeout(Duration::from_millis(250), &mut router)
                             .await
                             .is_err()
                     );
 
-                    let RoutingKind::External { router_id, message } =
-                        router.message_rx().try_recv().unwrap()
-                    else {
-                        panic!("invalid routing kind");
-                    };
-                    (router_id, message)
+                    router.select_message().unwrap()
                 };
 
                 // 3rd hop (obep)
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
-                obep = Some(router_id);
+                obep = Some(router_id.clone());
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
             }
 
             let router = routers.get_mut(&obep.unwrap()).unwrap();
-            let RoutingKind::External { router_id, message } =
-                router.message_rx().try_recv().unwrap()
-            else {
-                panic!("invalid routing kind");
-            };
+            let (router_id, message) = router.select_message().unwrap();
 
             // inbound build 1st hop (ibgw)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
                 assert_eq!(message.message_type, MessageType::Garlic);
@@ -2089,72 +2212,39 @@ mod tests {
                     _ => panic!("invalid delivery instructions"),
                 };
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // inbound build 2nd hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(tokio::time::timeout(Duration::from_secs(1), &mut router).await.is_err());
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // inbound build 3rd hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             assert_eq!(&router_id, router_ctx.router_id());
 
-            let message = Message::parse_short(&message).unwrap();
-            routing_table.route_message(message).unwrap();
+            routing_table.send_message(router_id, message).unwrap();
 
             let future = async {
                 tokio::select! {
@@ -2192,10 +2282,32 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
 
+        // spawn subsystem manager in the background
+        tokio::spawn(manager);
+
+        // connect all routers together
+        connect_routers(routers.iter_mut().map(|(_, router)| router));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2226,18 +2338,47 @@ mod tests {
         );
         assert_eq!(exploratory_pool.pending_inbound.len(), 1);
 
-        // 1st outbound hop (ibgw)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect all routers
+        let (msg_tx, msg_rx) = channel(128);
 
-        let message = Message::parse_short(&message).unwrap();
+        for (router_id, router) in &mut routers {
+            let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+            let conn_tx = msg_tx.clone();
+
+            transport_tx
+                .send(SubsystemEventNew::ConnectionEstablished {
+                    router_id: router_id.clone(),
+                    tx,
+                })
+                .await
+                .unwrap();
+            router.connect_router(&router_info.identity.id());
+
+            let router_id = router_id.clone();
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        OutboundMessage::Message(message) => {
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::MessageWithFeedback(message, tx) => {
+                            tx.send(()).unwrap();
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::Messages(_) => panic!("not implemented"),
+                        OutboundMessage::Dummy => unreachable!(),
+                    }
+                }
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        // 1st outbound hop (ibgw)
+        let (router, message) = tokio::time::timeout(Duration::from_secs(5), msg_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
         assert_eq!(message.message_type, MessageType::Garlic);
         let message = match routers
             .get_mut(&router)
@@ -2257,7 +2398,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -2265,16 +2405,14 @@ mod tests {
         }
 
         // 3rd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
         // route tunnel build response to the tunnel build response listener
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_secs(2), &mut exploratory_pool)
@@ -2314,142 +2452,82 @@ mod tests {
 
             assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_err());
 
-            let Ok(RoutingKind::ExternalWithFeedback {
-                router_id,
-                message,
-                tx,
-            }) = manager_rx.try_recv()
-            else {
-                panic!("invalid routing kind")
-            };
-            tx.send(()).unwrap();
+            let (router_id, message) = msg_rx.try_recv().unwrap();
 
             // outbound build 1st hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // outbound build 2nd hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // outbound build 3rd hop (obep)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::ExternalWithFeedback {
-                    router_id,
-                    message,
-                    tx,
-                } = router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                let _ = tx.send(());
-
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // build reply 1st hop (ibgw)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::External { router_id, message } =
-                    router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // build reply 2nd hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::External { router_id, message } =
-                    router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                (router_id, message)
+                router.select_message().unwrap()
             };
 
             // build reply 3rd hop (participant)
             let (router_id, message) = {
-                let message = Message::parse_short(&message).unwrap();
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().route_message(message).unwrap();
+                router.routing_table().send_message(router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
 
-                let RoutingKind::External { router_id, message } =
-                    router.message_rx().try_recv().unwrap()
-                else {
-                    panic!("invalid routing kind");
-                };
-                (router_id, message)
+                router.select_message().unwrap()
             };
             assert_eq!(&router_id, router_ctx.router_id());
 
-            let message = Message::parse_short(&message).unwrap();
-            routing_table.route_message(message).unwrap();
+            routing_table.send_message(router_id, message).unwrap();
 
             let future = async {
                 tokio::select! {
@@ -2487,9 +2565,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2513,18 +2606,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_outbound.len(), 1);
 
-        // 1st outbound hop (participant)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (participant)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -2532,7 +2637,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -2540,8 +2644,7 @@ mod tests {
         }
 
         // 3rd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
@@ -2550,16 +2653,14 @@ mod tests {
         // don't route the response which causes the build request to expire
         assert!(tokio::time::timeout(Duration::from_secs(8), &mut tunnel_pool).await.is_err());
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
+        assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_SUCCESSES), None);
 
         // route message to listener after timeout
-        let message = Message::parse_short(&message).unwrap();
-        match routing_table.route_message(message).unwrap_err() {
-            RoutingError::RouteNotFound(_, _) => {}
-            error => panic!("invalid error: {error:?}"),
-        }
+        let _ = routing_table.send_message(router, message);
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
+        assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_SUCCESSES), None);
     }
 
     #[tokio::test]
@@ -2584,9 +2685,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2610,18 +2726,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_inbound.len(), 1);
 
-        // 1st outbound hop (ibgw)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (ibgw)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         assert_eq!(message.message_type, MessageType::Garlic);
         let message = match routers
             .get_mut(&router)
@@ -2641,7 +2769,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -2649,8 +2776,7 @@ mod tests {
         }
 
         // 3rd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
@@ -2661,11 +2787,15 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
 
         // route message to listener after timeout
-        let message = Message::parse_short(&message).unwrap();
-        let _ = routing_table.route_message(message);
+        let _ = routing_table.send_message(router, message);
 
         // verify it's routed to transit manager which'll reject it
-        assert!(transit_rx.try_recv().is_ok());
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), transit_rx.recv())
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -2690,9 +2820,32 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transport_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+
+        // spawn subsystem manager in the background
+        tokio::spawn(manager);
+
+        // connect all routers together
+        connect_routers(routers.iter_mut().map(|(_, router)| router));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let our_id = router_info.identity.id();
@@ -2717,20 +2870,46 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_outbound.len(), 1);
 
+        // connect all routers
+        let (msg_tx, msg_rx) = channel(128);
+
+        for (router_id, router) in &mut routers {
+            let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+            let conn_tx = msg_tx.clone();
+
+            transport_tx
+                .send(SubsystemEventNew::ConnectionEstablished {
+                    router_id: router_id.clone(),
+                    tx,
+                })
+                .await
+                .unwrap();
+            router.connect_router(&router_info.identity.id());
+
+            let router_id = router_id.clone();
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        OutboundMessage::Message(message) => {
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::MessageWithFeedback(message, tx) => {
+                            tx.send(()).unwrap();
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::Messages(_) => panic!("not implemented"),
+                        OutboundMessage::Dummy => unreachable!(),
+                    }
+                }
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
         // build one inbound and one outbound tunnel
         for _ in 0..2 {
-            let Ok(RoutingKind::ExternalWithFeedback {
-                router_id: router,
-                message,
-                tx,
-            }) = manager_rx.try_recv()
-            else {
-                panic!("invalid routing kind")
-            };
-            tx.send(()).unwrap();
+            let (router, message) = msg_rx.try_recv().unwrap();
 
             // 1st outbound hop
-            let message = Message::parse_short(&message).unwrap();
             let message = match message.message_type {
                 MessageType::Garlic => match routers
                     .get_mut(&router)
@@ -2753,15 +2932,13 @@ mod tests {
             }
 
             // 2nd outbound hop
-            let message = Message::parse_short(&message).unwrap();
-            let (_router, message, tx) =
+            let (router, message, tx) =
                 routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
             if let Some(tx) = tx {
                 let _ = tx.send(());
             }
 
-            let message = Message::parse_short(&message).unwrap();
-            routing_table.route_message(message).unwrap();
+            routing_table.send_message(router, message).unwrap();
 
             assert!(
                 tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -2778,21 +2955,14 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_INBOUND_TUNNELS), Some(1));
 
         assert!(tokio::time::timeout(Duration::from_secs(20), &mut tunnel_pool).await.is_err());
-        let Ok(RoutingKind::External {
-            router_id: router,
-            message,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
+        let (router, message) = msg_rx.try_recv().unwrap();
 
         // 1st outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2801,22 +2971,15 @@ mod tests {
         .await
         .is_err());
 
-        let RoutingKind::External {
-            router_id: router,
-            message,
-        } = routers.get_mut(&router).unwrap().message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
-        };
-        assert!(routers.get_mut(&router).unwrap().message_rx().try_recv().is_err());
+        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
+        assert!(routers.get_mut(&router).unwrap().select_message().is_none());
 
         // 2nd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2824,21 +2987,14 @@ mod tests {
         )
         .await
         .is_err());
-        let RoutingKind::External {
-            router_id: router,
-            message,
-        } = routers.get_mut(&router).unwrap().message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
-        };
+        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
 
         // 1st inbound hop (ibgw)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2846,21 +3002,14 @@ mod tests {
         )
         .await
         .is_err());
-        let RoutingKind::External {
-            router_id: router,
-            message,
-        } = routers.get_mut(&router).unwrap().message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
-        };
+        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
 
         // 2nd inbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2868,19 +3017,12 @@ mod tests {
         )
         .await
         .is_err());
-        let RoutingKind::External {
-            router_id: router,
-            message,
-        } = routers.get_mut(&router).unwrap().message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
-        };
+        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
 
         // route response to local router and verify that tunnel test is considered succeeded
         assert_eq!(router, our_id);
 
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -2914,9 +3056,32 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx: _dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transport_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+
+        // spawn subsystem manager in the background
+        tokio::spawn(manager);
+
+        // connect all routers together
+        connect_routers(routers.iter_mut().map(|(_, router)| router));
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2940,20 +3105,46 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_outbound.len(), 1);
 
+        // connect all routers
+        let (msg_tx, msg_rx) = channel(128);
+
+        for (router_id, router) in &mut routers {
+            let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+            let conn_tx = msg_tx.clone();
+
+            transport_tx
+                .send(SubsystemEventNew::ConnectionEstablished {
+                    router_id: router_id.clone(),
+                    tx,
+                })
+                .await
+                .unwrap();
+            router.connect_router(&router_info.identity.id());
+
+            let router_id = router_id.clone();
+            tokio::spawn(async move {
+                while let Some(message) = rx.recv().await {
+                    match message {
+                        OutboundMessage::Message(message) => {
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::MessageWithFeedback(message, tx) => {
+                            tx.send(()).unwrap();
+                            conn_tx.send((router_id.clone(), message)).await.unwrap();
+                        }
+                        OutboundMessage::Messages(_) => panic!("not implemented"),
+                        OutboundMessage::Dummy => unreachable!(),
+                    }
+                }
+            });
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
         // build one inbound and one outbound tunnel
         for _ in 0..2 {
-            let Ok(RoutingKind::ExternalWithFeedback {
-                router_id: router,
-                message,
-                tx,
-            }) = manager_rx.try_recv()
-            else {
-                panic!("invalid routing kind")
-            };
-            tx.send(()).unwrap();
+            let (router, message) = msg_rx.try_recv().unwrap();
 
             // 1st outbound hop
-            let message = Message::parse_short(&message).unwrap();
             let message = match message.message_type {
                 MessageType::Garlic => match routers
                     .get_mut(&router)
@@ -2975,15 +3166,13 @@ mod tests {
             }
 
             // 2nd outbound hop
-            let message = Message::parse_short(&message).unwrap();
-            let (_router, message, tx) =
+            let (router, message, tx) =
                 routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
             if let Some(tx) = tx {
                 let _ = tx.send(());
             }
 
-            let message = Message::parse_short(&message).unwrap();
-            routing_table.route_message(message).unwrap();
+            routing_table.send_message(router, message).unwrap();
 
             assert!(
                 tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -3000,21 +3189,14 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_INBOUND_TUNNELS), Some(1));
 
         assert!(tokio::time::timeout(Duration::from_secs(20), &mut tunnel_pool).await.is_err());
-        let Ok(RoutingKind::External {
-            router_id: router,
-            message,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
+        let (router, message) = msg_rx.try_recv().unwrap();
 
         // 1st outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3023,22 +3205,15 @@ mod tests {
         .await
         .is_err());
 
-        let RoutingKind::External {
-            router_id: router,
-            message,
-        } = routers.get_mut(&router).unwrap().message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind")
-        };
-        assert!(routers.get_mut(&router).unwrap().message_rx().try_recv().is_err());
+        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
+        assert!(routers.get_mut(&router).unwrap().select_message().is_none());
 
         // 2nd outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
         routers
             .get_mut(&router)
             .unwrap()
             .routing_table()
-            .route_message(message)
+            .send_message(router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3074,9 +3249,24 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (manager_tx, manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(router_info.identity.id(), manager_tx, transit_tx);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle: subsys_handle,
+            manager,
+            netdb_rx: _netdb_rx,
+            transit_rx: _transport_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(
+            100,
+            0.,
+            router_info.identity.id(),
+            NoiseContext::new(
+                static_key.clone(),
+                Bytes::from(router_info.identity.id().to_vec()),
+            ),
+        );
+        tokio::spawn(manager);
+        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -3100,18 +3290,30 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.pending_inbound.len(), 1);
 
-        // 1st outbound hop (ibgw)
-        let Ok(RoutingKind::ExternalWithFeedback {
-            router_id: router,
-            message,
-            tx,
-        }) = manager_rx.try_recv()
-        else {
-            panic!("invalid routing kind")
-        };
-        tx.send(()).unwrap();
+        // connect first hop
+        let router = tokio::time::timeout(Duration::from_secs(5), dial_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
+        transport_tx
+            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+                router_id: router.clone(),
+                tx,
+            })
+            .await
+            .unwrap();
 
-        let message = Message::parse_short(&message).unwrap();
+        // 1st outbound hop (ibgw)
+        let message =
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::MessageWithFeedback(message, tx) => {
+                    tx.send(()).unwrap();
+                    message
+                }
+                _ => panic!("invalid message type"),
+            };
+
         assert_eq!(message.message_type, MessageType::Garlic);
         let message = match routers
             .get_mut(&router)
@@ -3131,7 +3333,6 @@ mod tests {
         }
 
         // 2nd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
         let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
@@ -3139,16 +3340,14 @@ mod tests {
         }
 
         // 3rd outbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
-        let (_router, message, tx) =
+        let (router, message, tx) =
             routers.get_mut(&router).unwrap().handle_short_tunnel_build(message).unwrap();
         if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
         // route tunnel build response to the tunnel build response listener
-        let message = Message::parse_short(&message).unwrap();
-        routing_table.route_message(message).unwrap();
+        routing_table.send_message(router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.inbound.len(), 1);

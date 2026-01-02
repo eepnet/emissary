@@ -22,7 +22,7 @@ use crate::{
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
     runtime::{Counter, Gauge, Histogram, JoinSet, MetricsHandle, Runtime},
-    subsystem::{SubsystemEventNew, SubsystemHandle},
+    subsystem::SubsystemEventNew,
     transport::{
         ssu2::{
             message::{HeaderKind, HeaderReader},
@@ -204,9 +204,6 @@ pub struct Ssu2Socket<R: Runtime> {
     /// Static key.
     static_key: StaticPrivateKey,
 
-    /// Subsystem handle.
-    subsystem_handle: SubsystemHandle,
-
     /// Terminating sessions.
     terminating_session: R::JoinSet<(RouterId, u64)>,
 
@@ -230,7 +227,6 @@ impl<R: Runtime> Ssu2Socket<R> {
         socket: R::UdpSocket,
         static_key: StaticPrivateKey,
         intro_key: [u8; 32],
-        subsystem_handle: SubsystemHandle,
         transport_tx: Sender<SubsystemEventNew>,
         router_ctx: RouterContext<R>,
     ) -> Self {
@@ -266,7 +262,6 @@ impl<R: Runtime> Ssu2Socket<R> {
             sessions: HashMap::new(),
             socket_handle,
             static_key,
-            subsystem_handle,
             terminating_session: R::join_set(),
             transport_tx,
             unvalidated_sessions: HashMap::new(),
@@ -390,7 +385,6 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         let router_info = self.router_ctx.router_info();
         let state = Sha256::new().update(&self.outbound_state).update(&static_key).finalize();
-        let subsystem_handle = self.subsystem_handle.clone();
         let transport_tx = self.transport_tx.clone();
         let src_id = R::rng().next_u64();
         let dst_id = R::rng().next_u64();
@@ -424,7 +418,6 @@ impl<R: Runtime> Ssu2Socket<R> {
                 src_id,
                 state,
                 static_key,
-                subsystem_handle,
                 transport_tx,
             })
             .run(),
@@ -488,7 +481,6 @@ impl<R: Runtime> Ssu2Socket<R> {
             Ssu2Session::<R>::new(
                 context,
                 self.pkt_tx.clone(),
-                self.subsystem_handle.clone(),
                 self.transport_tx.clone(),
                 self.router_ctx.metrics_handle().clone(),
             )

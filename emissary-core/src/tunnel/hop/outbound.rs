@@ -18,7 +18,7 @@
 
 use crate::{
     crypto::aes::{cbc, ecb},
-    i2np::{tunnel::data::TunnelDataBuilder, HopRole, MessageBuilder, MessageType},
+    i2np::{tunnel::data::TunnelDataBuilder, HopRole, Message, MessageType},
     primitives::{RouterId, Str, TunnelId},
     runtime::Runtime,
     tunnel::hop::{ReceiverKind, Tunnel, TunnelDirection, TunnelHop},
@@ -70,7 +70,7 @@ impl<R: Runtime> OutboundTunnel<R> {
         &self,
         router: RouterId,
         message: Vec<u8>,
-    ) -> (RouterId, impl Iterator<Item = Vec<u8>> + '_) {
+    ) -> (RouterId, impl Iterator<Item = Message> + '_) {
         tracing::trace!(
             target: LOG_TARGET,
             name = %self.name,
@@ -112,14 +112,12 @@ impl<R: Runtime> OutboundTunnel<R> {
                 message[AES_IV_OFFSET].copy_from_slice(&iv);
                 message[PAYLOAD_OFFSET].copy_from_slice(&ciphertext);
 
-                let message_id = R::rng().next_u32();
-
-                MessageBuilder::short()
-                    .with_message_type(MessageType::TunnelData)
-                    .with_message_id(message_id)
-                    .with_expiration(R::time_since_epoch() + Duration::from_secs(8))
-                    .with_payload(&message)
-                    .build()
+                Message {
+                    message_type: MessageType::TunnelData,
+                    message_id: R::rng().next_u32(),
+                    expiration: R::time_since_epoch() + Duration::from_secs(8),
+                    payload: message,
+                }
             });
 
         (next_hop.router.clone(), messages.into_iter())
@@ -131,7 +129,7 @@ impl<R: Runtime> OutboundTunnel<R> {
         router: RouterId,
         gateway: TunnelId,
         message: Vec<u8>,
-    ) -> (RouterId, impl Iterator<Item = Vec<u8>> + '_) {
+    ) -> (RouterId, impl Iterator<Item = Message> + '_) {
         tracing::trace!(
             target: LOG_TARGET,
             name = %self.name,
@@ -174,14 +172,12 @@ impl<R: Runtime> OutboundTunnel<R> {
                 message[AES_IV_OFFSET].copy_from_slice(&iv);
                 message[PAYLOAD_OFFSET].copy_from_slice(&ciphertext);
 
-                let message_id = R::rng().next_u32();
-
-                MessageBuilder::short()
-                    .with_message_type(MessageType::TunnelData)
-                    .with_message_id(message_id)
-                    .with_expiration(R::time_since_epoch() + Duration::from_secs(8))
-                    .with_payload(&message)
-                    .build()
+                Message {
+                    message_type: MessageType::TunnelData,
+                    message_id: R::rng().next_u32(),
+                    expiration: R::time_since_epoch() + Duration::from_secs(8),
+                    payload: message,
+                }
             });
 
         (next_hop.router.clone(), messages)
@@ -238,12 +234,10 @@ impl<R: Runtime> Tunnel for OutboundTunnel<R> {
 mod tests {
     use super::*;
     use crate::{
-        i2np::Message,
+        i2np::{Message, MessageBuilder},
         runtime::mock::MockRuntime,
-        tunnel::{
-            routing_table::RoutingKind,
-            tests::{build_inbound_tunnel, build_outbound_tunnel},
-        },
+        subsystem::OutboundMessage,
+        tunnel::tests::{build_inbound_tunnel, build_outbound_tunnel, connect_routers},
     };
 
     #[test]
@@ -271,6 +265,12 @@ mod tests {
             build_outbound_tunnel(true, 2usize);
         let (local_inbound_hash, mut inbound, mut inbound_transit) =
             build_inbound_tunnel(true, 2usize);
+        let local_router_id = RouterId::from(local_inbound_hash.clone());
+
+        // connect all transit routers together and connect local router to last hop
+        connect_routers(outbound_transit.iter_mut().chain(inbound_transit.iter_mut()));
+        inbound_transit[1].connect_router(&local_router_id);
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         let (gateway_router, gateway_tunnel) = inbound.gateway();
 
@@ -286,75 +286,83 @@ mod tests {
         assert_eq!(outbound_transit[0].router(), next_router);
 
         // first outbound hop (participant)
-        let message = Message::parse_short(&messages.next().unwrap()).unwrap();
-        assert!(outbound_transit[0].routing_table().route_message(message).is_ok());
+        let message = messages.next().unwrap().clone();
+        assert!(outbound_transit[0]
+            .routing_table()
+            .send_message(outbound_transit[0].router(), message)
+            .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut outbound_transit[0])
                 .await
                 .is_err()
         );
-        let RoutingKind::External {
-            router_id: next_router,
-            message,
-        } = outbound_transit[0].message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
+        let message = {
+            let rx = outbound_transit[0].router_rx(&outbound_transit[1].router()).unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::Message(message) => message,
+                _ => panic!("invalid message"),
+            }
         };
-        assert_eq!(outbound_transit[1].router(), next_router);
 
         // second outbound hop (obep)
-        let message = Message::parse_short(&message).unwrap();
-        assert!(outbound_transit[1].routing_table().route_message(message).is_ok());
+        assert!(outbound_transit[1]
+            .routing_table()
+            .send_message(outbound_transit[1].router(), message)
+            .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut outbound_transit[1])
                 .await
                 .is_err()
         );
-        let RoutingKind::External {
-            router_id: next_router,
-            message,
-        } = outbound_transit[1].message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
+        let message = {
+            let rx = outbound_transit[1].router_rx(&inbound_transit[0].router()).unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::Message(message) => message,
+                _ => panic!("invalid message"),
+            }
         };
-        assert_eq!(inbound_transit[0].router(), next_router);
 
         // first inbound hop (ibgw)
-        let message = Message::parse_short(&message).unwrap();
-        assert!(inbound_transit[0].routing_table().route_message(message).is_ok());
+        assert!(inbound_transit[0]
+            .routing_table()
+            .send_message(inbound_transit[0].router(), message)
+            .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut inbound_transit[0])
                 .await
                 .is_err()
         );
-        let RoutingKind::External {
-            router_id: next_router,
-            message,
-        } = inbound_transit[0].message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
+        let message = {
+            let rx = inbound_transit[0].router_rx(&inbound_transit[1].router()).unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::Message(message) => message,
+                _ => panic!("invalid message"),
+            }
         };
-        assert_eq!(inbound_transit[1].router(), next_router);
 
         // second inbound hop (participant)
-        let message = Message::parse_short(&message).unwrap();
-        assert!(inbound_transit[1].routing_table().route_message(message).is_ok());
+        assert!(inbound_transit[1]
+            .routing_table()
+            .send_message(inbound_transit[1].router(), message)
+            .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut inbound_transit[1])
                 .await
                 .is_err()
         );
-        let RoutingKind::External {
-            router_id: next_router,
-            message,
-        } = inbound_transit[1].message_rx().try_recv().unwrap()
-        else {
-            panic!("invalid routing kind");
+        let message = {
+            let rx = inbound_transit[1].router_rx(&local_router_id).unwrap();
+
+            match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await.unwrap().unwrap() {
+                OutboundMessage::Message(message) => message,
+                _ => panic!("invalid message"),
+            }
         };
-        assert_eq!(RouterId::from(local_inbound_hash), next_router);
 
         // inbound endpoint
-        let message = Message::parse_short(&message).unwrap();
         let message = inbound.handle_tunnel_data(&message).unwrap().collect::<Vec<_>>();
         assert_eq!(message[0].payload, b"hello, world".to_vec());
     }
@@ -364,8 +372,13 @@ mod tests {
         let original = (0..4 * 1028usize).map(|i| (i % 256) as u8).collect::<Vec<_>>();
         let (_local_outbound_hash, outbound, mut outbound_transit) =
             build_outbound_tunnel(true, 3usize);
-        let (_local_inbound_hash, mut inbound, mut inbound_transit) =
+        let (local_inbound_hash, mut inbound, mut inbound_transit) =
             build_inbound_tunnel(true, 3usize);
+        let local_router_id = RouterId::from(local_inbound_hash);
+
+        // connect all transit routers together
+        connect_routers(outbound_transit.iter_mut().chain(inbound_transit.iter_mut()));
+        inbound_transit[2].connect_router(&local_router_id);
 
         let (gateway_router, gateway_tunnel) = inbound.gateway();
 
@@ -382,8 +395,10 @@ mod tests {
         assert_eq!(outbound_transit[0].router(), next_router);
 
         for message in messages {
-            let message = Message::parse_short(&message).unwrap();
-            assert!(outbound_transit[0].routing_table().route_message(message).is_ok());
+            assert!(outbound_transit[0]
+                .routing_table()
+                .send_message(next_router.clone(), message)
+                .is_ok());
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut outbound_transit[0])
@@ -392,12 +407,10 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = outbound_transit[0].router_rx(&outbound_transit[1].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                outbound_transit[0].message_rx().try_recv()
-            {
-                assert_eq!(outbound_transit[1].router(), router_id);
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
@@ -405,9 +418,11 @@ mod tests {
         assert_eq!(messages.len(), 5);
 
         // 2nd outbound hop (participant)
-        for (_router, message) in messages {
-            let message = Message::parse_short(&message).unwrap();
-            assert!(outbound_transit[1].routing_table().route_message(message).is_ok());
+        for message in messages {
+            assert!(outbound_transit[1]
+                .routing_table()
+                .send_message(outbound_transit[1].router(), message)
+                .is_ok());
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut outbound_transit[1])
@@ -416,12 +431,10 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = outbound_transit[1].router_rx(&outbound_transit[2].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                outbound_transit[1].message_rx().try_recv()
-            {
-                assert_eq!(outbound_transit[2].router(), router_id);
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
@@ -429,9 +442,11 @@ mod tests {
         assert_eq!(messages.len(), 5);
 
         // 3rd outbound hop (obep)
-        for (_router, message) in messages {
-            let message = Message::parse_short(&message).unwrap();
-            assert!(outbound_transit[2].routing_table().route_message(message).is_ok());
+        for message in messages {
+            assert!(outbound_transit[2]
+                .routing_table()
+                .send_message(outbound_transit[2].router(), message)
+                .is_ok());
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut outbound_transit[2])
@@ -440,11 +455,10 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = outbound_transit[2].router_rx(&inbound_transit[0].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                outbound_transit[2].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
@@ -452,14 +466,13 @@ mod tests {
 
         // reconstructed message
         assert_eq!(messages.len(), 1);
-        let (next_router, message) = messages.first().unwrap();
-
-        // first hop is inbound gateway
-        assert_eq!(&inbound_transit[0].router(), next_router);
+        let message = messages.first().unwrap();
 
         // 1st inbound hop (ibgw)
-        let message = Message::parse_short(&message).unwrap();
-        assert!(inbound_transit[0].routing_table().route_message(message).is_ok());
+        assert!(inbound_transit[0]
+            .routing_table()
+            .send_message(inbound_transit[0].router(), message.clone())
+            .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut inbound_transit[0])
                 .await
@@ -467,11 +480,10 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = inbound_transit[0].router_rx(&inbound_transit[1].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                inbound_transit[0].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
@@ -479,9 +491,11 @@ mod tests {
         assert_eq!(messages.len(), 5);
 
         // 2nd inbound hop (participant)
-        for (_router, message) in messages {
-            let message = Message::parse_short(&message).unwrap();
-            assert!(inbound_transit[1].routing_table().route_message(message).is_ok());
+        for message in messages {
+            assert!(inbound_transit[1]
+                .routing_table()
+                .send_message(inbound_transit[1].router(), message)
+                .is_ok());
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut inbound_transit[1])
@@ -490,11 +504,10 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = inbound_transit[1].router_rx(&inbound_transit[2].router()).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                inbound_transit[1].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
@@ -502,9 +515,11 @@ mod tests {
         assert_eq!(messages.len(), 5);
 
         // 3rd inbound hop (participant)
-        for (_router, message) in messages {
-            let message = Message::parse_short(&message).unwrap();
-            assert!(inbound_transit[2].routing_table().route_message(message).is_ok());
+        for message in messages {
+            assert!(inbound_transit[2]
+                .routing_table()
+                .send_message(inbound_transit[2].router(), message)
+                .is_ok());
         }
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut inbound_transit[2])
@@ -513,21 +528,15 @@ mod tests {
         );
         let messages = {
             let mut messages = vec![];
+            let rx = inbound_transit[2].router_rx(&local_router_id).unwrap();
 
-            while let Ok(RoutingKind::External { router_id, message }) =
-                inbound_transit[2].message_rx().try_recv()
-            {
-                messages.push((router_id, message));
+            while let Ok(OutboundMessage::Message(message)) = rx.try_recv() {
+                messages.push(message);
             }
 
             messages
         };
         assert_eq!(messages.len(), 5);
-
-        let messages = messages
-            .into_iter()
-            .map(|(_, message)| Message::parse_short(&message).unwrap())
-            .collect::<Vec<_>>();
 
         assert_eq!(inbound.handle_tunnel_data(&messages[0]).unwrap().count(), 0);
         assert_eq!(inbound.handle_tunnel_data(&messages[1]).unwrap().count(), 0);

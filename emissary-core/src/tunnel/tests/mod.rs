@@ -25,6 +25,10 @@ use crate::{
     router::context::RouterContext,
     runtime::{mock::MockRuntime, Runtime},
     shutdown::ShutdownContext,
+    subsystem::{
+        NetDbEvent, OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+        SubsystemManagerContext,
+    },
     tunnel::{
         garlic::{DeliveryInstructions, GarlicHandler},
         hop::{
@@ -33,7 +37,7 @@ use crate::{
         },
         noise::NoiseContext,
         pool::TunnelPoolBuildParameters,
-        routing_table::{RoutingKind, RoutingKindRecycle, RoutingTable},
+        routing_table::RoutingTable,
         transit::TransitTunnelManager,
     },
     TransitConfig,
@@ -42,8 +46,9 @@ use crate::{
 use bytes::Bytes;
 use futures::FutureExt;
 use futures_channel::oneshot;
+use hashbrown::HashMap;
 use rand_core::RngCore;
-use thingbuf::mpsc::{channel, with_recycle, Receiver};
+use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
 use core::{
     fmt,
@@ -81,20 +86,28 @@ pub fn make_router(
 
 /// [`TransitTunnelManager`] for testing.
 pub struct TestTransitTunnelManager {
+    /// RX channel for receiving dial requests from `SubsystemManager`.
+    _dial_rx: Receiver<RouterId>,
+
     /// Garlic handler.
     garlic: GarlicHandler<MockRuntime>,
 
     /// Transit tunnel manager.
     manager: TransitTunnelManager<MockRuntime>,
 
-    /// RX channel for receiving messages from local tunnels.
-    message_rx: Receiver<RoutingKind, RoutingKindRecycle>,
+    /// RX channel passed to `NetDb`.
+    ///
+    /// Allows `SubsystemManager` to route messages to `NetDb`.
+    _netdb_rx: Receiver<NetDbEvent>,
 
     /// Static public key.
     public_key: StaticPublicKey,
 
     /// Router ID.
     router: RouterId,
+
+    /// Connected routers.
+    routers: HashMap<RouterId, Receiver<OutboundMessage, OutboundMessageRecycle>>,
 
     /// Router hash.
     router_hash: Bytes,
@@ -104,6 +117,9 @@ pub struct TestTransitTunnelManager {
 
     /// Routing table.
     routing_table: RoutingTable,
+
+    /// TX channel given to all transports, allowing them to send events to `SubsystemManager`.
+    transport_tx: Sender<SubsystemEventNew>,
 
     /// Shutdown context.
     _shutdown_ctx: ShutdownContext<MockRuntime>,
@@ -121,12 +137,23 @@ impl TestTransitTunnelManager {
     pub fn new(fast: bool) -> Self {
         let (router_hash, static_key, signing_key, noise, router_info) = make_router(fast);
         let public_key = static_key.public();
-        let (transit_tx, transit_rx) = channel(64);
-        let (message_tx, message_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let routing_table =
-            RoutingTable::new(RouterId::from(&router_hash), message_tx, transit_tx.clone());
         let mut _shutdown_ctx = ShutdownContext::<MockRuntime>::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let SubsystemManagerContext {
+            dial_rx,
+            handle,
+            manager,
+            netdb_rx,
+            transit_rx,
+            transport_tx,
+        } = SubsystemManager::<MockRuntime>::new(100, 0., router_info.identity.id(), noise.clone());
+        let routing_table = RoutingTable::new(handle);
+
+        // spawn subsystem manager in the background
+        //
+        // the manager needs to be active because tunnel tests use subsystem handle
+        // to route internal and external messages
+        tokio::spawn(manager);
 
         Self {
             garlic: GarlicHandler::new(noise.clone(), MockRuntime::register_metrics(vec![], None)),
@@ -148,11 +175,14 @@ impl TestTransitTunnelManager {
                 transit_rx,
                 _shutdown_ctx.handle(),
             ),
-            message_rx,
+            _dial_rx: dial_rx,
+            _netdb_rx: netdb_rx,
+            transport_tx,
             public_key,
             router_hash: router_hash.clone(),
             router_info,
             router: RouterId::from(router_hash),
+            routers: HashMap::new(),
             routing_table,
             _shutdown_ctx,
         }
@@ -187,18 +217,51 @@ impl TestTransitTunnelManager {
     pub fn handle_short_tunnel_build(
         &mut self,
         message: Message,
-    ) -> crate::Result<(RouterId, Vec<u8>, Option<oneshot::Sender<()>>)> {
+    ) -> crate::Result<(RouterId, Message, Option<oneshot::Sender<()>>)> {
         self.manager.handle_short_tunnel_build(message)
     }
 
-    /// Get mutable reference to the message RX channel.
-    pub fn message_rx(&mut self) -> &mut Receiver<RoutingKind, RoutingKindRecycle> {
-        &mut self.message_rx
+    /// Get message RX channel of a connected router.
+    pub fn router_rx(
+        &self,
+        router_id: &RouterId,
+    ) -> Option<&Receiver<OutboundMessage, OutboundMessageRecycle>> {
+        self.routers.get(router_id)
     }
 
     /// Get reference to [`RoutingTable`].
     pub fn routing_table(&self) -> &RoutingTable {
         &self.routing_table
+    }
+
+    /// Attempt to select message from one of the connection handlers.
+    pub fn select_message(&self) -> Option<(RouterId, Message)> {
+        for (router_id, rx) in &self.routers {
+            match rx.try_recv() {
+                Ok(OutboundMessage::Message(message)) => return Some((router_id.clone(), message)),
+                Ok(OutboundMessage::MessageWithFeedback(message, tx)) => {
+                    tx.send(()).unwrap();
+                    return Some((router_id.clone(), message));
+                }
+                Ok(OutboundMessage::Messages(_)) => panic!("not supported"),
+                Ok(OutboundMessage::Dummy) => {}
+                Err(_) => {}
+            }
+        }
+
+        None
+    }
+
+    /// Connect router.
+    pub fn connect_router(&mut self, router_id: &RouterId) {
+        let (tx, rx) = with_recycle(128, OutboundMessageRecycle::default());
+        self.routers.insert(router_id.clone(), rx);
+        self.transport_tx
+            .try_send(SubsystemEventNew::ConnectionEstablished {
+                router_id: router_id.clone(),
+                tx,
+            })
+            .unwrap();
     }
 }
 
@@ -207,6 +270,35 @@ impl Future for TestTransitTunnelManager {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.manager.poll_unpin(cx)
+    }
+}
+
+/// Connect all routers together.
+pub fn connect_routers<'a>(routers: impl Iterator<Item = &'a mut TestTransitTunnelManager>) {
+    let (routers, router_ids): (Vec<_>, Vec<_>) = routers
+        .map(|router| {
+            let router_id = router.router();
+
+            (router, router_id)
+        })
+        .unzip();
+
+    for router in routers {
+        for remote_router in &router_ids {
+            if remote_router == &router.router() {
+                continue;
+            }
+
+            let (tx, rx) = with_recycle(128, OutboundMessageRecycle::default());
+            router.routers.insert(remote_router.clone(), rx);
+            router
+                .transport_tx
+                .try_send(SubsystemEventNew::ConnectionEstablished {
+                    router_id: remote_router.clone(),
+                    tx,
+                })
+                .unwrap();
+        }
     }
 }
 
@@ -262,7 +354,7 @@ pub fn build_outbound_tunnel(
             if let Some(tx) = tx {
                 let _ = tx.send(());
             }
-            Message::parse_short(&message).unwrap()
+            message
         },
     );
     let gateway::TunnelGateway { payload, .. } =
@@ -343,7 +435,7 @@ pub fn build_inbound_tunnel(
             if let Some(tx) = tx {
                 let _ = tx.send(());
             }
-            Message::parse_short(&message).unwrap()
+            message
         },
     );
 

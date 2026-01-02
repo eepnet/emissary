@@ -22,7 +22,7 @@ use crate::{
     events::EventHandle,
     i2np::{
         tunnel::{data::TunnelDataBuilder, gateway::TunnelGateway},
-        Message, MessageBuilder, MessageType,
+        Message, MessageType,
     },
     primitives::{RouterId, TunnelId},
     runtime::Runtime,
@@ -99,7 +99,7 @@ impl<R: Runtime> InboundGateway<R> {
     fn handle_tunnel_gateway(
         &self,
         tunnel_gateway: &TunnelGateway,
-    ) -> crate::Result<(RouterId, impl Iterator<Item = Vec<u8>> + '_)> {
+    ) -> crate::Result<(RouterId, impl Iterator<Item = Message> + '_)> {
         match Message::parse_standard(tunnel_gateway.payload) {
             Err(error) => {
                 tracing::warn!(
@@ -145,12 +145,12 @@ impl<R: Runtime> InboundGateway<R> {
                 message[AES_IV_OFFSET].copy_from_slice(&iv);
                 message[PAYLOAD_OFFSET].copy_from_slice(&ciphertext);
 
-                MessageBuilder::short()
-                    .with_message_type(MessageType::TunnelData)
-                    .with_message_id(R::rng().next_u32())
-                    .with_expiration(R::time_since_epoch() + Duration::from_secs(8))
-                    .with_payload(&message)
-                    .build()
+                Message {
+                    message_type: MessageType::TunnelData,
+                    message_id: R::rng().next_u32(),
+                    expiration: R::time_since_epoch() + Duration::from_secs(8),
+                    payload: message,
+                }
             });
 
         Ok((self.next_router.clone(), messages))
@@ -255,7 +255,7 @@ impl<R: Runtime> Future for InboundGateway<R> {
 
                     self.outbound_bandwidth +=
                         messages.into_iter().fold(0usize, |mut acc, message| {
-                            acc += message.len();
+                            acc += message.serialized_len_short();
 
                             if let Err(error) =
                                 self.routing_table.send_message(router.clone(), message)
@@ -295,9 +295,10 @@ mod tests {
     use crate::{
         crypto::EphemeralPublicKey,
         events::EventManager,
-        i2np::HopRole,
+        i2np::{HopRole, MessageBuilder},
         primitives::{MessageId, Str},
         runtime::mock::MockRuntime,
+        subsystem::SubsystemManagerHandle,
         tunnel::{
             garlic::{DeliveryInstructions, GarlicHandler},
             hop::{
@@ -305,12 +306,11 @@ mod tests {
                 TunnelBuildParameters, TunnelInfo,
             },
             pool::TunnelPoolBuildParameters,
-            routing_table::RoutingKindRecycle,
             tests::make_router,
         },
     };
     use bytes::Bytes;
-    use thingbuf::mpsc::{channel, with_recycle};
+    use thingbuf::mpsc::channel;
 
     #[tokio::test]
     async fn expired_tunnel_gateway_payload() {
@@ -320,14 +320,12 @@ mod tests {
             ibgw_noise.clone(),
             MockRuntime::register_metrics(vec![], None),
         );
-        let (_ibep_router_hash, _ibep_public_key, _, ibep_noise, ibep_router_info) =
+        let (_ibep_router_hash, _ibep_public_key, _, ibep_noise, _ibep_router_info) =
             make_router(false);
 
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (transit_tx, _transit_rx) = channel(64);
-        let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let routing_table =
-            RoutingTable::new(ibep_router_info.identity.id(), manager_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let routing_table = RoutingTable::new(handle);
 
         let (_tx, rx) = channel(64);
         let TunnelPoolBuildParameters {
@@ -441,13 +439,11 @@ mod tests {
             ibgw_noise.clone(),
             MockRuntime::register_metrics(vec![], None),
         );
-        let (_ibep_router_hash, _ibep_public_key, _, ibep_noise, ibep_router_info) =
+        let (_ibep_router_hash, _ibep_public_key, _, ibep_noise, _ibep_router_info) =
             make_router(false);
 
-        let (transit_tx, _transit_rx) = channel(64);
-        let (manager_tx, _manager_rx) = with_recycle(64, RoutingKindRecycle::default());
-        let routing_table =
-            RoutingTable::new(ibep_router_info.identity.id(), manager_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let routing_table = RoutingTable::new(handle);
 
         let (_tx, rx) = channel(64);
         let TunnelPoolBuildParameters {

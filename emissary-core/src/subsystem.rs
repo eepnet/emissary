@@ -54,97 +54,10 @@ use core::{
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::subsystem";
 
-#[derive(Debug, Hash, PartialEq, Eq)]
-pub enum SubsystemKind {
-    /// NetDB subsystem.
-    NetDb,
-
-    /// Tunneling subsystem.
-    Tunnel,
-}
-
-#[derive(Default, Clone)]
-pub enum SubsystemCommand {
-    /// Send I2NP message to router.
-    SendMessage {
-        /// Serialized I2NP message.
-        message: Vec<u8>,
-    },
-
-    #[default]
-    Dummy,
-}
-
-/// Inner subsystem event.
-#[derive(Default, Clone)]
-pub enum InnerSubsystemEvent {
-    /// Connection established.
-    ConnectionEstablished {
-        /// Router ID.
-        router: RouterId,
-
-        /// TX channel for sending commands to the transport.
-        tx: Sender<SubsystemCommand>,
-    },
-
-    /// Connection closed.
-    ConnectionClosed {
-        /// Router ID.
-        router: RouterId,
-    },
-
-    /// Connection failure.
-    ConnectionFailure {
-        /// Router ID.
-        router: RouterId,
-    },
-
-    /// I2NP message.
-    I2Np {
-        /// Raw, unparsed I2NP messages
-        messages: Vec<(RouterId, Message)>,
-    },
-
-    #[default]
-    Dummy,
-}
-
-/// Subsystem event.
-#[derive(Default, Debug, Clone)]
-pub enum SubsystemEvent {
-    /// Connection established.
-    ConnectionEstablished {
-        /// Router ID.
-        router: RouterId,
-    },
-
-    /// Connection closed.
-    ConnectionClosed {
-        /// Router ID.
-        router: RouterId,
-    },
-
-    /// Connection failure.
-    ConnectionFailure {
-        /// Router ID.
-        router: RouterId,
-    },
-
-    /// I2NP message.
-    I2Np {
-        /// Raw, unparsed I2NP messages
-        messages: Vec<(RouterId, Message)>,
-    },
-
-    #[default]
-    Dummy,
-}
-
 /// Subsystem event.
 #[derive(Default, Debug, Clone)]
 pub enum SubsystemEventNew {
     /// Connection established.
-    #[allow(unused)]
     ConnectionEstablished {
         /// Router ID.
         router_id: RouterId,
@@ -154,21 +67,18 @@ pub enum SubsystemEventNew {
     },
 
     /// Connection closed.
-    #[allow(unused)]
     ConnectionClosed {
         /// Router ID.
         router_id: RouterId,
     },
 
     /// Connection failure.
-    #[allow(unused)]
     ConnectionFailure {
         /// Router ID.
         router_id: RouterId,
     },
 
     /// One or more I2NP messages.
-    #[allow(unused)]
     Message {
         /// Raw, unparsed I2NP messages
         messages: Vec<(RouterId, Message)>,
@@ -182,14 +92,12 @@ pub enum SubsystemEventNew {
 #[derive(Default, Debug, Clone)]
 pub enum NetDbEvent {
     /// Connection established.
-    #[allow(unused)]
     ConnectionEstablished {
         /// Router ID.
         router_id: RouterId,
     },
 
     /// One or more I2NP messages.
-    #[allow(unused)]
     Message {
         /// Raw, unparsed I2NP messages
         messages: Vec<(RouterId, Message)>,
@@ -199,91 +107,8 @@ pub enum NetDbEvent {
     Dummy,
 }
 
-#[derive(Clone)]
-pub struct SubsystemHandle {
-    subsystems: Vec<Sender<InnerSubsystemEvent>>,
-}
-
-impl SubsystemHandle {
-    /// Create new [`SubsystemHandle`].
-    pub fn new() -> Self {
-        Self {
-            subsystems: Vec::new(),
-        }
-    }
-
-    // TODO: make private!
-    pub fn register_subsystem(&mut self, event_tx: Sender<InnerSubsystemEvent>) {
-        self.subsystems.push(event_tx);
-    }
-
-    // TODO: could definitely be better lol
-    pub async fn report_connection_established(
-        &mut self,
-        router: RouterId,
-        tx: Sender<SubsystemCommand>,
-    ) {
-        for subsystem in &mut self.subsystems {
-            let _ = subsystem
-                .send(InnerSubsystemEvent::ConnectionEstablished {
-                    router: router.clone(),
-                    tx: tx.clone(),
-                })
-                .await;
-        }
-    }
-
-    pub async fn report_connection_failure(&mut self, router: RouterId) {
-        for subsystem in &mut self.subsystems {
-            let _ = subsystem
-                .send(InnerSubsystemEvent::ConnectionFailure {
-                    router: router.clone(),
-                })
-                .await;
-        }
-    }
-
-    pub async fn report_connection_closed(&mut self, router: RouterId) {
-        for subsystem in &mut self.subsystems {
-            let _ = subsystem
-                .send(InnerSubsystemEvent::ConnectionClosed {
-                    router: router.clone(),
-                })
-                .await;
-        }
-    }
-
-    // TODO: fix error
-    pub fn dispatch_messages(
-        &mut self,
-        router_id: RouterId,
-        messages: Vec<Message>,
-    ) -> crate::Result<()> {
-        let messages = messages
-            .into_iter()
-            .filter_map(|message| match message.destination() {
-                SubsystemKind::NetDb => None,
-                SubsystemKind::Tunnel => Some((router_id.clone(), message)),
-            })
-            .collect::<Vec<_>>();
-
-        if !messages.is_empty() {
-            if let Err(error) = self.subsystems[0].try_send(InnerSubsystemEvent::I2Np { messages })
-            {
-                tracing::debug!(
-                    target: LOG_TARGET,
-                    %error,
-                    "failed to dispatch mesage to `TunnelManager`",
-                );
-            }
-        }
-
-        Ok(())
-    }
-}
-
 /// Recycling strategy for [`SubsystemManagerEvent`].
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct SubsystemManagerEventRecycle(());
 
 impl thingbuf::Recycle<SubsystemManagerEvent> for SubsystemManagerEventRecycle {
@@ -296,10 +121,10 @@ impl thingbuf::Recycle<SubsystemManagerEvent> for SubsystemManagerEventRecycle {
     }
 }
 
+/// Outbound message.
 #[derive(Debug, Default)]
 pub enum OutboundMessage {
     /// Single I2NP message.
-    #[allow(unused)]
     Message(Message),
 
     /// One or more I2NP messages.
@@ -309,7 +134,6 @@ pub enum OutboundMessage {
     /// Single I2NP message with feedback.
     ///
     /// If sending the message fails, the channel is dropped.
-    #[allow(unused)]
     MessageWithFeedback(Message, oneshot::Sender<()>),
 
     /// Dummy event.
@@ -330,28 +154,23 @@ impl thingbuf::Recycle<OutboundMessage> for OutboundMessageRecycle {
     }
 }
 
-#[derive(Default)]
+/// Subsystem event.
+#[derive(Debug, Default)]
 pub enum SubsystemManagerEvent {
-    #[allow(unused)]
+    /// Send message to router.
     Message {
+        /// ID of the remote router.
         router_id: RouterId,
+
+        /// One or more I2NP messages.
         message: OutboundMessage,
     },
-    #[allow(unused)]
-    TunnelBuilt { tunnel_id: TunnelId, transit: bool },
-    #[allow(unused)]
-    TunnelExpired { tunnel_id: TunnelId, transit: bool },
-    #[allow(unused)]
-    TunnelMessage {
-        tunnel_id: TunnelId,
-        message: Message,
-    },
+
     #[default]
     Dummy,
 }
 
-#[derive(Clone)]
-#[allow(unused)]
+#[derive(Debug, Clone)]
 pub struct SubsystemManagerHandle {
     /// TX channel for sending events to [`SubsystemManager`].
     event_tx: Sender<SubsystemManagerEvent, SubsystemManagerEventRecycle>,
@@ -363,17 +182,18 @@ pub struct SubsystemManagerHandle {
     listeners: Arc<RwLock<HashMap<MessageId, oneshot::Sender<Message>>>>,
 
     /// Should the router throttle itself.
+    #[allow(unused)]
     throttle: Arc<AtomicBool>,
 
     /// Active tunnels.
     tunnels: Arc<RwLock<HashMap<TunnelId, Sender<Message>>>>,
 }
 
-#[allow(unused)]
 impl SubsystemManagerHandle {
     /// Should the subsystem throttle itself.
     ///
     /// True if the router is close to its maximum bandwidth usage.
+    #[allow(unused)]
     pub fn should_throttle(&self) -> bool {
         self.throttle.load(Ordering::Relaxed)
     }
@@ -389,6 +209,7 @@ impl SubsystemManagerHandle {
     }
 
     /// Send one or more messages to router.
+    #[allow(unused)]
     pub fn send_many(
         &self,
         router_id: &RouterId,
@@ -423,7 +244,7 @@ impl SubsystemManagerHandle {
 
     /// Register listener into `SubsystemManager`'s routing table and return the unique
     /// message ID and the receive half of the registered channel.
-    pub fn register_listener(
+    pub fn insert_listener(
         &self,
         rng: &mut impl RngCore,
     ) -> (MessageId, oneshot::Receiver<Message>) {
@@ -442,7 +263,7 @@ impl SubsystemManagerHandle {
 
     /// Register tunnel into `SubsystemManager`'s routing table and return the unique
     /// tunnel ID and the channel the IBGW will use to receive messages.
-    pub fn register_tunnel<const SIZE: usize>(
+    pub fn insert_tunnel<const SIZE: usize>(
         &self,
         rng: &mut impl RngCore,
     ) -> (TunnelId, Receiver<Message>) {
@@ -460,16 +281,20 @@ impl SubsystemManagerHandle {
     }
 
     /// Unregister tunnel identified by  `tunnel_id` from routing table.
-    pub fn unregister_tunnel(&self, tunnel_id: &TunnelId) {
-        let mut tunnels = self.tunnels.write();
-        tunnels.remove(tunnel_id);
+    pub fn remove_tunnel(&self, tunnel_id: &TunnelId) {
+        self.tunnels.write().remove(tunnel_id);
+    }
+
+    /// Remove listener identified by `message_id` from routing table.
+    pub fn remove_listener(&self, message_id: &MessageId) {
+        self.listeners.write().remove(message_id);
     }
 
     /// Attempt to register tunnel with `tunnel_id` and return `Ok(receiver)` if `tunnel_id`
     /// is not taken.
     ///
     /// If `Err(RoutingError)` is returned, the tunnel is not added to routing table.
-    pub fn try_register_tunnel<const SIZE: usize>(
+    pub fn try_insert_tunnel<const SIZE: usize>(
         &self,
         tunnel_id: TunnelId,
     ) -> Result<Receiver<Message>, RoutingError> {
@@ -505,6 +330,7 @@ impl SubsystemManagerHandle {
     }
 }
 
+/// Router state.
 enum RouterState {
     /// Router is being dialed.
     Dialing {
@@ -520,7 +346,6 @@ enum RouterState {
 }
 
 /// Subsystem manager context.
-#[allow(unused)]
 pub struct SubsystemManagerContext<R: Runtime> {
     /// RX channel for receiving dial requests from `SubsystemManager`.
     pub dial_rx: Receiver<RouterId>,
@@ -545,7 +370,7 @@ pub struct SubsystemManagerContext<R: Runtime> {
     pub transport_tx: Sender<SubsystemEventNew>,
 }
 
-#[allow(unused)]
+/// Subsystem manager.
 pub struct SubsystemManager<R: Runtime> {
     /// TX channel for sending dialing requests to `TransportManager`.
     dial_tx: Sender<RouterId>,
@@ -562,6 +387,7 @@ pub struct SubsystemManager<R: Runtime> {
     listeners: Arc<RwLock<HashMap<MessageId, oneshot::Sender<Message>>>>,
 
     /// Maximum amount of transit traffic, in bytes.
+    #[allow(unused)]
     max_transit: usize,
 
     /// TX channel for routing messages to `NetDb`.
@@ -571,6 +397,7 @@ pub struct SubsystemManager<R: Runtime> {
     noise: NoiseContext,
 
     /// Measured outbound traffic, in bytes.
+    #[allow(unused)]
     outbound: usize,
 
     /// Local router ID.
@@ -580,6 +407,7 @@ pub struct SubsystemManager<R: Runtime> {
     routers: HashMap<RouterId, RouterState>,
 
     /// Should the router thorttle itself.
+    #[allow(unused)]
     throttle: Arc<AtomicBool>,
 
     /// TX channel for routing messages to `TransitTunnelManager`
@@ -596,7 +424,7 @@ pub struct SubsystemManager<R: Runtime> {
 }
 
 impl<R: Runtime> SubsystemManager<R> {
-    #[allow(unused)]
+    /// Create new [`SubsystemManager`].
     pub fn new(
         limit: usize,
         share: f32,
@@ -605,7 +433,7 @@ impl<R: Runtime> SubsystemManager<R> {
     ) -> SubsystemManagerContext<R> {
         assert!(share <= 1.0);
 
-        let (event_tx, event_rx) = with_recycle(256, SubsystemManagerEventRecycle::default());
+        let (event_tx, event_rx) = with_recycle(8192, SubsystemManagerEventRecycle::default());
         let (transit_tx, transit_rx) = channel(256);
         let (netdb_tx, netdb_rx) = channel(256);
         let (dial_tx, dial_rx) = channel(256);
@@ -1009,9 +837,6 @@ impl<R: Runtime> Future for SubsystemManager<R> {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
                 Poll::Ready(Some(event)) => match event {
-                    SubsystemManagerEvent::TunnelBuilt { .. } => {}
-                    SubsystemManagerEvent::TunnelExpired { .. } => {}
-                    SubsystemManagerEvent::TunnelMessage { .. } => {}
                     SubsystemManagerEvent::Message { router_id, message } =>
                         self.on_outbound_message(router_id, message),
                     SubsystemManagerEvent::Dummy => unreachable!(),
@@ -1598,7 +1423,7 @@ mod tests {
         assert!(handle.listeners.read().is_empty());
         assert!(handle_clone.listeners.read().is_empty());
 
-        let (message_id, _rx) = handle.register_listener(&mut rand_core::OsRng);
+        let (message_id, _rx) = handle.insert_listener(&mut rand_core::OsRng);
 
         assert!(manager.listeners.read().contains_key(&message_id));
         assert!(handle.listeners.read().contains_key(&message_id));
@@ -1735,7 +1560,7 @@ mod tests {
         );
 
         // register listener through handle
-        let (message_id, rx) = handle.register_listener(&mut rand_core::OsRng);
+        let (message_id, rx) = handle.insert_listener(&mut rand_core::OsRng);
 
         // create mock `ShortTunnelBuid`
         let message = Message {
@@ -1780,7 +1605,7 @@ mod tests {
         );
 
         // register listener through handle
-        let (message_id, rx) = handle.register_listener(&mut rand_core::OsRng);
+        let (message_id, rx) = handle.insert_listener(&mut rand_core::OsRng);
 
         // create mock `OutboundTunnelBuildReply`
         let message = Message {
@@ -1825,13 +1650,13 @@ mod tests {
         );
 
         // register tunnel through handle
-        let (tunnel_id, _rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, _rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
 
         assert!(handle.tunnels.read().contains_key(&tunnel_id));
         assert!(manager.tunnels.read().contains_key(&tunnel_id));
 
         // unregister tunnel and verify it doens't exist
-        handle.unregister_tunnel(&tunnel_id);
+        handle.remove_tunnel(&tunnel_id);
 
         assert!(!handle.tunnels.read().contains_key(&tunnel_id));
         assert!(!manager.tunnels.read().contains_key(&tunnel_id));
@@ -1856,7 +1681,7 @@ mod tests {
         );
 
         // register tunnel through handle
-        let (tunnel_id, rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
 
         // create mock tunnel data message
         let message = {
@@ -1908,7 +1733,7 @@ mod tests {
         );
 
         // register tunnel through handle
-        let (tunnel_id, rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
 
         // create mock tunnel data message
         let message = {
@@ -2056,7 +1881,7 @@ mod tests {
         );
 
         // register tunnel through handle
-        let (tunnel_id, rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
         drop(rx);
 
         // create mock tunnel data message
@@ -2411,8 +2236,8 @@ mod tests {
         //  - one for transit tunnel manager
         //  - one for an active tunnel
         //  - one for an active listener
-        let (message_id, mut listener_rx) = handle.register_listener(&mut rand_core::OsRng);
-        let (tunnel_id, tunnel_rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (message_id, mut listener_rx) = handle.insert_listener(&mut rand_core::OsRng);
+        let (tunnel_id, tunnel_rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
         let message = {
             let mut data = BytesMut::with_capacity(4 + 16 + 1008);
             data.put_u32(*tunnel_id);
@@ -2535,7 +2360,7 @@ mod tests {
         //  - one for netdb
         //  - tunnel delivery for connected router
         //  - router delivery for an unconnected router
-        let (tunnel_id, tunnel_rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, tunnel_rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
         let remote_tunnel_id = TunnelId::random();
         let message = {
             let mut data = BytesMut::with_capacity(4 + 16 + 1008);
@@ -2726,7 +2551,7 @@ mod tests {
             NoiseContext::new(private_key, Bytes::from(router_id.to_vec())),
         );
 
-        let (tunnel_id, tunnel_rx) = handle.register_tunnel::<16>(&mut rand_core::OsRng);
+        let (tunnel_id, tunnel_rx) = handle.insert_tunnel::<16>(&mut rand_core::OsRng);
         let message = {
             let mut data = BytesMut::with_capacity(4 + 16 + 1008);
             data.put_u32(*tunnel_id);

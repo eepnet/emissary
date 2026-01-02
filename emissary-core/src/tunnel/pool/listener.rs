@@ -219,14 +219,14 @@ mod tests {
     use super::*;
     use crate::{
         crypto::StaticPublicKey,
-        primitives::{MessageId, RouterId, Str, TunnelId},
+        primitives::{MessageId, Str, TunnelId},
         runtime::mock::MockRuntime,
+        subsystem::SubsystemManagerHandle,
         tunnel::{
             hop::{
                 outbound::OutboundTunnel, pending::PendingTunnel, ReceiverKind,
                 TunnelBuildParameters, TunnelInfo,
             },
-            routing_table::RoutingKindRecycle,
             tests::make_router,
             NoiseContext,
         },
@@ -234,7 +234,6 @@ mod tests {
     use bytes::Bytes;
     use rand_core::RngCore;
     use std::time::Duration;
-    use thingbuf::mpsc;
 
     #[tokio::test]
     async fn response_channel_closed() {
@@ -271,9 +270,8 @@ mod tests {
             )
             .unwrap();
 
-        let (manager_tx, _manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(RouterId::random(), manager_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 
         let (tx, rx) = oneshot::channel();
@@ -326,9 +324,8 @@ mod tests {
             )
             .unwrap();
 
-        let (manager_tx, _manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(RouterId::random(), manager_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 
         let (tx, rx) = oneshot::channel();
@@ -381,9 +378,8 @@ mod tests {
             )
             .unwrap();
 
-        let (manager_tx, _manager_rx) = mpsc::with_recycle(64, RoutingKindRecycle::default());
-        let (transit_tx, _transit_rx) = mpsc::channel(64);
-        let routing_table = RoutingTable::new(RouterId::random(), manager_tx, transit_tx);
+        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 
         let (_tx, rx) = oneshot::channel();

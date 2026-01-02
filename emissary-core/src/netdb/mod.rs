@@ -130,9 +130,6 @@ pub struct NetDb<R: Runtime> {
     /// Message builder
     message_builder: NetDbMessageBuilder<R>,
 
-    /// RX channel for receiving NetDb-related messages from [`TunnelManager`].
-    netdb_msg_rx: mpsc::Receiver<Message>,
-
     /// RX channel for receiving NetDb-related messages from `SubsystemManager`.
     netdb_rx: mpsc::Receiver<NetDbEvent>,
 
@@ -167,7 +164,6 @@ impl<R: Runtime> NetDb<R> {
         router_ctx: RouterContext<R>,
         floodfill: bool,
         exploratory_pool_handle: TunnelPoolHandle,
-        netdb_msg_rx: mpsc::Receiver<Message>,
         netdb_rx: mpsc::Receiver<NetDbEvent>,
         subsystem_handle: SubsystemManagerHandle,
     ) -> (Self, NetDbHandle) {
@@ -233,7 +229,6 @@ impl<R: Runtime> NetDb<R> {
                 lease_sets: HashMap::new(),
                 maintenance_timer: R::timer(Duration::from_secs(5)),
                 message_builder: NetDbMessageBuilder::new(router_ctx.clone()),
-                netdb_msg_rx,
                 netdb_rx,
                 pending_ready_awaits: Vec::new(),
                 query_timers: R::join_set(),
@@ -1730,21 +1725,6 @@ impl<R: Runtime> Future for NetDb<R> {
             }
         }
 
-        loop {
-            match self.netdb_msg_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(()),
-                Poll::Ready(Some(message)) =>
-                    if let Err(error) = self.on_message(message, None) {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            ?error,
-                            "failed to handle message",
-                        );
-                    },
-            }
-        }
-
         // events from the exploratory pool are not interesting to `NetDb`
         loop {
             match self.exploratory_pool_handle.poll_next_unpin(cx) {
@@ -1923,7 +1903,6 @@ mod tests {
             ),
         );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -1939,7 +1918,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2036,7 +2014,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2053,7 +2030,6 @@ mod tests {
             ),
             false,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2134,7 +2110,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2151,7 +2126,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2234,7 +2208,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, event_rx) = SubsystemManagerHandle::new();
 
@@ -2251,7 +2224,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2551,7 +2523,6 @@ mod tests {
             ),
         );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -2567,7 +2538,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2660,7 +2630,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2677,7 +2646,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2750,7 +2718,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2767,7 +2734,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2872,7 +2838,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -2889,7 +2854,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -2975,7 +2939,6 @@ mod tests {
             ),
         );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -2991,7 +2954,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3115,7 +3077,6 @@ mod tests {
             ),
         );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -3131,7 +3092,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3224,7 +3184,6 @@ mod tests {
         );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
@@ -3240,7 +3199,6 @@ mod tests {
             ),
             false,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3303,7 +3261,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3320,7 +3277,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3392,7 +3348,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3409,7 +3364,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3485,7 +3439,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3502,7 +3455,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3575,7 +3527,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3592,7 +3543,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3762,7 +3712,6 @@ mod tests {
         );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
@@ -3778,7 +3727,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3861,7 +3809,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3878,7 +3825,6 @@ mod tests {
             ),
             false,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -3932,7 +3878,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -3949,7 +3894,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4010,7 +3954,6 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemManagerHandle::new();
 
@@ -4027,7 +3970,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4107,7 +4049,6 @@ mod tests {
         );
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (_netdb_msg_tx, netdb_msg_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -4122,7 +4063,6 @@ mod tests {
             ),
             true,
             tp_handle,
-            netdb_msg_rx,
             netdb_rx,
             handle,
         );
@@ -4167,7 +4107,7 @@ mod tests {
         // add ibgw for the floodfill and make reply go through this tunnel
         let reply_tunnel_id = TunnelId::random();
         let reply_router_id = netdb.router_ctx.router_id().clone();
-        let ibgw_rx = netdb.subsystem_handle.try_register_tunnel::<16>(reply_tunnel_id).unwrap();
+        let ibgw_rx = netdb.subsystem_handle.try_insert_tunnel::<16>(reply_tunnel_id).unwrap();
 
         let message = DatabaseStoreBuilder::new(key, DatabaseStoreKind::LeaseSet2 { lease_set })
             .with_reply_type(StoreReplyType::Tunnel {

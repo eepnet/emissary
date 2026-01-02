@@ -41,7 +41,7 @@ use crate::{
     subsystem::SubsystemEventNew,
     transport::{
         ntcp2::session::{initiator::Initiator, responder::Responder},
-        Direction, SubsystemHandle,
+        Direction,
     },
     util::{is_global, AsyncReadExt, AsyncWriteExt},
 };
@@ -125,9 +125,6 @@ pub struct SessionManager<R: Runtime> {
     /// Router context.
     router_ctx: RouterContext<R>,
 
-    /// Subsystem handle.
-    subsystem_handle: SubsystemHandle,
-
     /// TX channel for sending events to `SubsystemManager`.
     transport_tx: Sender<SubsystemEventNew>,
 }
@@ -144,7 +141,6 @@ impl<R: Runtime> SessionManager<R> {
         local_key: [u8; 32],
         local_iv: [u8; 16],
         router_ctx: RouterContext<R>,
-        subsystem_handle: SubsystemHandle,
         allow_local: bool,
         transport_tx: Sender<SubsystemEventNew>,
     ) -> Self {
@@ -165,7 +161,6 @@ impl<R: Runtime> SessionManager<R> {
             local_key,
             outbound_initial_state,
             router_ctx,
-            subsystem_handle,
             transport_tx,
         }
     }
@@ -178,7 +173,6 @@ impl<R: Runtime> SessionManager<R> {
         local_key: StaticPrivateKey,
         noise_ctx: NoiseContext,
         allow_local: bool,
-        subsystem_handle: SubsystemHandle,
         event_handle: EventHandle<R>,
         transport_tx: Sender<SubsystemEventNew>,
     ) -> crate::Result<Ntcp2Session<R>> {
@@ -279,7 +273,6 @@ impl<R: Runtime> SessionManager<R> {
             router,
             stream,
             key_context,
-            subsystem_handle,
             Direction::Outbound,
             event_handle,
             transport_tx,
@@ -303,7 +296,6 @@ impl<R: Runtime> SessionManager<R> {
         let outbound_initial_state = self.outbound_initial_state;
         let chaining_key = self.chaining_key;
         let allow_local = self.allow_local;
-        let mut subsystem_handle = self.subsystem_handle.clone();
         let event_handle = self.router_ctx.event_handle().clone();
         let router_id = router.identity.id();
         let transport_tx = self.transport_tx.clone();
@@ -316,9 +308,8 @@ impl<R: Runtime> SessionManager<R> {
                 local_key,
                 NoiseContext::new(chaining_key, outbound_initial_state),
                 allow_local,
-                subsystem_handle.clone(),
                 event_handle,
-                transport_tx,
+                transport_tx.clone(),
             )
             .await
             {
@@ -330,7 +321,20 @@ impl<R: Runtime> SessionManager<R> {
                         ?error,
                         "failed to handshake with remote router",
                     );
-                    let _ = subsystem_handle.report_connection_failure(router_id.clone()).await;
+
+                    if let Err(error) = transport_tx
+                        .send(SubsystemEventNew::ConnectionFailure {
+                            router_id: router_id.clone(),
+                        })
+                        .await
+                    {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            %router_id,
+                            ?error,
+                            "failed to report connection failure to subsystem manager",
+                        );
+                    }
 
                     Err((Some(router_id), error))
                 }
@@ -344,7 +348,6 @@ impl<R: Runtime> SessionManager<R> {
         net_id: u8,
         local_router_hash: Vec<u8>,
         noise_ctx: NoiseContext,
-        subsystem_handle: SubsystemHandle,
         local_key: StaticPrivateKey,
         iv: [u8; 16],
         profile_storage: ProfileStorage<R>,
@@ -401,7 +404,6 @@ impl<R: Runtime> SessionManager<R> {
                     router,
                     stream,
                     key_context,
-                    subsystem_handle,
                     Direction::Inbound,
                     event_handle,
                     transport_tx,
@@ -429,7 +431,6 @@ impl<R: Runtime> SessionManager<R> {
         let local_router_hash = self.router_ctx.router_id().to_vec();
         let inbound_initial_state = self.inbound_initial_state;
         let chaining_key = self.chaining_key;
-        let subsystem_handle = self.subsystem_handle.clone();
         let local_key = self.local_key.clone();
         let iv = self.local_iv;
         let profile_storage = self.router_ctx.profile_storage().clone();
@@ -442,7 +443,6 @@ impl<R: Runtime> SessionManager<R> {
                 net_id,
                 local_router_hash,
                 NoiseContext::new(chaining_key, inbound_initial_state),
-                subsystem_handle,
                 local_key,
                 iv,
                 profile_storage,
@@ -471,7 +471,7 @@ mod tests {
             mock::{MockRuntime, MockTcpListener, MockTcpStream},
             Runtime, TcpListener as _,
         },
-        subsystem::{OutboundMessage, SubsystemHandle},
+        subsystem::OutboundMessage,
         transport::ntcp2::{listener::Ntcp2Listener, session::SessionManager},
     };
     use bytes::Bytes;
@@ -587,7 +587,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -610,7 +609,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx2,
         );
@@ -651,7 +649,6 @@ mod tests {
                 128,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -674,7 +671,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx2,
         );
@@ -712,7 +708,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -736,7 +731,6 @@ mod tests {
                 128u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx2,
         );
@@ -774,7 +768,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             false,
             transport_tx1,
         );
@@ -798,7 +791,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx2,
         );
@@ -835,7 +827,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -855,7 +846,6 @@ mod tests {
     #[tokio::test]
     async fn received_expired_message() {
         let local = Ntcp2Builder::new().build();
-        let local_handle = SubsystemHandle::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (local_tx, local_rx) = channel(16);
         let local_manager = SessionManager::new(
@@ -871,7 +861,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            local_handle,
             true,
             local_tx,
         );
@@ -881,7 +870,6 @@ mod tests {
             .with_router_address(listener.local_addr().unwrap().port())
             .build();
         let (remote_tx, remote_rx) = channel(16);
-        let remote_handle = SubsystemHandle::new();
 
         let remote_manager = SessionManager::new(
             remote.ntcp2_key,
@@ -896,7 +884,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            remote_handle.clone(),
             true,
             remote_tx,
         );
@@ -1035,7 +1022,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -1065,7 +1051,6 @@ mod tests {
                         2u8,
                         event_handle.clone(),
                     ),
-                    SubsystemHandle::new(),
                     true,
                     transport_tx1,
                 );
@@ -1108,7 +1093,6 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            SubsystemHandle::new(),
             true,
             transport_tx1,
         );
@@ -1138,7 +1122,6 @@ mod tests {
                         2u8,
                         event_handle.clone(),
                     ),
-                    SubsystemHandle::new(),
                     true,
                     transport_tx1,
                 );
