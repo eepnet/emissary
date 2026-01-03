@@ -249,7 +249,7 @@ impl<R: Runtime> NetDb<R> {
     /// Flood `message` to `routers`.
     fn send_message(&mut self, routers: &[RouterId], message: Message) {
         for router_id in routers {
-            if let Err(error) = self.subsystem_handle.send(&router_id, message.clone()) {
+            if let Err(error) = self.subsystem_handle.send(router_id, message.clone()) {
                 tracing::debug!(
                     target: LOG_TARGET,
                     ?error,
@@ -629,7 +629,7 @@ impl<R: Runtime> NetDb<R> {
             ReplyType::Router { router_id } => {
                 let message = Message {
                     expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                    message_type: message_type,
+                    message_type,
                     message_id: R::rng().next_u32(),
                     payload: message.to_vec(),
                 };
@@ -733,7 +733,7 @@ impl<R: Runtime> NetDb<R> {
             ReplyType::Router { router_id } => {
                 let message = Message {
                     expiration: R::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
-                    message_type: message_type,
+                    message_type,
                     message_id: R::rng().next_u32(),
                     payload: message.to_vec(),
                 };

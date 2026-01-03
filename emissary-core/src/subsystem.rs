@@ -42,7 +42,7 @@ use parking_lot::RwLock;
 #[cfg(feature = "no_std")]
 use spin::rwlock::RwLock;
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{sync::Arc, vec, vec::Vec};
 use core::{
     future::Future,
     marker::PhantomData,

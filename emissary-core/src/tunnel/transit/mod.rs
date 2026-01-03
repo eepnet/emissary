@@ -50,7 +50,7 @@ use futures::{
 use futures_channel::oneshot;
 use thingbuf::mpsc::Receiver;
 
-use alloc::string::ToString;
+use alloc::{string::ToString, vec::Vec};
 use core::{
     future::Future,
     ops::{Range, RangeFrom},
@@ -442,7 +442,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 let message = Message {
                     message_type: MessageType::VariableTunnelBuild,
                     message_id: *next_message_id,
-                    expiration: expiration,
+                    expiration,
                     payload,
                 };
 
@@ -465,7 +465,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 let message = Message {
                     message_type: MessageType::TunnelGateway,
                     message_id: *next_message_id,
-                    expiration: expiration,
+                    expiration,
                     payload: msg,
                 };
 
@@ -724,8 +724,8 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 let msg = Message {
                     message_type: MessageType::ShortTunnelBuild,
                     message_id: *next_message_id,
-                    expiration: expiration,
-                    payload: payload,
+                    expiration,
+                    payload,
                 };
 
                 Ok((next_router, msg, maybe_feedback_tx))
@@ -776,7 +776,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 let message = Message {
                     message_type: MessageType::TunnelGateway,
                     message_id: *next_message_id,
-                    expiration: expiration,
+                    expiration,
                     payload: msg,
                 };
 

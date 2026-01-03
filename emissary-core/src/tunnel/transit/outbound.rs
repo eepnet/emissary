@@ -287,7 +287,7 @@ impl<R: Runtime> OutboundEndpoint<R> {
                             message_type: MessageType::TunnelGateway,
                             message_id: R::rng().next_u32(),
                             expiration: R::time_since_epoch() + Duration::from_secs(8),
-                            payload: payload,
+                            payload,
                         };
 
                         Some((router, message))
