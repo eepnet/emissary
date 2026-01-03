@@ -288,8 +288,8 @@ mod tests {
         // first outbound hop (participant)
         let message = messages.next().unwrap().clone();
         assert!(outbound_transit[0]
-            .routing_table()
-            .send_message(outbound_transit[0].router(), message)
+            .subsystem_handle()
+            .send(&outbound_transit[0].router(), message)
             .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut outbound_transit[0])
@@ -307,8 +307,8 @@ mod tests {
 
         // second outbound hop (obep)
         assert!(outbound_transit[1]
-            .routing_table()
-            .send_message(outbound_transit[1].router(), message)
+            .subsystem_handle()
+            .send(&outbound_transit[1].router(), message)
             .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut outbound_transit[1])
@@ -326,8 +326,8 @@ mod tests {
 
         // first inbound hop (ibgw)
         assert!(inbound_transit[0]
-            .routing_table()
-            .send_message(inbound_transit[0].router(), message)
+            .subsystem_handle()
+            .send(&inbound_transit[0].router(), message)
             .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut inbound_transit[0])
@@ -345,8 +345,8 @@ mod tests {
 
         // second inbound hop (participant)
         assert!(inbound_transit[1]
-            .routing_table()
-            .send_message(inbound_transit[1].router(), message)
+            .subsystem_handle()
+            .send(&inbound_transit[1].router(), message)
             .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(200), &mut inbound_transit[1])
@@ -396,8 +396,8 @@ mod tests {
 
         for message in messages {
             assert!(outbound_transit[0]
-                .routing_table()
-                .send_message(next_router.clone(), message)
+                .subsystem_handle()
+                .send(&next_router.clone(), message)
                 .is_ok());
         }
         assert!(
@@ -420,8 +420,8 @@ mod tests {
         // 2nd outbound hop (participant)
         for message in messages {
             assert!(outbound_transit[1]
-                .routing_table()
-                .send_message(outbound_transit[1].router(), message)
+                .subsystem_handle()
+                .send(&outbound_transit[1].router(), message)
                 .is_ok());
         }
         assert!(
@@ -444,8 +444,8 @@ mod tests {
         // 3rd outbound hop (obep)
         for message in messages {
             assert!(outbound_transit[2]
-                .routing_table()
-                .send_message(outbound_transit[2].router(), message)
+                .subsystem_handle()
+                .send(&outbound_transit[2].router(), message)
                 .is_ok());
         }
         assert!(
@@ -470,8 +470,8 @@ mod tests {
 
         // 1st inbound hop (ibgw)
         assert!(inbound_transit[0]
-            .routing_table()
-            .send_message(inbound_transit[0].router(), message.clone())
+            .subsystem_handle()
+            .send(&inbound_transit[0].router(), message.clone())
             .is_ok());
         assert!(
             tokio::time::timeout(Duration::from_millis(500), &mut inbound_transit[0])
@@ -493,8 +493,8 @@ mod tests {
         // 2nd inbound hop (participant)
         for message in messages {
             assert!(inbound_transit[1]
-                .routing_table()
-                .send_message(inbound_transit[1].router(), message)
+                .subsystem_handle()
+                .send(&inbound_transit[1].router(), message)
                 .is_ok());
         }
         assert!(
@@ -517,8 +517,8 @@ mod tests {
         // 3rd inbound hop (participant)
         for message in messages {
             assert!(inbound_transit[2]
-                .routing_table()
-                .send_message(inbound_transit[2].router(), message)
+                .subsystem_handle()
+                .send(&inbound_transit[2].router(), message)
                 .is_ok());
         }
         assert!(

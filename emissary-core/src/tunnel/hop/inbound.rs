@@ -426,7 +426,7 @@ mod tests {
 
         // 1st hop (ibgw)
         let messages = {
-            let _ = hops[0].routing_table().send_message(hops[0].router(), message).unwrap();
+            let _ = hops[0].subsystem_handle().send(&hops[0].router(), message).unwrap();
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[0]).await.is_err());
 
             let mut messages = vec![];
@@ -445,7 +445,7 @@ mod tests {
             for (router, message) in messages {
                 assert_eq!(router, RouterId::from(hops[1].router_hash()));
 
-                let _ = hops[1].routing_table().send_message(hops[1].router(), message).unwrap();
+                let _ = hops[1].subsystem_handle().send(&hops[1].router(), message).unwrap();
             }
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[1]).await.is_err());
 
@@ -465,7 +465,7 @@ mod tests {
             for (router, message) in messages {
                 assert_eq!(router, RouterId::from(hops[2].router_hash()));
 
-                let _ = hops[2].routing_table().send_message(hops[2].router(), message).unwrap();
+                let _ = hops[2].subsystem_handle().send(&hops[2].router(), message).unwrap();
             }
             assert!(tokio::time::timeout(Duration::from_secs(1), &mut hops[2]).await.is_err());
 

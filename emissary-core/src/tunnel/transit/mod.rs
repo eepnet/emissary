@@ -33,10 +33,10 @@ use crate::{
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricsHandle, Runtime},
     shutdown::ShutdownHandle,
+    subsystem::SubsystemHandle,
     tunnel::{
         metrics::*,
         noise::TunnelKeys,
-        routing_table::RoutingTable,
         transit::{inbound::InboundGateway, outbound::OutboundEndpoint, participant::Participant},
     },
     Error,
@@ -99,7 +99,7 @@ pub trait TransitTunnel<R: Runtime>: Future<Output = TunnelId> + Send {
         next_tunnel_id: TunnelId,
         next_router: RouterId,
         tunnel_keys: TunnelKeys,
-        routing_table: RoutingTable,
+        subsystem_handle: SubsystemHandle,
         metrics_handle: R::MetricsHandle,
         message_rx: Receiver<Message>,
         event_handle: EventHandle<R>,
@@ -120,8 +120,8 @@ pub struct TransitTunnelManager<R: Runtime> {
     /// Router context.
     router_ctx: RouterContext<R>,
 
-    /// Routing table.
-    routing_table: RoutingTable,
+    /// Subsystem handle,
+    subsystem_handle: SubsystemHandle,
 
     /// Shutdown handle.
     shutdown_handle: ShutdownHandle,
@@ -135,7 +135,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
     pub fn new(
         config: Option<TransitConfig>,
         router_ctx: RouterContext<R>,
-        routing_table: RoutingTable,
+        subsystem_handle: SubsystemHandle,
         message_rx: Receiver<Vec<(RouterId, Message)>>,
         shutdown_handle: ShutdownHandle,
     ) -> Self {
@@ -159,7 +159,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
             event_handle: router_ctx.event_handle().clone(),
             message_rx,
             router_ctx,
-            routing_table,
+            subsystem_handle,
             shutdown_handle,
             tunnels: R::join_set(),
         }
@@ -276,7 +276,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
         let maybe_receiver = if self.can_accept_transit_tunnel()
             && core::matches!(role, HopRole::OutboundEndpoint)
         {
-            match self.routing_table.try_add_tunnel::<TUNNEL_CHANNEL_SIZE>(tunnel_id) {
+            match self.subsystem_handle.try_insert_tunnel::<TUNNEL_CHANNEL_SIZE>(tunnel_id) {
                 Ok(receiver) => Some(receiver),
                 Err(error) => {
                     tracing::warn!(
@@ -332,7 +332,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 // this allows detecting transit tunnel failures that originate from our router and
                 // prevent these inactive transit tunnels from consuming available transit tunnels
                 // slots
-                let routing_table = self.routing_table.clone();
+                let subsystem_handle = self.subsystem_handle.clone();
                 let metrics = self.router_ctx.metrics_handle().clone();
                 let next_router_id = next_router.clone();
                 let tunnel_keys = session.finalize(
@@ -341,6 +341,13 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 )?;
                 let (tx, rx) = oneshot::channel::<()>();
                 let event_handle = self.router_ctx.event_handle().clone();
+
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    %tunnel_id,
+                    ?role,
+                    "start transit tunnel"
+                );
 
                 match role {
                     HopRole::InboundGateway => self.tunnels.push(async move {
@@ -363,7 +370,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                             next_tunnel_id,
                             next_router_id,
                             tunnel_keys,
-                            routing_table,
+                            subsystem_handle,
                             metrics,
                             receiver,
                             event_handle,
@@ -390,7 +397,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                             next_tunnel_id,
                             next_router_id,
                             tunnel_keys,
-                            routing_table,
+                            subsystem_handle,
                             metrics,
                             receiver,
                             event_handle,
@@ -417,7 +424,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                             next_tunnel_id,
                             next_router_id,
                             tunnel_keys,
-                            routing_table,
+                            subsystem_handle,
                             metrics,
                             receiver,
                             event_handle,
@@ -521,7 +528,8 @@ impl<R: Runtime> TransitTunnelManager<R> {
         // tunnel and add it to routing table
         let maybe_receiver = match self.can_accept_transit_tunnel() {
             false => None,
-            true => match self.routing_table.try_add_tunnel::<TUNNEL_CHANNEL_SIZE>(tunnel_id) {
+            true => match self.subsystem_handle.try_insert_tunnel::<TUNNEL_CHANNEL_SIZE>(tunnel_id)
+            {
                 Ok(receiver) => Some(receiver),
                 Err(error) => {
                     tracing::warn!(
@@ -595,12 +603,19 @@ impl<R: Runtime> TransitTunnelManager<R> {
                 // this allows detecting transit tunnel failures that originate from our router and
                 // prevent these inactive transit tunnels from consuming available transit tunnels
                 // slots
-                let routing_table = self.routing_table.clone();
+                let subsystem_handle = self.subsystem_handle.clone();
                 let metrics = self.router_ctx.metrics_handle().clone();
                 let next_router_id = next_router.clone();
                 let tunnel_keys = session.finalize()?;
                 let (tx, rx) = oneshot::channel::<()>();
                 let event_handle = self.router_ctx.event_handle().clone();
+
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    %tunnel_id,
+                    ?role,
+                    "start transit tunnel"
+                );
 
                 match role {
                     HopRole::InboundGateway => {
@@ -624,7 +639,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                                 next_tunnel_id,
                                 next_router_id,
                                 tunnel_keys,
-                                routing_table,
+                                subsystem_handle,
                                 metrics,
                                 receiver,
                                 event_handle,
@@ -655,7 +670,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                                 next_tunnel_id,
                                 next_router_id,
                                 tunnel_keys,
-                                routing_table,
+                                subsystem_handle,
                                 metrics,
                                 receiver,
                                 event_handle,
@@ -689,7 +704,7 @@ impl<R: Runtime> TransitTunnelManager<R> {
                                 next_tunnel_id,
                                 next_router_id,
                                 tunnel_keys,
-                                routing_table,
+                                subsystem_handle,
                                 metrics,
                                 receiver,
                                 event_handle,
@@ -806,17 +821,14 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
 
                 match result {
                     Ok((router, message, maybe_feedback_tx)) => match maybe_feedback_tx {
-                        None => {
-                            if let Err(error) = self.routing_table.send_message(router, message) {
+                        None =>
+                            if let Err(error) = self.subsystem_handle.send(&router, message) {
                                 tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
-                            }
-                        }
+                            },
                         Some(tx) => {
-                            if let Err(error) = self.routing_table.send_message_with_feedback(
-                                router.clone(),
-                                message,
-                                tx,
-                            ) {
+                            if let Err(error) =
+                                self.subsystem_handle.send_with_feedback(&router, message, tx)
+                            {
                                 tracing::error!(target: LOG_TARGET, ?error, "failed to send message");
                             }
                         }
@@ -874,7 +886,7 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
                 }
             };
 
-            self.routing_table.remove_tunnel(&tunnel_id);
+            self.subsystem_handle.remove_tunnel(&tunnel_id);
             self.router_ctx.metrics_handle().gauge(NUM_TRANSIT_TUNNELS).decrement(1);
 
             if self.tunnels.is_empty() && self.shutdown_handle.is_shutting_down() {
@@ -936,7 +948,6 @@ mod tests {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -954,7 +965,7 @@ mod tests {
                                 2u8,
                                 event_handle.clone(),
                             ),
-                            routing_table,
+                            subsys_handle,
                             transit_rx,
                             shutdown_handle,
                         ),
@@ -1011,7 +1022,6 @@ mod tests {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1031,7 +1041,7 @@ mod tests {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),
@@ -1097,7 +1107,6 @@ mod tests {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1115,7 +1124,7 @@ mod tests {
                                 2u8,
                                 event_handle.clone(),
                             ),
-                            routing_table,
+                            subsys_handle,
                             transit_rx,
                             shutdown_handle,
                         ),
@@ -1192,7 +1201,6 @@ mod tests {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1210,7 +1218,7 @@ mod tests {
                                 2u8,
                                 event_handle.clone(),
                             ),
-                            routing_table,
+                            subsys_handle,
                             transit_rx,
                             shutdown_handle,
                         ),
@@ -1249,7 +1257,6 @@ mod tests {
         let (_, static_key, signing_key, _noise, router_info) = make_router(true);
         let (_transit_tx, transit_rx) = channel(16);
         let (subsys_handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(subsys_handle);
         let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
         let shutdown_handle = shutdown_ctx.handle();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1265,7 +1272,7 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            routing_table,
+            subsys_handle,
             transit_rx,
             shutdown_handle,
         );
@@ -1291,7 +1298,6 @@ mod tests {
                 let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                 let shutdown_handle = shutdown_ctx.handle();
                 let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                let routing_table = RoutingTable::new(subsys_handle);
 
                 (
                     (router_hash, static_key.public(), shutdown_ctx),
@@ -1309,7 +1315,7 @@ mod tests {
                             2u8,
                             event_handle.clone(),
                         ),
-                        routing_table,
+                        subsys_handle,
                         transit_rx,
                         shutdown_handle,
                     ),
@@ -1382,7 +1388,6 @@ mod tests {
             }
 
             let (subsys_handle, _event_rx) = SubsystemHandle::new();
-            let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
             ctxs.push(shutdown_ctx);
@@ -1400,7 +1405,7 @@ mod tests {
                     2u8,
                     event_handle.clone(),
                 ),
-                routing_table,
+                subsys_handle,
                 transit_rx,
                 shutdown_handle,
             ));
@@ -1468,7 +1473,6 @@ mod tests {
             make_router(true);
         let (_transit_tx, transit_rx) = channel(16);
         let (subsys_handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(subsys_handle);
         let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
         let shutdown_handle = shutdown_ctx.handle();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1485,7 +1489,7 @@ mod tests {
                 2u8,
                 event_handle.clone(),
             ),
-            routing_table,
+            subsys_handle,
             transit_rx,
             shutdown_handle,
         );
@@ -1526,7 +1530,6 @@ mod tests {
             let shutdown_handle = shutdown_ctx.handle();
 
             let (subsys_handle, _event_rx) = SubsystemHandle::new();
-            let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
             ctxs.push(shutdown_ctx);
@@ -1548,7 +1551,7 @@ mod tests {
                     2u8,
                     event_handle.clone(),
                 ),
-                routing_table,
+                subsys_handle,
                 transit_rx,
                 shutdown_handle,
             ));
@@ -1625,7 +1628,6 @@ mod tests {
             let shutdown_handle = shutdown_ctx.handle();
 
             let (subsys_handle, _event_rx) = SubsystemHandle::new();
-            let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
             ctxs.push(shutdown_ctx);
@@ -1649,7 +1651,7 @@ mod tests {
                     2u8,
                     event_handle.clone(),
                 ),
-                routing_table,
+                subsys_handle,
                 transit_rx,
                 shutdown_handle,
             ));
@@ -1731,7 +1733,6 @@ mod tests {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx, transit_tx),
@@ -1749,7 +1750,7 @@ mod tests {
                                 2u8,
                                 event_handle.clone(),
                             ),
-                            routing_table,
+                            subsys_handle,
                             transit_rx,
                             shutdown_handle,
                         ),

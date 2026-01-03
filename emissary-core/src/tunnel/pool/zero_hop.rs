@@ -20,7 +20,8 @@ use crate::{
     i2np::{tunnel::gateway::TunnelGateway, Message},
     primitives::TunnelId,
     runtime::Runtime,
-    tunnel::{pool::TUNNEL_BUILD_EXPIRATION, routing_table::RoutingTable},
+    subsystem::SubsystemHandle,
+    tunnel::pool::TUNNEL_BUILD_EXPIRATION,
 };
 
 use futures::FutureExt;
@@ -52,7 +53,7 @@ pub struct ZeroHopInboundTunnel<R: Runtime> {
     reply_tx: Option<oneshot::Sender<Message>>,
 
     /// Routing table.
-    routing_table: RoutingTable,
+    subsyste_handle: SubsystemHandle,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -60,8 +61,8 @@ pub struct ZeroHopInboundTunnel<R: Runtime> {
 
 impl<R: Runtime> ZeroHopInboundTunnel<R> {
     /// Create new [`ZeroHopInboundTunnel`].
-    pub fn new(routing_table: RoutingTable) -> (TunnelId, Self, oneshot::Receiver<Message>) {
-        let (tunnel_id, message_rx) = routing_table.insert_tunnel::<1>(&mut R::rng());
+    pub fn new(subsyste_handle: SubsystemHandle) -> (TunnelId, Self, oneshot::Receiver<Message>) {
+        let (tunnel_id, message_rx) = subsyste_handle.insert_tunnel::<1>(&mut R::rng());
         let (tx, rx) = oneshot::channel();
 
         (
@@ -70,7 +71,7 @@ impl<R: Runtime> ZeroHopInboundTunnel<R> {
                 expiration_timer: R::timer(TUNNEL_BUILD_EXPIRATION),
                 message_rx,
                 reply_tx: Some(tx),
-                routing_table,
+                subsyste_handle,
                 tunnel_id,
             },
             rx,
@@ -126,12 +127,12 @@ impl<R: Runtime> Future for ZeroHopInboundTunnel<R> {
                     "channel closed while waiting for build response",
                 );
 
-                self.routing_table.remove_tunnel(&self.tunnel_id);
+                self.subsyste_handle.remove_tunnel(&self.tunnel_id);
                 return Poll::Ready(());
             }
             Poll::Ready(Some(message)) => {
                 self.on_message(message);
-                self.routing_table.remove_tunnel(&self.tunnel_id);
+                self.subsyste_handle.remove_tunnel(&self.tunnel_id);
                 return Poll::Ready(());
             }
         }
@@ -143,7 +144,7 @@ impl<R: Runtime> Future for ZeroHopInboundTunnel<R> {
                 "zero-hop tunnel expired before reply",
             );
 
-            self.routing_table.remove_tunnel(&self.tunnel_id);
+            self.subsyste_handle.remove_tunnel(&self.tunnel_id);
             return Poll::Ready(());
         }
 

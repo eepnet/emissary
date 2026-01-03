@@ -21,9 +21,9 @@ use crate::{
     i2np::{tunnel::data::EncryptedTunnelData, Message, MessageType},
     primitives::{RouterId, TunnelId},
     runtime::Runtime,
+    subsystem::SubsystemHandle,
     tunnel::{
         noise::TunnelKeys,
-        routing_table::RoutingTable,
         transit::{TransitTunnel, TRANSIT_TUNNEL_EXPIRATION},
     },
 };
@@ -57,9 +57,6 @@ pub struct Participant<R: Runtime> {
     /// Used inbound bandwidth.
     inbound_bandwidth: usize,
 
-    /// Used inbound bandwidth.
-    outbound_bandwidth: usize,
-
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
 
@@ -73,8 +70,11 @@ pub struct Participant<R: Runtime> {
     /// Next tunnel ID.
     next_tunnel_id: TunnelId,
 
-    /// Routing table.
-    routing_table: RoutingTable,
+    /// Used inbound bandwidth.
+    outbound_bandwidth: usize,
+
+    /// Subsystem handle.
+    subsystem_handle: SubsystemHandle,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -125,7 +125,7 @@ impl<R: Runtime> TransitTunnel<R> for Participant<R> {
         next_tunnel_id: TunnelId,
         next_router: RouterId,
         tunnel_keys: TunnelKeys,
-        routing_table: RoutingTable,
+        subsystem_handle: SubsystemHandle,
         metrics_handle: R::MetricsHandle,
         message_rx: Receiver<Message>,
         event_handle: EventHandle<R>,
@@ -139,7 +139,7 @@ impl<R: Runtime> TransitTunnel<R> for Participant<R> {
             metrics_handle,
             next_router,
             next_tunnel_id,
-            routing_table,
+            subsystem_handle,
             tunnel_id,
             tunnel_keys,
         }
@@ -171,7 +171,7 @@ impl<R: Runtime> Future for Participant<R> {
                                         self.outbound_bandwidth += message.serialized_len_short();
 
                                         if let Err(error) =
-                                            self.routing_table.send_message(router, message)
+                                            self.subsystem_handle.send(&router, message)
                                         {
                                             tracing::error!(
                                                 target: LOG_TARGET,

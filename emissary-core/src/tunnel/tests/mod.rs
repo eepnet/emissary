@@ -26,8 +26,8 @@ use crate::{
     runtime::{mock::MockRuntime, Runtime},
     shutdown::ShutdownContext,
     subsystem::{
-        NetDbEvent, OutboundMessage, OutboundMessageRecycle, SubsystemEvent, SubsystemManager,
-        SubsystemManagerContext,
+        NetDbEvent, OutboundMessage, OutboundMessageRecycle, SubsystemEvent, SubsystemHandle,
+        SubsystemManager, SubsystemManagerContext,
     },
     tunnel::{
         garlic::{DeliveryInstructions, GarlicHandler},
@@ -37,7 +37,6 @@ use crate::{
         },
         noise::NoiseContext,
         pool::TunnelPoolBuildParameters,
-        routing_table::RoutingTable,
         transit::TransitTunnelManager,
     },
     TransitConfig,
@@ -89,16 +88,19 @@ pub struct TestTransitTunnelManager {
     /// RX channel for receiving dial requests from `SubsystemManager`.
     _dial_rx: Receiver<RouterId>,
 
+    /// RX channel passed to `NetDb`.
+    ///
+    /// Allows `SubsystemManager` to route messages to `NetDb`.
+    _netdb_rx: Receiver<NetDbEvent>,
+
+    /// Shutdown context.
+    _shutdown_ctx: ShutdownContext<MockRuntime>,
+
     /// Garlic handler.
     garlic: GarlicHandler<MockRuntime>,
 
     /// Transit tunnel manager.
     manager: TransitTunnelManager<MockRuntime>,
-
-    /// RX channel passed to `NetDb`.
-    ///
-    /// Allows `SubsystemManager` to route messages to `NetDb`.
-    _netdb_rx: Receiver<NetDbEvent>,
 
     /// Static public key.
     public_key: StaticPublicKey,
@@ -106,23 +108,20 @@ pub struct TestTransitTunnelManager {
     /// Router ID.
     router: RouterId,
 
-    /// Connected routers.
-    routers: HashMap<RouterId, Receiver<OutboundMessage, OutboundMessageRecycle>>,
-
     /// Router hash.
     router_hash: Bytes,
 
     /// Router info.
     router_info: RouterInfo,
 
-    /// Routing table.
-    routing_table: RoutingTable,
+    /// Connected routers.
+    routers: HashMap<RouterId, Receiver<OutboundMessage, OutboundMessageRecycle>>,
+
+    /// Subsystem handle.
+    subsystem_handle: SubsystemHandle,
 
     /// TX channel given to all transports, allowing them to send events to `SubsystemManager`.
     transport_tx: Sender<SubsystemEvent>,
-
-    /// Shutdown context.
-    _shutdown_ctx: ShutdownContext<MockRuntime>,
 }
 
 impl fmt::Debug for TestTransitTunnelManager {
@@ -141,13 +140,12 @@ impl TestTransitTunnelManager {
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let SubsystemManagerContext {
             dial_rx,
-            handle,
+            handle: subsystem_handle,
             manager,
             netdb_rx,
             transit_rx,
             transport_tx,
         } = SubsystemManager::<MockRuntime>::new(100, 0., router_info.identity.id(), noise.clone());
-        let routing_table = RoutingTable::new(handle);
 
         // spawn subsystem manager in the background
         //
@@ -171,7 +169,7 @@ impl TestTransitTunnelManager {
                     2u8,
                     event_handle.clone(),
                 ),
-                routing_table.clone(),
+                subsystem_handle.clone(),
                 transit_rx,
                 _shutdown_ctx.handle(),
             ),
@@ -183,7 +181,7 @@ impl TestTransitTunnelManager {
             router_info,
             router: RouterId::from(router_hash),
             routers: HashMap::new(),
-            routing_table,
+            subsystem_handle,
             _shutdown_ctx,
         }
     }
@@ -229,9 +227,8 @@ impl TestTransitTunnelManager {
         self.routers.get(router_id)
     }
 
-    /// Get reference to [`RoutingTable`].
-    pub fn routing_table(&self) -> &RoutingTable {
-        &self.routing_table
+    pub fn subsystem_handle(&self) -> &SubsystemHandle {
+        &self.subsystem_handle
     }
 
     /// Attempt to select message from one of the connection handlers.

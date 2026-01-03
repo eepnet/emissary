@@ -29,10 +29,10 @@ use crate::{
     },
     primitives::{MessageId, RouterId, TunnelId},
     runtime::Runtime,
+    subsystem::SubsystemHandle,
     tunnel::{
         fragment::{FragmentHandler, OwnedDeliveryInstructions},
         noise::TunnelKeys,
-        routing_table::RoutingTable,
         transit::{TransitTunnel, TRANSIT_TUNNEL_EXPIRATION},
     },
 };
@@ -66,9 +66,6 @@ pub struct OutboundEndpoint<R: Runtime> {
     /// Used inbound bandwidth.
     inbound_bandwidth: usize,
 
-    /// Used outbound bandwidth.
-    outbound_bandwidth: usize,
-
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
 
@@ -76,8 +73,11 @@ pub struct OutboundEndpoint<R: Runtime> {
     #[allow(unused)]
     metrics_handle: R::MetricsHandle,
 
-    /// Routing table.
-    routing_table: RoutingTable,
+    /// Used outbound bandwidth.
+    outbound_bandwidth: usize,
+
+    /// Subsystem handle.
+    subsystem_handle: SubsystemHandle,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -307,7 +307,7 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
         _next_tunnel_id: TunnelId,
         _next_router: RouterId,
         tunnel_keys: TunnelKeys,
-        routing_table: RoutingTable,
+        subsystem_handle: SubsystemHandle,
         metrics_handle: R::MetricsHandle,
         message_rx: Receiver<Message>,
         event_handle: EventHandle<R>,
@@ -320,7 +320,7 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
             outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
-            routing_table,
+            subsystem_handle,
             tunnel_id,
             tunnel_keys,
         }
@@ -369,7 +369,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                         Ok(messages) => messages.into_iter().for_each(|(router, message)| {
                             self.outbound_bandwidth += message.serialized_len_short();
 
-                            if let Err(error) = self.routing_table.send_message(router, message) {
+                            if let Err(error) = self.subsystem_handle.send(&router, message) {
                                 tracing::error!(
                                     target: LOG_TARGET,
                                     tunnel_id = %self.tunnel_id,
@@ -418,7 +418,7 @@ mod tests {
         i2np::{HopRole, MessageBuilder},
         primitives::Str,
         runtime::mock::MockRuntime,
-        subsystem::{SubsystemManagerEvent, SubsystemHandle},
+        subsystem::{SubsystemHandle, SubsystemManagerEvent},
         tunnel::{
             hop::{
                 outbound::OutboundTunnel, pending::PendingTunnel, ReceiverKind,
@@ -436,8 +436,7 @@ mod tests {
     #[tokio::test]
     async fn obep_routes_message_to_self() {
         let (_tx, rx) = channel(64);
-        let (handle, event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
+        let (subsys_handle, event_rx) = SubsystemHandle::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
@@ -530,7 +529,7 @@ mod tests {
             TunnelId::random(),
             RouterId::random(),
             obep_keys,
-            routing_table,
+            subsys_handle,
             MockRuntime::register_metrics(vec![], None),
             rx,
             event_handle.clone(),
@@ -539,7 +538,7 @@ mod tests {
         let (router_id, message) = tunnel.handle_tunnel_data(&parsed).unwrap().next().unwrap();
         assert_eq!(router_id, obep_router_id);
 
-        tunnel.routing_table.send_message(router_id.clone(), message).unwrap();
+        tunnel.subsystem_handle.send(&router_id, message).unwrap();
 
         match event_rx.try_recv().unwrap() {
             SubsystemManagerEvent::Message {
@@ -555,8 +554,7 @@ mod tests {
     #[tokio::test]
     async fn expired_unfragmented_message() {
         let (_tx, rx) = channel(64);
-        let (handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
+        let (subsys_handle, _event_rx) = SubsystemHandle::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
@@ -649,7 +647,7 @@ mod tests {
             TunnelId::random(),
             RouterId::random(),
             obep_keys,
-            routing_table,
+            subsys_handle,
             MockRuntime::register_metrics(vec![], None),
             rx,
             event_handle.clone(),
@@ -660,8 +658,7 @@ mod tests {
     #[tokio::test]
     async fn expired_fragmented_message() {
         let (_tx, rx) = channel(64);
-        let (handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
+        let (subsys_handle, _event_rx) = SubsystemHandle::new();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
@@ -750,7 +747,7 @@ mod tests {
             TunnelId::random(),
             RouterId::random(),
             obep_keys,
-            routing_table,
+            subsys_handle,
             MockRuntime::register_metrics(vec![], None),
             rx,
             event_handle.clone(),

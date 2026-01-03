@@ -48,7 +48,6 @@ mod hop;
 mod metrics;
 mod noise;
 mod pool;
-mod routing_table;
 mod transit;
 
 #[cfg(test)]
@@ -62,7 +61,6 @@ pub use garlic::DeliveryInstructions;
 pub use handle::TunnelManagerHandle;
 pub use noise::NoiseContext;
 pub use pool::{TunnelMessageSender, TunnelPoolConfig, TunnelPoolEvent, TunnelPoolHandle};
-pub use routing_table::RoutingTable;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::tunnel";
@@ -82,7 +80,7 @@ pub struct TunnelManager<R: Runtime> {
     router_ctx: RouterContext<R>,
 
     /// Routing table.
-    routing_table: RoutingTable,
+    subsystem_handle: SubsystemHandle,
 }
 
 impl<R: Runtime> TunnelManager<R> {
@@ -105,15 +103,13 @@ impl<R: Runtime> TunnelManager<R> {
             "starting tunnel manager",
         );
 
-        let routing_table = RoutingTable::new(subsystem_handle.clone());
-
         // create `TransitTunnelManager` and run it in a separate task
         //
-        // `TransitTunnelManager` communicates with `TunnelManager` via `RoutingTable`
+        // `TransitTunnelManager` communicates with the network via `SubsystemHandle`
         R::spawn(TransitTunnelManager::<R>::new(
             transit_config,
             router_ctx.clone(),
-            routing_table.clone(),
+            subsystem_handle.clone(),
             subsys_transit_rx,
             transit_shutdown_handle,
         ));
@@ -131,7 +127,7 @@ impl<R: Runtime> TunnelManager<R> {
             let (tunnel_pool, tunnel_pool_handle) = TunnelPool::<R, _>::new(
                 build_parameters,
                 selector.clone(),
-                routing_table.clone(),
+                subsystem_handle.clone(),
                 router_ctx.clone(),
             );
             R::spawn(tunnel_pool);
@@ -147,7 +143,7 @@ impl<R: Runtime> TunnelManager<R> {
                 command_rx,
                 exploratory_selector,
                 router_ctx,
-                routing_table,
+                subsystem_handle,
             },
             manager_handle,
             pool_handle,
@@ -177,7 +173,7 @@ impl<R: Runtime> TunnelManager<R> {
         let (tunnel_pool, tunnel_pool_handle) = TunnelPool::<R, _>::new(
             build_parameters,
             selector,
-            self.routing_table.clone(),
+            self.subsystem_handle.clone(),
             self.router_ctx.clone(),
         );
         R::spawn(tunnel_pool);

@@ -732,7 +732,6 @@ mod test {
             hop::inbound::InboundTunnel,
             noise::NoiseContext,
             pool::TunnelPoolBuildParameters,
-            routing_table::RoutingTable,
             tests::{make_router, TestTransitTunnelManager},
             transit::TransitTunnelManager,
         },
@@ -818,7 +817,6 @@ mod test {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -838,7 +836,7 @@ mod test {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),
@@ -1237,7 +1235,6 @@ mod test {
             let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
             let shutdown_handle = shutdown_ctx.handle();
             let (subsys_handle, _event_rx) = SubsystemHandle::new();
-            let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
             ctxs.push(shutdown_ctx);
@@ -1255,7 +1252,7 @@ mod test {
                     2u8,
                     event_handle.clone(),
                 ),
-                routing_table,
+                subsys_handle,
                 transit_rx,
                 shutdown_handle,
             ));
@@ -1490,7 +1487,6 @@ mod test {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1510,7 +1506,7 @@ mod test {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),
@@ -1645,7 +1641,6 @@ mod test {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1665,7 +1660,7 @@ mod test {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),
@@ -1763,7 +1758,6 @@ mod test {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1783,7 +1777,7 @@ mod test {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),
@@ -1881,7 +1875,6 @@ mod test {
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
                     let (subsys_handle, _event_rx) = SubsystemHandle::new();
-                    let routing_table = RoutingTable::new(subsys_handle);
 
                     (
                         (router_hash, static_key.public(), shutdown_ctx),
@@ -1901,7 +1894,7 @@ mod test {
                                     2u8,
                                     event_handle.clone(),
                                 ),
-                                routing_table,
+                                subsys_handle,
                                 transit_rx,
                                 shutdown_handle,
                             ),

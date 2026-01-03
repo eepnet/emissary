@@ -27,6 +27,7 @@ use crate::{
     primitives::{Lease, Mapping, MessageId, RouterId, Str, TunnelId},
     router::context::RouterContext,
     runtime::{Counter, Gauge, Histogram, Instant, JoinSet, MetricsHandle, Runtime},
+    subsystem::SubsystemHandle,
     tunnel::{
         hop::{
             inbound::InboundTunnel, outbound::OutboundTunnel, pending::PendingTunnel, ReceiverKind,
@@ -39,7 +40,6 @@ use crate::{
             timer::{TunnelKind, TunnelTimer, TunnelTimerEvent},
             zero_hop::ZeroHopInboundTunnel,
         },
-        routing_table::RoutingTable,
         TUNNEL_EXPIRATION,
     },
 };
@@ -226,8 +226,8 @@ pub struct TunnelPool<R: Runtime, S: TunnelSelector + HopSelector> {
     /// Router context.
     router_ctx: RouterContext<R>,
 
-    /// Routing table.
-    routing_table: RoutingTable,
+    /// Subsystem handle.
+    subsystem_handle: SubsystemHandle,
 
     /// Tunnel/hop selector for the tunnel pool.
     selector: S,
@@ -244,7 +244,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
     pub fn new(
         build_parameters: TunnelPoolBuildParameters,
         selector: S,
-        routing_table: RoutingTable,
+        subsystem_handle: SubsystemHandle,
         router_ctx: RouterContext<R>,
     ) -> (Self, TunnelPoolHandle) {
         let TunnelPoolBuildParameters {
@@ -278,18 +278,18 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                 maintenance_timer: R::timer(Duration::from_secs(0)),
                 outbound: HashMap::new(),
                 pending_inbound: TunnelBuildListener::new(
-                    routing_table.clone(),
+                    subsystem_handle.clone(),
                     router_ctx.profile_storage().clone(),
                 ),
                 pending_outbound: TunnelBuildListener::new(
-                    routing_table.clone(),
+                    subsystem_handle.clone(),
                     router_ctx.profile_storage().clone(),
                 ),
                 num_tunnel_build_failures: 0usize,
                 num_tunnels_built: 0usize,
                 router_ctx,
                 pending_tests: R::join_set(),
-                routing_table,
+                subsystem_handle,
                 selector,
                 shutdown_rx: Some(shutdown_rx),
                 tunnel_timers: TunnelTimer::new(),
@@ -379,7 +379,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                     // `ZeroHopInboundTunnel::new()` also returns a `oneshot::Receiver<Message>`
                     // which is used to receive the build response, if it's received in time
                     let (gateway, zero_hop_tunnel, message_rx) =
-                        ZeroHopInboundTunnel::<R>::new(self.routing_table.clone());
+                        ZeroHopInboundTunnel::<R>::new(self.subsystem_handle.clone());
 
                     // allocate random message id for the build request
                     //
@@ -438,8 +438,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 .increment(1);
 
                             if let Err(error) = self
-                                .routing_table
-                                .send_message_with_feedback(router_id, message, dial_tx)
+                                .subsystem_handle
+                                .send_with_feedback(&router_id, message, dial_tx)
                             {
                                 tracing::warn!(
                                     target: LOG_TARGET,
@@ -459,8 +459,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 "failed to create outbound tunnel",
                             );
 
-                            self.routing_table.remove_tunnel(&gateway);
-                            self.routing_table.remove_listener(&message_id);
+                            self.subsystem_handle.remove_tunnel(&gateway);
+                            self.subsystem_handle.remove_listener(&message_id);
                         }
                     }
                 }
@@ -538,8 +538,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 .increment(1);
 
                             if let Err(error) = self
-                                .routing_table
-                                .send_message_with_feedback(router_id, message, dial_tx)
+                                .subsystem_handle
+                                .send_with_feedback(&router_id, message, dial_tx)
                             {
                                 tracing::warn!(
                                     target: LOG_TARGET,
@@ -589,11 +589,11 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
             //
             // if the building the build request fails, the listener must be removed
             // from the routing table
-            let (message_id, message_rx) = self.routing_table.insert_listener(&mut R::rng());
+            let (message_id, message_rx) = self.subsystem_handle.insert_listener(&mut R::rng());
 
             // generate tunnel id for the inbound tunnel that's about to be built
             let (tunnel_id, tunnel_rx) =
-                self.routing_table.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
+                self.subsystem_handle.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
 
             match PendingTunnel::<InboundTunnel<R>>::create_tunnel::<R>(TunnelBuildParameters {
                 hops,
@@ -638,9 +638,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                                 "no outbound tunnel available, send build request to router",
                             );
 
-                            if let Err(error) = self
-                                .routing_table
-                                .send_message_with_feedback(router, message, dial_tx)
+                            if let Err(error) =
+                                self.subsystem_handle.send_with_feedback(&router, message, dial_tx)
                             {
                                 tracing::warn!(
                                     target: LOG_TARGET,
@@ -693,8 +692,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                         "failed to create outbound tunnel",
                     );
 
-                    self.routing_table.remove_tunnel(&tunnel_id);
-                    self.routing_table.remove_listener(&message_id);
+                    self.subsystem_handle.remove_tunnel(&tunnel_id);
+                    self.subsystem_handle.remove_listener(&message_id);
                     continue;
                 }
             }
@@ -805,8 +804,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
 
                 // message must exist since it's a valid i2np message
                 match self
-                    .routing_table
-                    .send_message(router, messages.next().expect("message to exist"))
+                    .subsystem_handle
+                    .send(&router, messages.next().expect("message to exist"))
                 {
                     Ok(_) => self.pending_tests.push(async move {
                         let started = R::now();
@@ -916,7 +915,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                     num_failed_builds += 1;
 
                     self.num_tunnel_build_failures += 1;
-                    self.routing_table.remove_tunnel(&tunnel_id);
+                    self.subsystem_handle.remove_tunnel(&tunnel_id);
                     self.router_ctx.metrics_handle().counter(NUM_BUILD_FAILURES).increment(1);
                     self.router_ctx
                         .metrics_handle()
@@ -989,7 +988,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                     );
 
                     self.expiring_inbound.remove(&gateway_tunnel_id);
-                    self.routing_table.remove_tunnel(&tunnel_id);
+                    self.subsystem_handle.remove_tunnel(&tunnel_id);
                     self.selector.remove_inbound_tunnel(&gateway_tunnel_id);
                     self.inbound_tunnels.remove(&gateway_tunnel_id);
                     self.router_ctx.metrics_handle().gauge(NUM_INBOUND_TUNNELS).decrement(1);
@@ -1049,8 +1048,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                     match feedback_tx.take() {
                                         Some(feedback_tx) => {
                                             if let Err(error) =
-                                                self.routing_table.send_message_with_feedback(
-                                                    router_id.clone(),
+                                                self.subsystem_handle.send_with_feedback(
+                                                    &router_id,
                                                     message,
                                                     feedback_tx,
                                                 )
@@ -1065,9 +1064,8 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                                             }
                                         }
                                         None => {
-                                            if let Err(error) = self
-                                                .routing_table
-                                                .send_message(router_id.clone(), message)
+                                            if let Err(error) =
+                                                self.subsystem_handle.send(&router_id, message)
                                             {
                                                 tracing::warn!(
                                                     target: LOG_TARGET,
@@ -1115,9 +1113,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                             tunnel.send_to_tunnel(gateway.clone(), tunnel_id, message);
 
                         let count = messages.into_iter().fold(0usize, |count, message| {
-                            if let Err(error) =
-                                self.routing_table.send_message(router_id.clone(), message)
-                            {
+                            if let Err(error) = self.subsystem_handle.send(&router_id, message) {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     name = %self.config.name,
@@ -1180,9 +1176,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                         let (router_id, messages) = tunnel.send_to_router(router_id, message);
 
                         let count = messages.into_iter().fold(0usize, |count, message| {
-                            if let Err(error) =
-                                self.routing_table.send_message(router_id.clone(), message)
-                            {
+                            if let Err(error) = self.subsystem_handle.send(&router_id, message) {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     name = %self.config.name,
@@ -1255,9 +1249,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                             tunnel.send_to_tunnel(ibgw_router_id.clone(), ibgw_tunnel_id, message);
 
                         let count = messages.into_iter().fold(0usize, |count, message| {
-                            if let Err(error) =
-                                self.routing_table.send_message(router_id.clone(), message)
-                            {
+                            if let Err(error) = self.subsystem_handle.send(&router_id, message) {
                                 tracing::warn!(
                                     target: LOG_TARGET,
                                     name = %self.config.name,
@@ -1424,7 +1416,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                 );
 
                 self.inbound_tunnels.values().for_each(|(tunnel_id, _)| {
-                    self.routing_table.remove_tunnel(tunnel_id);
+                    self.subsystem_handle.remove_tunnel(tunnel_id);
                 });
 
                 if let Err(error) = self.context.register_tunnel_pool_shut_down() {
@@ -1530,13 +1522,12 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -1597,7 +1588,7 @@ mod tests {
         }
 
         // route tunnel build response to the fake 0-hop inbound tunnel
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.outbound.len(), 1);
@@ -1644,7 +1635,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1652,7 +1642,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -1757,7 +1747,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1765,7 +1754,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -1838,7 +1827,7 @@ mod tests {
         }
 
         // route tunnel build response to the tunnel build response listener
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.inbound.len(), 1);
@@ -1885,7 +1874,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -1893,7 +1881,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -2023,7 +2011,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2043,7 +2030,7 @@ mod tests {
         let (mut exploratory_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             exploratory_selector.clone(),
-            routing_table.clone(),
+            subsys_handle.clone(),
             router_ctx.clone(),
         );
 
@@ -2116,7 +2103,7 @@ mod tests {
         }
 
         // route tunnel build response to the fake 0-hop inbound tunnel
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_secs(2), &mut exploratory_pool)
@@ -2143,7 +2130,7 @@ mod tests {
             let (mut client_pool, _client_handle) = TunnelPool::<MockRuntime, _>::new(
                 client_parameters,
                 client_selector,
-                routing_table.clone(),
+                subsys_handle.clone(),
                 router_ctx.clone(),
             );
 
@@ -2165,7 +2152,7 @@ mod tests {
                 let (router_id, message) = {
                     let mut router = routers.get_mut(&router_id).unwrap();
 
-                    router.routing_table().send_message(router_id, message).unwrap();
+                    router.subsystem_handle().send(&router_id, message).unwrap();
                     assert!(
                         tokio::time::timeout(Duration::from_millis(250), &mut router)
                             .await
@@ -2179,7 +2166,7 @@ mod tests {
                 let (router_id, message) = {
                     let mut router = routers.get_mut(&router_id).unwrap();
 
-                    router.routing_table().send_message(router_id, message).unwrap();
+                    router.subsystem_handle().send(&router_id, message).unwrap();
                     assert!(
                         tokio::time::timeout(Duration::from_millis(250), &mut router)
                             .await
@@ -2193,7 +2180,7 @@ mod tests {
                 let mut router = routers.get_mut(&router_id).unwrap();
                 obep = Some(router_id.clone());
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
@@ -2212,7 +2199,7 @@ mod tests {
                     _ => panic!("invalid delivery instructions"),
                 };
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
@@ -2224,7 +2211,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(tokio::time::timeout(Duration::from_secs(1), &mut router).await.is_err());
 
                 router.select_message().unwrap()
@@ -2234,7 +2221,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(250), &mut router).await.is_err()
                 );
@@ -2244,7 +2231,7 @@ mod tests {
 
             assert_eq!(&router_id, router_ctx.router_id());
 
-            routing_table.send_message(router_id, message).unwrap();
+            subsys_handle.send(&router_id, message).unwrap();
 
             let future = async {
                 tokio::select! {
@@ -2307,7 +2294,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2327,7 +2313,7 @@ mod tests {
         let (mut exploratory_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             exploratory_selector.clone(),
-            routing_table.clone(),
+            subsys_handle.clone(),
             router_ctx.clone(),
         );
 
@@ -2412,7 +2398,7 @@ mod tests {
         }
 
         // route tunnel build response to the tunnel build response listener
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_secs(2), &mut exploratory_pool)
@@ -2439,7 +2425,7 @@ mod tests {
             let (mut client_pool, _client_handle) = TunnelPool::<MockRuntime, _>::new(
                 parameters,
                 client_selector,
-                routing_table.clone(),
+                subsys_handle.clone(),
                 router_ctx.clone(),
             );
 
@@ -2458,7 +2444,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2470,7 +2456,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2482,7 +2468,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2494,7 +2480,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2506,7 +2492,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2518,7 +2504,7 @@ mod tests {
             let (router_id, message) = {
                 let mut router = routers.get_mut(&router_id).unwrap();
 
-                router.routing_table().send_message(router_id, message).unwrap();
+                router.subsystem_handle().send(&router_id, message).unwrap();
                 assert!(
                     tokio::time::timeout(Duration::from_millis(500), &mut router).await.is_err()
                 );
@@ -2527,7 +2513,7 @@ mod tests {
             };
             assert_eq!(&router_id, router_ctx.router_id());
 
-            routing_table.send_message(router_id, message).unwrap();
+            subsys_handle.send(&router_id, message).unwrap();
 
             let future = async {
                 tokio::select! {
@@ -2582,7 +2568,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2590,7 +2575,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -2656,7 +2641,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_SUCCESSES), None);
 
         // route message to listener after timeout
-        let _ = routing_table.send_message(router, message);
+        let _ = subsys_handle.send(&router, message);
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
@@ -2702,7 +2687,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -2710,7 +2694,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -2787,7 +2771,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
 
         // route message to listener after timeout
-        let _ = routing_table.send_message(router, message);
+        let _ = subsys_handle.send(&router, message);
 
         // verify it's routed to transit manager which'll reject it
         assert!(
@@ -2845,7 +2829,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let our_id = router_info.identity.id();
@@ -2854,7 +2837,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -2938,7 +2921,7 @@ mod tests {
                 let _ = tx.send(());
             }
 
-            routing_table.send_message(router, message).unwrap();
+            subsys_handle.send(&router, message).unwrap();
 
             assert!(
                 tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -2961,8 +2944,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router.clone(), message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2978,8 +2961,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router, message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -2993,8 +2976,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router, message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3008,8 +2991,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router, message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3022,7 +3005,7 @@ mod tests {
         // route response to local router and verify that tunnel test is considered succeeded
         assert_eq!(router, our_id);
 
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(
             tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -3081,7 +3064,6 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -3089,7 +3071,7 @@ mod tests {
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -3172,7 +3154,7 @@ mod tests {
                 let _ = tx.send(());
             }
 
-            routing_table.send_message(router, message).unwrap();
+            subsys_handle.send(&router, message).unwrap();
 
             assert!(
                 tokio::time::timeout(Duration::from_millis(250), &mut tunnel_pool)
@@ -3195,8 +3177,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router, message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3212,8 +3194,8 @@ mod tests {
         routers
             .get_mut(&router)
             .unwrap()
-            .routing_table()
-            .send_message(router.clone(), message)
+            .subsystem_handle()
+            .send(&router, message)
             .unwrap();
         assert!(tokio::time::timeout(
             Duration::from_millis(250),
@@ -3266,7 +3248,6 @@ mod tests {
             ),
         );
         tokio::spawn(manager);
-        let routing_table = RoutingTable::new(subsys_handle);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
@@ -3274,7 +3255,7 @@ mod tests {
         let (mut tunnel_pool, mut handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false),
-            routing_table.clone(),
+            subsys_handle.clone(),
             RouterContext::new(
                 handle.clone(),
                 profile_storage,
@@ -3347,7 +3328,7 @@ mod tests {
         }
 
         // route tunnel build response to the tunnel build response listener
-        routing_table.send_message(router, message).unwrap();
+        subsys_handle.send(&router, message).unwrap();
 
         assert!(tokio::time::timeout(Duration::from_secs(2), &mut tunnel_pool).await.is_err());
         assert_eq!(tunnel_pool.inbound.len(), 1);
@@ -3357,7 +3338,7 @@ mod tests {
         // verify the inbound tunnel exists in the routing table
         let tunnel_id = tunnel_pool.inbound_tunnels.values().next().unwrap().0;
 
-        match routing_table.try_add_tunnel::<6>(tunnel_id) {
+        match subsys_handle.try_insert_tunnel::<6>(tunnel_id) {
             Err(RoutingError::TunnelExists(value)) => {
                 assert_eq!(value, tunnel_id);
             }
@@ -3370,7 +3351,7 @@ mod tests {
 
         // try to add the tunnel again and ensure that it succeeds this time because the tunnel
         // pool's tunnels were removed from tunnel pool when it shut down
-        match routing_table.try_add_tunnel::<6>(tunnel_id) {
+        match subsys_handle.try_insert_tunnel::<6>(tunnel_id) {
             Ok(_) => {}
             _ => panic!("invalid status"),
         }

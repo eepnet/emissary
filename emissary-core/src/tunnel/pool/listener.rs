@@ -22,10 +22,10 @@ use crate::{
     primitives::{MessageId, TunnelId},
     profile::ProfileStorage,
     runtime::{JoinSet, Runtime},
+    subsystem::SubsystemHandle,
     tunnel::{
         hop::{pending::PendingTunnel, Tunnel},
         pool::{context::TunnelPoolContextHandle, TUNNEL_BUILD_EXPIRATION},
-        routing_table::RoutingTable,
     },
     Error,
 };
@@ -75,16 +75,16 @@ pub struct TunnelBuildListener<R: Runtime, T: Tunnel + 'static> {
     profile: ProfileStorage<R>,
 
     /// Routing table.
-    routing_table: RoutingTable,
+    subsystem_handle: SubsystemHandle,
 }
 
 impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
     /// Create new [`TunnelBuildListener`].
-    pub fn new(routing_table: RoutingTable, profile: ProfileStorage<R>) -> Self {
+    pub fn new(subsystem_handle: SubsystemHandle, profile: ProfileStorage<R>) -> Self {
         Self {
             pending: R::join_set(),
             profile,
-            routing_table,
+            subsystem_handle,
         }
     }
 
@@ -101,7 +101,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
         message_rx: oneshot::Receiver<Message>,
         dial_rx: oneshot::Receiver<()>,
     ) {
-        let routing_table = self.routing_table.clone();
+        let subsystem_handle = self.subsystem_handle.clone();
         let profile = self.profile.clone();
 
         self.pending.push(async move {
@@ -133,7 +133,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 Either::Right((_, _)) => {
                     match receive_kind {
                         ReceiveKind::RoutingTable { message_id } =>
-                            routing_table.remove_listener(&message_id),
+                            subsystem_handle.remove_listener(&message_id),
                         ReceiveKind::Tunnel { message_id, handle } =>
                             handle.remove_listener(&message_id),
                         ReceiveKind::ZeroHop => {}
@@ -148,7 +148,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                 Either::Left((Err(_), _)) => {
                     match receive_kind {
                         ReceiveKind::RoutingTable { message_id } =>
-                            routing_table.remove_listener(&message_id),
+                            subsystem_handle.remove_listener(&message_id),
                         ReceiveKind::Tunnel { message_id, handle } =>
                             handle.remove_listener(&message_id),
                         ReceiveKind::ZeroHop => {}
@@ -271,8 +271,7 @@ mod tests {
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
-        let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
+        let mut listener = TunnelBuildListener::new(handle, profile_storage);
 
         let (tx, rx) = oneshot::channel();
         let (dial_tx, dial_rx) = oneshot::channel();
@@ -325,8 +324,7 @@ mod tests {
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
-        let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
+        let mut listener = TunnelBuildListener::new(handle, profile_storage);
 
         let (tx, rx) = oneshot::channel();
         let (dial_tx, dial_rx) = oneshot::channel();
@@ -379,8 +377,7 @@ mod tests {
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();
-        let routing_table = RoutingTable::new(handle);
-        let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
+        let mut listener = TunnelBuildListener::new(handle, profile_storage);
 
         let (_tx, rx) = oneshot::channel();
         let (dial_tx, dial_rx) = oneshot::channel();
