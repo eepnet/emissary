@@ -22,7 +22,7 @@ use crate::{
     i2np::Message,
     primitives::RouterId,
     runtime::{Counter, MetricsHandle, Runtime},
-    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEventNew},
+    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
             message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
@@ -239,7 +239,7 @@ pub struct Ssu2Session<R: Runtime> {
     transmission: TransmissionManager<R>,
 
     /// TX channel for communicating with `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -247,7 +247,7 @@ impl<R: Runtime> Ssu2Session<R> {
     pub fn new(
         context: Ssu2SessionContext,
         pkt_tx: Sender<Packet>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
         metrics: R::MetricsHandle,
     ) -> Self {
         let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
@@ -314,7 +314,7 @@ impl<R: Runtime> Ssu2Session<R> {
             return;
         }
 
-        if let Err(error) = self.transport_tx.try_send(SubsystemEventNew::Message {
+        if let Err(error) = self.transport_tx.try_send(SubsystemEvent::Message {
             messages: vec![(self.router_id.clone(), message.clone())],
         }) {
             tracing::warn!(
@@ -612,7 +612,7 @@ impl<R: Runtime> Ssu2Session<R> {
     pub async fn run(mut self) -> TerminationContext {
         // subsystem manager doesn't exit
         self.transport_tx
-            .send(SubsystemEventNew::ConnectionEstablished {
+            .send(SubsystemEvent::ConnectionEstablished {
                 router_id: self.router_id.clone(),
                 tx: self.msg_tx.clone(),
             })
@@ -627,7 +627,7 @@ impl<R: Runtime> Ssu2Session<R> {
 
         // subsystem manager doesn't exit
         self.transport_tx
-            .send(SubsystemEventNew::ConnectionClosed {
+            .send(SubsystemEvent::ConnectionClosed {
                 router_id: self.router_id.clone(),
             })
             .await
@@ -824,7 +824,7 @@ mod tests {
             );
 
             match transport_rx.recv().await.unwrap() {
-                SubsystemEventNew::ConnectionEstablished { tx, .. } => tx,
+                SubsystemEvent::ConnectionEstablished { tx, .. } => tx,
                 _ => panic!("invalid event"),
             }
         };
@@ -959,7 +959,7 @@ mod tests {
             );
 
             match transport_rx.recv().await.unwrap() {
-                SubsystemEventNew::ConnectionEstablished { tx, .. } => (tx, handle),
+                SubsystemEvent::ConnectionEstablished { tx, .. } => (tx, handle),
                 _ => panic!("invalid event"),
             }
         };

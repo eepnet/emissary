@@ -221,7 +221,7 @@ mod tests {
         crypto::StaticPublicKey,
         primitives::{MessageId, Str, TunnelId},
         runtime::mock::MockRuntime,
-        subsystem::SubsystemManagerHandle,
+        subsystem::SubsystemHandle,
         tunnel::{
             hop::{
                 outbound::OutboundTunnel, pending::PendingTunnel, ReceiverKind,
@@ -270,7 +270,7 @@ mod tests {
             )
             .unwrap();
 
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 
@@ -324,7 +324,7 @@ mod tests {
             )
             .unwrap();
 
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 
@@ -378,7 +378,7 @@ mod tests {
             )
             .unwrap();
 
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let mut listener = TunnelBuildListener::new(routing_table, profile_storage);
 

@@ -20,7 +20,7 @@ use crate::{
     error::RoutingError,
     i2np::Message,
     primitives::{MessageId, RouterId, TunnelId},
-    subsystem::SubsystemManagerHandle,
+    subsystem::SubsystemHandle,
 };
 
 use futures_channel::oneshot;
@@ -30,12 +30,12 @@ use thingbuf::mpsc;
 /// Routing table.
 #[derive(Debug, Clone)]
 pub struct RoutingTable {
-    pub subsystem_handle: SubsystemManagerHandle,
+    pub subsystem_handle: SubsystemHandle,
 }
 
 impl RoutingTable {
     /// Create new [`RoutingTable`].
-    pub fn new(subsystem_handle: SubsystemManagerHandle) -> Self {
+    pub fn new(subsystem_handle: SubsystemHandle) -> Self {
         Self { subsystem_handle }
     }
 

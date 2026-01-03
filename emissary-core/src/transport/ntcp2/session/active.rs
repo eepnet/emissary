@@ -25,7 +25,7 @@ use crate::{
     events::EventHandle,
     primitives::{RouterId, RouterInfo},
     runtime::{AsyncRead, AsyncWrite, Runtime},
-    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEventNew},
+    subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ntcp2::{
             message::MessageBlock,
@@ -118,7 +118,7 @@ pub struct Ntcp2Session<R: Runtime> {
     msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
 
     /// TX channel for sending events to `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 
     /// Direction of the session.
     direction: Direction,
@@ -172,7 +172,7 @@ impl<R: Runtime> Ntcp2Session<R> {
         key_context: KeyContext,
         direction: Direction,
         event_handle: EventHandle<R>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> Self {
         let KeyContext {
             send_key,
@@ -227,7 +227,7 @@ impl<R: Runtime> Ntcp2Session<R> {
 
         // subsystem manager should never exit
         self.transport_tx
-            .send(SubsystemEventNew::ConnectionEstablished {
+            .send(SubsystemEvent::ConnectionEstablished {
                 router_id: self.router.clone(),
                 tx: self.msg_tx.clone(),
             })
@@ -241,7 +241,7 @@ impl<R: Runtime> Ntcp2Session<R> {
         let reason = (&mut self).await;
 
         self.transport_tx
-            .send(SubsystemEventNew::ConnectionClosed {
+            .send(SubsystemEvent::ConnectionClosed {
                 router_id: self.router.clone(),
             })
             .await
@@ -386,7 +386,7 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 .collect::<Vec<_>>();
 
                             if let Err(error) =
-                                this.transport_tx.try_send(SubsystemEventNew::Message {
+                                this.transport_tx.try_send(SubsystemEvent::Message {
                                     messages: messages
                                         .iter()
                                         .map(|message| (this.router.clone(), message.clone()))

@@ -905,7 +905,7 @@ mod tests {
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
         shutdown::ShutdownContext,
-        subsystem::SubsystemManagerHandle,
+        subsystem::SubsystemHandle,
         tunnel::{
             garlic::{DeliveryInstructions as GarlicDeliveryInstructions, GarlicHandler},
             hop::{
@@ -935,7 +935,7 @@ mod tests {
                     let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let (subsys_handle, _event_rx) = SubsystemHandle::new();
                     let routing_table = RoutingTable::new(subsys_handle);
 
                     (
@@ -1010,7 +1010,7 @@ mod tests {
                     let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let (subsys_handle, _event_rx) = SubsystemHandle::new();
                     let routing_table = RoutingTable::new(subsys_handle);
 
                     (
@@ -1096,7 +1096,7 @@ mod tests {
                     let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let (subsys_handle, _event_rx) = SubsystemHandle::new();
                     let routing_table = RoutingTable::new(subsys_handle);
 
                     (
@@ -1191,7 +1191,7 @@ mod tests {
                     let (_transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let (subsys_handle, _event_rx) = SubsystemHandle::new();
                     let routing_table = RoutingTable::new(subsys_handle);
 
                     (
@@ -1248,7 +1248,7 @@ mod tests {
         // make new router which is not part of the tunnel build request
         let (_, static_key, signing_key, _noise, router_info) = make_router(true);
         let (_transit_tx, transit_rx) = channel(16);
-        let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+        let (subsys_handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(subsys_handle);
         let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
         let shutdown_handle = shutdown_ctx.handle();
@@ -1290,7 +1290,7 @@ mod tests {
                 let (_transit_tx, transit_rx) = channel(16);
                 let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                 let shutdown_handle = shutdown_ctx.handle();
-                let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                let (subsys_handle, _event_rx) = SubsystemHandle::new();
                 let routing_table = RoutingTable::new(subsys_handle);
 
                 (
@@ -1381,7 +1381,7 @@ mod tests {
                     .expect("no timeout");
             }
 
-            let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+            let (subsys_handle, _event_rx) = SubsystemHandle::new();
             let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
@@ -1467,7 +1467,7 @@ mod tests {
         let (_router_hash, static_key, signing_key, _noise_context, router_info) =
             make_router(true);
         let (_transit_tx, transit_rx) = channel(16);
-        let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+        let (subsys_handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(subsys_handle);
         let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
         let shutdown_handle = shutdown_ctx.handle();
@@ -1525,7 +1525,7 @@ mod tests {
             let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
             let shutdown_handle = shutdown_ctx.handle();
 
-            let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+            let (subsys_handle, _event_rx) = SubsystemHandle::new();
             let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
@@ -1624,7 +1624,7 @@ mod tests {
             let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
             let shutdown_handle = shutdown_ctx.handle();
 
-            let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+            let (subsys_handle, _event_rx) = SubsystemHandle::new();
             let routing_table = RoutingTable::new(subsys_handle);
 
             hops.push((router_hash, static_key.public()));
@@ -1730,7 +1730,7 @@ mod tests {
                     let (transit_tx, transit_rx) = channel(16);
                     let mut shutdown_ctx = ShutdownContext::<MockRuntime>::new();
                     let shutdown_handle = shutdown_ctx.handle();
-                    let (subsys_handle, _event_rx) = SubsystemManagerHandle::new();
+                    let (subsys_handle, _event_rx) = SubsystemHandle::new();
                     let routing_table = RoutingTable::new(subsys_handle);
 
                     (

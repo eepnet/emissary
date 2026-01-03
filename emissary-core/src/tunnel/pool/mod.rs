@@ -1477,7 +1477,7 @@ mod tests {
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
         subsystem::{
-            OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+            OutboundMessage, OutboundMessageRecycle, SubsystemEvent, SubsystemManager,
             SubsystemManagerContext,
         },
         tunnel::{
@@ -1559,7 +1559,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -1675,7 +1675,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -1788,7 +1788,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -1916,7 +1916,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -2062,7 +2062,7 @@ mod tests {
             let conn_tx = msg_tx.clone();
 
             transport_tx
-                .send(SubsystemEventNew::ConnectionEstablished {
+                .send(SubsystemEvent::ConnectionEstablished {
                     router_id: router_id.clone(),
                     tx,
                 })
@@ -2346,7 +2346,7 @@ mod tests {
             let conn_tx = msg_tx.clone();
 
             transport_tx
-                .send(SubsystemEventNew::ConnectionEstablished {
+                .send(SubsystemEvent::ConnectionEstablished {
                     router_id: router_id.clone(),
                     tx,
                 })
@@ -2613,7 +2613,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -2733,7 +2733,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })
@@ -2878,7 +2878,7 @@ mod tests {
             let conn_tx = msg_tx.clone();
 
             transport_tx
-                .send(SubsystemEventNew::ConnectionEstablished {
+                .send(SubsystemEvent::ConnectionEstablished {
                     router_id: router_id.clone(),
                     tx,
                 })
@@ -3113,7 +3113,7 @@ mod tests {
             let conn_tx = msg_tx.clone();
 
             transport_tx
-                .send(SubsystemEventNew::ConnectionEstablished {
+                .send(SubsystemEvent::ConnectionEstablished {
                     router_id: router_id.clone(),
                     tx,
                 })
@@ -3297,7 +3297,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = with_recycle(100, OutboundMessageRecycle::default());
         transport_tx
-            .send(crate::subsystem::SubsystemEventNew::ConnectionEstablished {
+            .send(crate::subsystem::SubsystemEvent::ConnectionEstablished {
                 router_id: router.clone(),
                 tx,
             })

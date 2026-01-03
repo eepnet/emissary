@@ -23,7 +23,7 @@ use crate::{
     primitives::{Date, RouterAddress, RouterId, RouterInfo, Str, TransportKind},
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
-    subsystem::SubsystemEventNew,
+    subsystem::SubsystemEvent,
     transport::{metrics::*, ntcp2::Ntcp2Context, ssu2::Ssu2Context},
     Ntcp2Config, Ssu2Config,
 };
@@ -269,7 +269,7 @@ pub struct TransportManagerBuilder<R: Runtime> {
 
     /// TX channel given to connections which they use to send inbound
     /// messages to `SubsystemManager` for processing.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 
     /// Enabled transports.
     transports: Vec<Box<dyn Transport<Item = TransportEvent>>>,
@@ -282,7 +282,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
         local_router_info: RouterInfo,
         allow_local: bool,
         dial_rx: Receiver<RouterId>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> Self {
         Self {
             allow_local,
@@ -413,7 +413,7 @@ pub struct TransportManager<R: Runtime> {
     transit_tunnels_disabled: bool,
 
     /// TX channel for sending transport-related events to `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 
     /// Enabled transports.
     transports: Vec<Box<dyn Transport<Item = TransportEvent>>>,
@@ -570,7 +570,7 @@ impl<R: Runtime> TransportManager<R> {
                     R::spawn(async move {
                         // subsystem manager never dies
                         transport_tx
-                            .send(SubsystemEventNew::ConnectionFailure { router_id })
+                            .send(SubsystemEvent::ConnectionFailure { router_id })
                             .await
                             .expect("channel to stay open");
                     });
@@ -776,7 +776,7 @@ impl<R: Runtime> Future for TransportManager<R> {
                     R::spawn(async move {
                         // subsystem manager never dies
                         transport_tx
-                            .send(SubsystemEventNew::ConnectionFailure { router_id })
+                            .send(SubsystemEvent::ConnectionFailure { router_id })
                             .await
                             .expect("channel to stay open");
                     });
@@ -852,7 +852,7 @@ mod tests {
     ) -> (
         TransportManagerBuilder<MockRuntime>,
         Sender<RouterId>,
-        Receiver<SubsystemEventNew>,
+        Receiver<SubsystemEvent>,
     ) {
         let (router_info, static_key, signing_key) = {
             let mut builder = RouterInfoBuilder::default();
@@ -1915,7 +1915,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, router_id)
             }
             _ => panic!("invalid event"),
@@ -2019,7 +2019,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, remote_router_id)
             }
             _ => panic!("invalid event"),
@@ -2037,7 +2037,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, remote_router_id)
             }
             _ => panic!("invalid event"),

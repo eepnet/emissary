@@ -731,7 +731,7 @@ mod tests {
         crypto::sha256::Sha256,
         primitives::RouterInfoBuilder,
         runtime::mock::MockRuntime,
-        subsystem::SubsystemEventNew,
+        subsystem::SubsystemEvent,
         transport::ssu2::session::pending::outbound::{OutboundSsu2Context, OutboundSsu2Session},
     };
     use std::net::{IpAddr, Ipv4Addr};
@@ -748,7 +748,7 @@ mod tests {
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
-        transport_rx: Receiver<SubsystemEventNew>,
+        transport_rx: Receiver<SubsystemEvent>,
     }
 
     fn create_session() -> (InboundContext, OutboundContext) {

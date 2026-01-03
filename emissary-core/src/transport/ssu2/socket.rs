@@ -22,7 +22,7 @@ use crate::{
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
     runtime::{Counter, Gauge, Histogram, JoinSet, MetricsHandle, Runtime},
-    subsystem::SubsystemEventNew,
+    subsystem::SubsystemEvent,
     transport::{
         ssu2::{
             message::{HeaderKind, HeaderReader},
@@ -209,7 +209,7 @@ pub struct Ssu2Socket<R: Runtime> {
 
     /// TX channel for sending events to `SubsystemManager`.
     #[allow(unused)]
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 
     /// Unvalidated sessions.
     unvalidated_sessions: HashMap<RouterId, PendingSessionKind>,
@@ -227,7 +227,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         socket: R::UdpSocket,
         static_key: StaticPrivateKey,
         intro_key: [u8; 32],
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
         router_ctx: RouterContext<R>,
     ) -> Self {
         let state = Sha256::new().update(PROTOCOL_NAME.as_bytes()).finalize();

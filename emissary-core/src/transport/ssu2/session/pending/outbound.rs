@@ -24,7 +24,7 @@ use crate::{
     error::Ssu2Error,
     primitives::RouterId,
     runtime::Runtime,
-    subsystem::SubsystemEventNew,
+    subsystem::SubsystemEvent,
     transport::ssu2::{
         message::{
             handshake::{SessionConfirmedBuilder, SessionRequestBuilder, TokenRequestBuilder},
@@ -102,7 +102,7 @@ pub struct OutboundSsu2Context {
     pub static_key: StaticPublicKey,
 
     /// TX channel for communicating with `SubsystemManager`.
-    pub transport_tx: Sender<SubsystemEventNew>,
+    pub transport_tx: Sender<SubsystemEvent>,
 }
 
 /// State for a pending outbound SSU2 session.
@@ -196,7 +196,7 @@ pub struct OutboundSsu2Session<R: Runtime> {
     state: PendingSessionState,
 
     /// TX channel for communicating with `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 }
 
 impl<R: Runtime> OutboundSsu2Session<R> {
@@ -663,7 +663,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
         ) {
             if let Err(error) = self
                 .transport_tx
-                .send(SubsystemEventNew::ConnectionFailure {
+                .send(SubsystemEvent::ConnectionFailure {
                     router_id: self.router_id.clone(),
                 })
                 .await
@@ -784,7 +784,7 @@ mod tests {
         outbound_session: OutboundSsu2Session<MockRuntime>,
         outbound_session_tx: Sender<Packet>,
         outbound_socket_rx: Receiver<Packet>,
-        transport_rx: Receiver<SubsystemEventNew>,
+        transport_rx: Receiver<SubsystemEvent>,
     }
 
     fn create_session() -> (InboundContext, OutboundContext) {
@@ -930,7 +930,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, router_id)
             }
             _ => panic!("invalid event"),
@@ -986,7 +986,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, router_id)
             }
             _ => panic!("invalid event"),
@@ -1060,7 +1060,7 @@ mod tests {
             .expect("no timeout")
             .expect("to succeed")
         {
-            SubsystemEventNew::ConnectionFailure { router_id: router } => {
+            SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, router_id)
             }
             _ => panic!("invalid event"),

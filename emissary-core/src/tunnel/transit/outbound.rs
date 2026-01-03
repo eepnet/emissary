@@ -418,7 +418,7 @@ mod tests {
         i2np::{HopRole, MessageBuilder},
         primitives::Str,
         runtime::mock::MockRuntime,
-        subsystem::{SubsystemManagerEvent, SubsystemManagerHandle},
+        subsystem::{SubsystemManagerEvent, SubsystemHandle},
         tunnel::{
             hop::{
                 outbound::OutboundTunnel, pending::PendingTunnel, ReceiverKind,
@@ -436,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn obep_routes_message_to_self() {
         let (_tx, rx) = channel(64);
-        let (handle, event_rx) = SubsystemManagerHandle::new();
+        let (handle, event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 
@@ -555,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn expired_unfragmented_message() {
         let (_tx, rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 
@@ -660,7 +660,7 @@ mod tests {
     #[tokio::test]
     async fn expired_fragmented_message() {
         let (_tx, rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
 

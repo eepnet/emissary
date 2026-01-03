@@ -298,7 +298,7 @@ mod tests {
         i2np::{HopRole, MessageBuilder},
         primitives::{MessageId, Str},
         runtime::mock::MockRuntime,
-        subsystem::SubsystemManagerHandle,
+        subsystem::SubsystemHandle,
         tunnel::{
             garlic::{DeliveryInstructions, GarlicHandler},
             hop::{
@@ -324,7 +324,7 @@ mod tests {
             make_router(false);
 
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
 
         let (_tx, rx) = channel(64);
@@ -442,7 +442,7 @@ mod tests {
         let (_ibep_router_hash, _ibep_public_key, _, ibep_noise, _ibep_router_info) =
             make_router(false);
 
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
         let routing_table = RoutingTable::new(handle);
 
         let (_tx, rx) = channel(64);

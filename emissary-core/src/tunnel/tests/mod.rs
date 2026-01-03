@@ -26,7 +26,7 @@ use crate::{
     runtime::{mock::MockRuntime, Runtime},
     shutdown::ShutdownContext,
     subsystem::{
-        NetDbEvent, OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+        NetDbEvent, OutboundMessage, OutboundMessageRecycle, SubsystemEvent, SubsystemManager,
         SubsystemManagerContext,
     },
     tunnel::{
@@ -119,7 +119,7 @@ pub struct TestTransitTunnelManager {
     routing_table: RoutingTable,
 
     /// TX channel given to all transports, allowing them to send events to `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 
     /// Shutdown context.
     _shutdown_ctx: ShutdownContext<MockRuntime>,
@@ -257,7 +257,7 @@ impl TestTransitTunnelManager {
         let (tx, rx) = with_recycle(128, OutboundMessageRecycle::default());
         self.routers.insert(router_id.clone(), rx);
         self.transport_tx
-            .try_send(SubsystemEventNew::ConnectionEstablished {
+            .try_send(SubsystemEvent::ConnectionEstablished {
                 router_id: router_id.clone(),
                 tx,
             })
@@ -293,7 +293,7 @@ pub fn connect_routers<'a>(routers: impl Iterator<Item = &'a mut TestTransitTunn
             router.routers.insert(remote_router.clone(), rx);
             router
                 .transport_tx
-                .try_send(SubsystemEventNew::ConnectionEstablished {
+                .try_send(SubsystemEvent::ConnectionEstablished {
                     router_id: remote_router.clone(),
                     tx,
                 })

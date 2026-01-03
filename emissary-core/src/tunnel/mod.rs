@@ -23,7 +23,7 @@ use crate::{
     router::context::RouterContext,
     runtime::{MetricType, Runtime},
     shutdown::ShutdownHandle,
-    subsystem::SubsystemManagerHandle,
+    subsystem::SubsystemHandle,
     tunnel::{
         handle::{CommandRecycle, TunnelManagerCommand},
         pool::{ClientSelector, ExploratorySelector, TunnelPool, TunnelPoolBuildParameters},
@@ -96,7 +96,7 @@ impl<R: Runtime> TunnelManager<R> {
         insecure_tunnels: bool,
         transit_config: Option<TransitConfig>,
         transit_shutdown_handle: ShutdownHandle,
-        subsystem_handle: SubsystemManagerHandle,
+        subsystem_handle: SubsystemHandle,
         subsys_transit_rx: Receiver<Vec<(RouterId, Message)>>,
     ) -> (Self, TunnelManagerHandle, TunnelPoolHandle) {
         tracing::info!(

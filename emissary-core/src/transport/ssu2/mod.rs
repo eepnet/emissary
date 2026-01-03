@@ -23,7 +23,7 @@ use crate::{
     primitives::{RouterAddress, RouterId, RouterInfo},
     router::context::RouterContext,
     runtime::{MetricType, Runtime, UdpSocket},
-    subsystem::SubsystemEventNew,
+    subsystem::SubsystemEvent,
     transport::{ssu2::socket::Ssu2Socket, Transport, TransportEvent},
 };
 
@@ -99,7 +99,7 @@ impl<R: Runtime> Ssu2Transport<R> {
         context: Ssu2Context<R>,
         allow_local: bool,
         router_ctx: RouterContext<R>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> Self {
         let Ssu2Context {
             socket_address,

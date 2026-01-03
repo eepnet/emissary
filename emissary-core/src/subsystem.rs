@@ -56,7 +56,7 @@ const LOG_TARGET: &str = "emissary::subsystem";
 
 /// Subsystem event.
 #[derive(Default, Debug, Clone)]
-pub enum SubsystemEventNew {
+pub enum SubsystemEvent {
     /// Connection established.
     ConnectionEstablished {
         /// Router ID.
@@ -171,7 +171,7 @@ pub enum SubsystemManagerEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct SubsystemManagerHandle {
+pub struct SubsystemHandle {
     /// TX channel for sending events to [`SubsystemManager`].
     event_tx: Sender<SubsystemManagerEvent, SubsystemManagerEventRecycle>,
 
@@ -189,7 +189,7 @@ pub struct SubsystemManagerHandle {
     tunnels: Arc<RwLock<HashMap<TunnelId, Sender<Message>>>>,
 }
 
-impl SubsystemManagerHandle {
+impl SubsystemHandle {
     /// Should the subsystem throttle itself.
     ///
     /// True if the router is close to its maximum bandwidth usage.
@@ -351,7 +351,7 @@ pub struct SubsystemManagerContext<R: Runtime> {
     pub dial_rx: Receiver<RouterId>,
 
     /// Handle for interacting with subsystem manager.
-    pub handle: SubsystemManagerHandle,
+    pub handle: SubsystemHandle,
 
     /// Subsystem manager.
     pub manager: SubsystemManager<R>,
@@ -367,7 +367,7 @@ pub struct SubsystemManagerContext<R: Runtime> {
     pub transit_rx: Receiver<Vec<(RouterId, Message)>>,
 
     /// TX channel given to all transports, allowing them to send events to `SubsystemManager`.
-    pub transport_tx: Sender<SubsystemEventNew>,
+    pub transport_tx: Sender<SubsystemEvent>,
 }
 
 /// Subsystem manager.
@@ -414,7 +414,7 @@ pub struct SubsystemManager<R: Runtime> {
     transit_tx: Sender<Vec<(RouterId, Message)>>,
 
     /// RX channel for receiving transport-related events.
-    transport_rx: Receiver<SubsystemEventNew>,
+    transport_rx: Receiver<SubsystemEvent>,
 
     /// Active tunnels.
     tunnels: Arc<RwLock<HashMap<TunnelId, Sender<Message>>>>,
@@ -463,7 +463,7 @@ impl<R: Runtime> SubsystemManager<R> {
                 tunnels: Arc::clone(&tunnels),
                 _runtime: Default::default(),
             },
-            handle: SubsystemManagerHandle {
+            handle: SubsystemHandle {
                 event_tx,
                 listeners,
                 throttle,
@@ -849,7 +849,7 @@ impl<R: Runtime> Future for SubsystemManager<R> {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(()),
                 Poll::Ready(Some(event)) => match event {
-                    SubsystemEventNew::ConnectionEstablished { router_id, tx } => {
+                    SubsystemEvent::ConnectionEstablished { router_id, tx } => {
                         tracing::trace!(
                             target: LOG_TARGET,
                             %router_id,
@@ -890,7 +890,7 @@ impl<R: Runtime> Future for SubsystemManager<R> {
 
                         self.routers.insert(router_id, RouterState::Connected { tx });
                     }
-                    SubsystemEventNew::ConnectionClosed { router_id } => {
+                    SubsystemEvent::ConnectionClosed { router_id } => {
                         tracing::trace!(
                             target: LOG_TARGET,
                             %router_id,
@@ -898,7 +898,7 @@ impl<R: Runtime> Future for SubsystemManager<R> {
                         );
                         self.routers.remove(&router_id);
                     }
-                    SubsystemEventNew::ConnectionFailure { router_id } => {
+                    SubsystemEvent::ConnectionFailure { router_id } => {
                         tracing::trace!(
                             target: LOG_TARGET,
                             %router_id,
@@ -906,8 +906,8 @@ impl<R: Runtime> Future for SubsystemManager<R> {
                         );
                         self.routers.remove(&router_id);
                     }
-                    SubsystemEventNew::Message { messages } => self.on_inbound_message(messages),
-                    SubsystemEventNew::Dummy => unreachable!(),
+                    SubsystemEvent::Message { messages } => self.on_inbound_message(messages),
+                    SubsystemEvent::Dummy => unreachable!(),
                 },
             }
         }
@@ -989,7 +989,7 @@ mod tests {
         let (msg_tx, _msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
 
         let router = RouterId::random();
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: router.clone(),
             tx: msg_tx,
         })
@@ -1001,7 +1001,7 @@ mod tests {
         assert!(manager.routers.contains_key(&router));
 
         // disconnect router
-        tx.send(SubsystemEventNew::ConnectionClosed {
+        tx.send(SubsystemEvent::ConnectionClosed {
             router_id: router.clone(),
         })
         .await
@@ -1046,7 +1046,7 @@ mod tests {
 
         // register connected router
         let (msg_tx, msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: router_id.clone(),
             tx: msg_tx,
         })
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(dial_rx.try_recv(), Ok(router_id.clone()));
 
         // register connected router
-        tx.send(SubsystemEventNew::ConnectionFailure {
+        tx.send(SubsystemEvent::ConnectionFailure {
             router_id: router_id.clone(),
         })
         .await
@@ -1152,7 +1152,7 @@ mod tests {
         assert_eq!(dial_rx.try_recv(), Ok(router_id.clone()));
 
         // register connected router
-        tx.send(SubsystemEventNew::ConnectionFailure {
+        tx.send(SubsystemEvent::ConnectionFailure {
             router_id: router_id.clone(),
         })
         .await
@@ -1189,7 +1189,7 @@ mod tests {
 
         // register connected router
         let (msg_tx, msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: router_id.clone(),
             tx: msg_tx,
         })
@@ -1360,7 +1360,7 @@ mod tests {
 
         // register router connection to manager
         let (msg_tx, msg_rx) = with_recycle(16, OutboundMessageRecycle::default());
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: router_id.clone(),
             tx: msg_tx,
         })
@@ -1455,7 +1455,7 @@ mod tests {
         };
 
         // send and process message
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1491,7 +1491,7 @@ mod tests {
         };
 
         // send and process message
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1527,7 +1527,7 @@ mod tests {
         };
 
         // send and process message
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1570,7 +1570,7 @@ mod tests {
         };
 
         // send and process message
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1615,7 +1615,7 @@ mod tests {
         };
 
         // send and process message
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1698,7 +1698,7 @@ mod tests {
         };
 
         // send message and poll manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1750,7 +1750,7 @@ mod tests {
         };
 
         // send message and poll manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1801,7 +1801,7 @@ mod tests {
         };
 
         // send message and poll manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1849,7 +1849,7 @@ mod tests {
         };
 
         // send message and poll manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1899,7 +1899,7 @@ mod tests {
         };
 
         // send message and poll manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -1994,7 +1994,7 @@ mod tests {
         );
 
         // send the garlic message and poll the manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2044,7 +2044,7 @@ mod tests {
         );
 
         // send the garlic message and poll the manager
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2070,7 +2070,7 @@ mod tests {
             )],
         );
 
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2108,7 +2108,7 @@ mod tests {
         let remote_router = RouterId::random();
         let serialized = remote_router.to_vec();
 
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: remote_router.clone(),
             tx: msg_tx,
         })
@@ -2130,7 +2130,7 @@ mod tests {
                 &vec![2, 2, 2, 2],
             )],
         );
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2177,7 +2177,7 @@ mod tests {
         let remote_router = RouterId::random();
         let serialized = remote_router.to_vec();
 
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: remote_router.clone(),
             tx: msg_tx,
         })
@@ -2195,7 +2195,7 @@ mod tests {
                 &vec![3, 3, 3, 3],
             )],
         );
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2276,7 +2276,7 @@ mod tests {
                 ),
             ],
         );
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2344,7 +2344,7 @@ mod tests {
         let serialized_connected = connected_router.to_vec();
         let serialized_unconnected = unconnected_router.to_vec();
 
-        tx.send(SubsystemEventNew::ConnectionEstablished {
+        tx.send(SubsystemEvent::ConnectionEstablished {
             router_id: connected_router.clone(),
             tx: msg_tx,
         })
@@ -2405,7 +2405,7 @@ mod tests {
                 ),
             ],
         );
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await
@@ -2512,7 +2512,7 @@ mod tests {
             )],
         );
 
-        tx.send(SubsystemEventNew::Message {
+        tx.send(SubsystemEvent::Message {
             messages: vec![(RouterId::random(), message)],
         })
         .await

@@ -38,7 +38,7 @@ use crate::{
     profile::ProfileStorage,
     router::context::RouterContext,
     runtime::{Runtime, TcpStream},
-    subsystem::SubsystemEventNew,
+    subsystem::SubsystemEvent,
     transport::{
         ntcp2::session::{initiator::Initiator, responder::Responder},
         Direction,
@@ -126,7 +126,7 @@ pub struct SessionManager<R: Runtime> {
     router_ctx: RouterContext<R>,
 
     /// TX channel for sending events to `SubsystemManager`.
-    transport_tx: Sender<SubsystemEventNew>,
+    transport_tx: Sender<SubsystemEvent>,
 }
 
 impl<R: Runtime> SessionManager<R> {
@@ -142,7 +142,7 @@ impl<R: Runtime> SessionManager<R> {
         local_iv: [u8; 16],
         router_ctx: RouterContext<R>,
         allow_local: bool,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> Self {
         let local_key = StaticPrivateKey::from(local_key);
         let state = Sha256::new().update(PROTOCOL_NAME.as_bytes()).finalize_new();
@@ -174,7 +174,7 @@ impl<R: Runtime> SessionManager<R> {
         noise_ctx: NoiseContext,
         allow_local: bool,
         event_handle: EventHandle<R>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> crate::Result<Ntcp2Session<R>> {
         let router_id = router.identity.id();
 
@@ -323,7 +323,7 @@ impl<R: Runtime> SessionManager<R> {
                     );
 
                     if let Err(error) = transport_tx
-                        .send(SubsystemEventNew::ConnectionFailure {
+                        .send(SubsystemEvent::ConnectionFailure {
                             router_id: router_id.clone(),
                         })
                         .await
@@ -352,7 +352,7 @@ impl<R: Runtime> SessionManager<R> {
         iv: [u8; 16],
         profile_storage: ProfileStorage<R>,
         event_handle: EventHandle<R>,
-        transport_tx: Sender<SubsystemEventNew>,
+        transport_tx: Sender<SubsystemEvent>,
     ) -> crate::Result<Ntcp2Session<R>> {
         tracing::trace!(
             target: LOG_TARGET,
@@ -908,7 +908,7 @@ mod tests {
         let (_local_router, remote_command_tx) =
             tokio::time::timeout(Duration::from_secs(5), async {
                 match remote_rx.recv().await {
-                    Some(SubsystemEventNew::ConnectionEstablished { router_id, tx }) =>
+                    Some(SubsystemEvent::ConnectionEstablished { router_id, tx }) =>
                         (router_id, tx),
                     _ => panic!("invalid event received"),
                 }
@@ -918,7 +918,7 @@ mod tests {
         let (_remote_router, _local_command_tx) =
             tokio::time::timeout(Duration::from_secs(5), async {
                 match local_rx.recv().await {
-                    Some(SubsystemEventNew::ConnectionEstablished { router_id, tx }) =>
+                    Some(SubsystemEvent::ConnectionEstablished { router_id, tx }) =>
                         (router_id, tx),
                     _ => panic!("invalid event received"),
                 }
@@ -939,7 +939,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(5), async {
             match local_rx.recv().await {
-                Some(SubsystemEventNew::Message { mut messages }) => {
+                Some(SubsystemEvent::Message { mut messages }) => {
                     assert_eq!(messages.len(), 1);
                     let (_, message) = messages.pop().unwrap();
 
@@ -986,7 +986,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(5), async {
             match local_rx.recv().await {
-                Some(SubsystemEventNew::Message { mut messages }) => {
+                Some(SubsystemEvent::Message { mut messages }) => {
                     assert_eq!(messages.len(), 1);
                     let (_, message) = messages.pop().unwrap();
 

@@ -40,7 +40,7 @@ use crate::{
     profile::Bucket,
     router::context::RouterContext,
     runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
-    subsystem::{NetDbEvent, SubsystemManagerHandle},
+    subsystem::{NetDbEvent, SubsystemHandle},
     tunnel::{TunnelPoolEvent, TunnelPoolHandle},
 };
 
@@ -155,7 +155,7 @@ pub struct NetDb<R: Runtime> {
     router_infos: HashMap<Bytes, (Bytes, Duration)>,
 
     /// Handle for communicating with `SubsystemManager`.
-    subsystem_handle: SubsystemManagerHandle,
+    subsystem_handle: SubsystemHandle,
 }
 
 impl<R: Runtime> NetDb<R> {
@@ -165,7 +165,7 @@ impl<R: Runtime> NetDb<R> {
         floodfill: bool,
         exploratory_pool_handle: TunnelPoolHandle,
         netdb_rx: mpsc::Receiver<NetDbEvent>,
-        subsystem_handle: SubsystemManagerHandle,
+        subsystem_handle: SubsystemHandle,
     ) -> (Self, NetDbHandle) {
         let floodfills = router_ctx
             .profile_storage()
@@ -1861,7 +1861,7 @@ mod tests {
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
         subsystem::{
-            OutboundMessage, OutboundMessageRecycle, SubsystemEventNew, SubsystemManager,
+            OutboundMessage, OutboundMessageRecycle, SubsystemEvent, SubsystemManager,
             SubsystemManagerContext, SubsystemManagerEvent,
         },
         tunnel::{NoiseContext, TunnelMessage},
@@ -2015,7 +2015,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2111,7 +2111,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2209,7 +2209,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, event_rx) = SubsystemManagerHandle::new();
+        let (handle, event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2631,7 +2631,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2719,7 +2719,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2839,7 +2839,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -2963,7 +2963,7 @@ mod tests {
         let router_id = RouterId::random();
         let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
         transport_tx
-            .send(SubsystemEventNew::ConnectionEstablished {
+            .send(SubsystemEvent::ConnectionEstablished {
                 router_id: router_id.clone(),
                 tx: conn_tx,
             })
@@ -3101,7 +3101,7 @@ mod tests {
         let router_id = RouterId::random();
         let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
         transport_tx
-            .send(SubsystemEventNew::ConnectionEstablished {
+            .send(SubsystemEvent::ConnectionEstablished {
                 router_id: router_id.clone(),
                 tx: conn_tx,
             })
@@ -3218,7 +3218,7 @@ mod tests {
         // register the selected floodfill into netdb
         let (conn_tx, conn_rx) = with_recycle(16, OutboundMessageRecycle::default());
         transport_tx
-            .send(SubsystemEventNew::ConnectionEstablished {
+            .send(SubsystemEvent::ConnectionEstablished {
                 router_id: selected_floodfill.clone(),
                 tx: conn_tx,
             })
@@ -3262,7 +3262,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3349,7 +3349,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3440,7 +3440,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3528,7 +3528,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3752,7 +3752,7 @@ mod tests {
                 let (tx, rx) = with_recycle(64, OutboundMessageRecycle::default());
 
                 transport_tx
-                    .try_send(SubsystemEventNew::ConnectionEstablished {
+                    .try_send(SubsystemEvent::ConnectionEstablished {
                         router_id: router_id.clone(),
                         tx,
                     })
@@ -3810,7 +3810,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3879,7 +3879,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
@@ -3955,7 +3955,7 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
         let (_netdb_tx, netdb_rx) = channel(64);
-        let (handle, _event_rx) = SubsystemManagerHandle::new();
+        let (handle, _event_rx) = SubsystemHandle::new();
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
             RouterContext::new(
