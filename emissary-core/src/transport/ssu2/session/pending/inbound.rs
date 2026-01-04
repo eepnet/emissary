@@ -236,7 +236,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             ?src_id,
             ?pkt_num,
             ?token,
-            "handle `TokenRequest`",
+            "handle TokenRequest",
         );
 
         // retry messages are not retransmitted
@@ -247,7 +247,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 ?src_id,
                 ?address,
                 ?error,
-                "failed to send `Retry`",
+                "failed to send Retry",
             );
         }
 
@@ -324,7 +324,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         remote_src_id = ?src_id,
                         ?pkt_num,
                         ?token,
-                        "received unexpected `TokenRequest`",
+                        "received unexpected TokenRequest",
                     );
 
                     if let Err(error) = self.pkt_tx.try_send(Packet {
@@ -338,7 +338,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                             remote_src_id = ?src_id,
                             address = ?self.address,
                             ?error,
-                            "failed to send `Retry`",
+                            "failed to send Retry",
                         );
                     }
 
@@ -351,7 +351,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
                         ?kind,
-                        "unexpected message, expected `SessionRequest`",
+                        "unexpected message, expected SessionRequest",
                     );
                     return Err(Ssu2Error::UnexpectedMessage);
                 }
@@ -364,7 +364,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             ?pkt_num,
             ?token,
             ?recv_token,
-            "handle `SessionRequest`",
+            "handle SessionRequest",
         );
 
         if token != recv_token {
@@ -406,7 +406,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 dst_id = ?self.dst_id,
                 src_id = ?self.src_id,
                 ?error,
-                "malformed `SessionRequest` payload",
+                "malformed SessionRequest payload",
             );
             debug_assert!(false);
             return Err(Ssu2Error::Malformed);
@@ -449,7 +449,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 src_id = ?self.src_id,
                 address = ?self.address,
                 ?error,
-                "failed to send `SessionCreated`",
+                "failed to send SessionCreated",
             );
         }
 
@@ -493,7 +493,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     dst_id = ?self.dst_id,
                     src_id = ?self.src_id,
                     ?kind,
-                    "unexpected message, expected `SessionConfirmed`",
+                    "unexpected message, expected SessionConfirmed",
                 );
 
                 self.state = PendingSessionState::AwaitingSessionConfirmed {
@@ -509,7 +509,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             target: LOG_TARGET,
             dst_id = ?self.dst_id,
             src_id = ?self.src_id,
-            "handle `SessionConfirmed`",
+            "handle SessionConfirmed",
         );
 
         // MixHash(header)
@@ -538,7 +538,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             tracing::warn!(
                 target: LOG_TARGET,
                 ?error,
-                "failed to parse message blocks of `SessionConfirmed`",
+                "failed to parse message blocks of SessionConfirmed",
             );
             debug_assert!(false);
             Ssu2Error::Malformed
@@ -549,7 +549,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         else {
             tracing::warn!(
                 target: LOG_TARGET,
-                "`SessionConfirmed` doesn't include router info block",
+                "SessionConfirmed doesn't include router info block",
             );
             debug_assert!(false);
             return Err(Ssu2Error::Malformed);
@@ -612,6 +612,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             pkt,
             started: self.started,
             target: self.address,
+            k_header_2,
         }))
     }
 
@@ -639,7 +640,9 @@ impl<R: Runtime> InboundSsu2Session<R> {
                     "inbound session state is poisoned",
                 );
                 debug_assert!(false);
+
                 Ok(Some(PendingSsu2SessionStatus::SessionTerminated {
+                    address: None,
                     connection_id: self.dst_id,
                     started: self.started,
                     router_id: None,
@@ -682,6 +685,7 @@ impl<R: Runtime> Future for InboundSsu2Session<R> {
                     );
 
                     return Poll::Ready(PendingSsu2SessionStatus::SessionTerminated {
+                        address: None,
                         connection_id: self.dst_id,
                         router_id: None,
                         started: self.started,

@@ -38,7 +38,7 @@ use crate::{
             },
             Packet,
         },
-        Direction, TransportEvent,
+        Direction, TerminationReason, TransportEvent,
     },
     util::udp::{UdpSocket, UdpSocketHandle},
 };
@@ -91,6 +91,9 @@ enum PendingSessionKind {
         /// This is the connection ID selected by the remote router and is used to remove pending
         /// session context in case it's rejected by the `TransportManager`.
         dst_id: u64,
+
+        /// Key for decrypting the header of `SessionConfirmed` message.
+        k_header_2: [u8; 32],
     },
 
     /// Pending outbound session.
@@ -507,16 +510,42 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         match kind {
             PendingSessionKind::Inbound {
-                context, dst_id, ..
+                context,
+                k_header_2,
+                ..
             } => {
                 tracing::debug!(
                     target: LOG_TARGET,
                     %router_id,
                     connection_id = ?context.dst_id,
-                    "inbound session rejected",
+                    "inbound session rejected, send termination",
                 );
 
-                self.sessions.remove(&dst_id);
+                let Ssu2SessionContext {
+                    address,
+                    dst_id,
+                    intro_key,
+                    pkt_rx,
+                    recv_key_ctx,
+                    router_id,
+                    send_key_ctx,
+                } = context;
+
+                self.terminating_session.push(TerminatingSsu2Session::<R>::new(
+                    TerminationContext {
+                        address,
+                        dst_id,
+                        intro_key,
+                        next_pkt_num: 0,
+                        reason: TerminationReason::ConnectionLimits,
+                        recv_key_ctx,
+                        router_id,
+                        rx: pkt_rx,
+                        send_key_ctx,
+                        tx: self.pkt_tx.clone(),
+                        k_session_confirmed: Some(k_header_2),
+                    },
+                ))
             }
             PendingSessionKind::Outbound {
                 address,
@@ -527,7 +556,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                     target: LOG_TARGET,
                     %router_id,
                     connection_id = ?context.dst_id,
-                    "outbound session rejected",
+                    "outbound session rejected, send termination",
                 );
 
                 self.pending_outbound.remove(&address);
@@ -655,8 +684,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             context,
                             dst_id,
                             pkt,
-                            started: _,
                             target,
+                            k_header_2,
+                            ..
                         } => {
                             let router_id = context.router_id.clone();
 
@@ -676,6 +706,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                                             address: target,
                                             context,
                                             dst_id,
+                                            k_header_2,
                                         },
                                     );
 
@@ -732,12 +763,13 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             }));
                         }
                         PendingSsu2SessionStatus::SessionTerminated {
+                            address,
                             connection_id,
                             router_id,
-                            started: _,
+                            ..
                         } => match router_id {
                             None => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     target: LOG_TARGET,
                                     ?connection_id,
                                     "pending inbound session terminated",
@@ -745,13 +777,31 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                                 debug_assert!(false);
                             }
                             Some(router_id) => {
-                                tracing::warn!(
+                                tracing::debug!(
                                     target: LOG_TARGET,
                                     %router_id,
                                     ?connection_id,
                                     "pending outbound session terminated",
                                 );
-                                debug_assert!(false);
+                                let _channel = this.sessions.remove(&connection_id);
+                                debug_assert!(_channel.is_some());
+
+                                match address {
+                                    Some(address) => {
+                                        let _key = this.pending_outbound.remove(&address);
+                                        debug_assert!(_key.is_some());
+                                    }
+                                    None => {
+                                        tracing::warn!(
+                                            target: LOG_TARGET,
+                                            %router_id,
+                                            %connection_id,
+                                            "address doens't exist for a terminated outbound connection",
+                                        );
+                                        debug_assert!(false);
+                                    }
+                                }
+
                                 return Poll::Ready(Some(TransportEvent::ConnectionFailure {
                                     router_id,
                                 }));

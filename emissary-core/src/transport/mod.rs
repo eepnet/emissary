@@ -838,10 +838,12 @@ mod tests {
     use super::*;
     use crate::{
         events::EventManager,
+        i2np::{Message, MessageType, I2NP_MESSAGE_EXPIRATION},
         netdb::NetDbAction,
         primitives::{Capabilities, RouterInfoBuilder, Str},
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
+        subsystem::OutboundMessage,
     };
     use thingbuf::mpsc::channel;
     use tokio::sync::mpsc;
@@ -2039,6 +2041,211 @@ mod tests {
         {
             SubsystemEvent::ConnectionFailure { router_id: router } => {
                 assert_eq!(router, remote_router_id)
+            }
+            _ => panic!("invalid event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn simultaneous_outbound_ssu2_connections() {
+        let config1 = Ssu2Config {
+            port: 0,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xaa; 32],
+            intro_key: [0xbb; 32],
+        };
+        let (context1, address1) =
+            Ssu2Transport::<MockRuntime>::initialize(Some(config1)).await.unwrap();
+        let (router_info1, static_key1, signing_key1) = RouterInfoBuilder::default()
+            .with_ssu2(Ssu2Config {
+                port: address1.unwrap().socket_address.unwrap().port(),
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+                static_key: [0xaa; 32],
+                intro_key: [0xbb; 32],
+            })
+            .build();
+        let serialized1 = Bytes::from(router_info1.serialize(&signing_key1));
+        let storage1 = ProfileStorage::<MockRuntime>::new(&[], &[]);
+        let router_id1 = router_info1.identity.id();
+
+        let config2 = Ssu2Config {
+            port: 0,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xcc; 32],
+            intro_key: [0xdd; 32],
+        };
+        let (context2, address2) =
+            Ssu2Transport::<MockRuntime>::initialize(Some(config2)).await.unwrap();
+
+        let (router_info2, static_key2, signing_key2) = RouterInfoBuilder::default()
+            .with_ssu2(Ssu2Config {
+                port: address2.unwrap().socket_address.unwrap().port(),
+                host: Some("127.0.0.1".parse().unwrap()),
+                publish: true,
+                static_key: [0xcc; 32],
+                intro_key: [0xdd; 32],
+            })
+            .build();
+        let serialized2 = Bytes::from(router_info2.serialize(&signing_key2));
+        let storage2 = ProfileStorage::<MockRuntime>::new(&[], &[]);
+        let router_id2 = router_info2.identity.id();
+
+        storage1.add_router(router_info2.clone());
+        storage2.add_router(router_info1.clone());
+
+        let (_event_mgr1, _event_subscriber1, event_handle1) = EventManager::new(None);
+        let (_event_mgr2, _event_subscriber2, event_handle2) = EventManager::new(None);
+        let (handle1, _netdb_rx1) = NetDbHandle::create();
+        let (handle2, _netdb_rx2) = NetDbHandle::create();
+
+        let ctx1 = RouterContext::new(
+            MockRuntime::register_metrics(vec![], None),
+            storage1.clone(),
+            router_info1.identity.id(),
+            serialized1.clone(),
+            static_key1,
+            signing_key1,
+            2u8,
+            event_handle1.clone(),
+        );
+        let ctx2 = RouterContext::new(
+            MockRuntime::register_metrics(vec![], None),
+            storage2.clone(),
+            router_info2.identity.id(),
+            serialized2.clone(),
+            static_key2,
+            signing_key2,
+            2u8,
+            event_handle2.clone(),
+        );
+
+        let (dial_tx1, dial_rx1) = channel(100);
+        let (transport_tx1, transport_rx1) = channel(100);
+        let mut builder1 = TransportManagerBuilder::<MockRuntime>::new(
+            ctx1,
+            router_info1,
+            true,
+            dial_rx1,
+            transport_tx1,
+        );
+        builder1.register_ssu2(context1.unwrap());
+        builder1.register_netdb_handle(handle1);
+        let transport1 = builder1.build();
+
+        let (dial_tx2, dial_rx2) = channel(100);
+        let (transport_tx2, transport_rx2) = channel(100);
+        let mut builder2 = TransportManagerBuilder::<MockRuntime>::new(
+            ctx2,
+            router_info2,
+            true,
+            dial_rx2,
+            transport_tx2,
+        );
+        builder2.register_ssu2(context2.unwrap());
+        builder2.register_netdb_handle(handle2);
+        let transport2 = builder2.build();
+
+        tokio::spawn(transport1);
+        tokio::spawn(transport2);
+
+        dial_tx1.try_send(router_id2.clone()).unwrap();
+        dial_tx2.try_send(router_id1.clone()).unwrap();
+
+        match tokio::time::timeout(Duration::from_secs(5), transport_rx1.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::ConnectionFailure { router_id } => {
+                assert_eq!(router_id, router_id2);
+            }
+            _ => panic!("invalid event"),
+        }
+
+        match tokio::time::timeout(Duration::from_secs(5), transport_rx2.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::ConnectionFailure { router_id } => {
+                assert_eq!(router_id, router_id1);
+            }
+            _ => panic!("invalid event"),
+        }
+
+        dial_tx2.try_send(router_id1.clone()).unwrap();
+
+        let conn_tx1 = match tokio::time::timeout(Duration::from_secs(5), transport_rx1.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::ConnectionEstablished { router_id, tx } => {
+                assert_eq!(router_id, router_id2);
+                tx
+            }
+            _ => panic!("invalid event"),
+        };
+
+        let conn_tx2 = match tokio::time::timeout(Duration::from_secs(5), transport_rx2.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::ConnectionEstablished { router_id, tx } => {
+                assert_eq!(router_id, router_id1);
+                tx
+            }
+            _ => panic!("invalid event"),
+        };
+
+        conn_tx2
+            .try_send(OutboundMessage::Message(Message {
+                message_type: MessageType::DatabaseStore,
+                message_id: 1337u32,
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                payload: vec![1, 1, 1, 1],
+            }))
+            .unwrap();
+
+        conn_tx1
+            .try_send(OutboundMessage::Message(Message {
+                message_type: MessageType::DatabaseStore,
+                message_id: 1338u32,
+                expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+                payload: vec![2, 2, 2, 2],
+            }))
+            .unwrap();
+
+        match tokio::time::timeout(Duration::from_secs(5), transport_rx1.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::Message { messages } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].0, router_id2);
+                assert_eq!(messages[0].1.message_type, MessageType::DatabaseStore);
+                assert_eq!(messages[0].1.message_id, 1337u32);
+                assert_eq!(messages[0].1.payload, vec![1, 1, 1, 1]);
+            }
+            _ => panic!("invalid event"),
+        }
+
+        match tokio::time::timeout(Duration::from_secs(5), transport_rx2.recv())
+            .await
+            .expect("no timeout")
+            .unwrap()
+        {
+            SubsystemEvent::Message { messages } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].0, router_id1);
+                assert_eq!(messages[0].1.message_type, MessageType::DatabaseStore);
+                assert_eq!(messages[0].1.message_id, 1338u32);
+                assert_eq!(messages[0].1.payload, vec![2, 2, 2, 2]);
             }
             _ => panic!("invalid event"),
         }

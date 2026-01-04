@@ -25,17 +25,22 @@ use crate::{
     primitives::RouterId,
     runtime::Runtime,
     subsystem::SubsystemEvent,
-    transport::ssu2::{
-        message::{
-            handshake::{SessionConfirmedBuilder, SessionRequestBuilder, TokenRequestBuilder},
-            HeaderKind, HeaderReader,
+    transport::{
+        ssu2::{
+            message::{
+                handshake::{SessionConfirmedBuilder, SessionRequestBuilder, TokenRequestBuilder},
+                Block, HeaderKind, HeaderReader,
+            },
+            session::{
+                active::Ssu2SessionContext,
+                pending::{
+                    PacketRetransmitter, PacketRetransmitterEvent, PendingSsu2SessionStatus,
+                },
+                KeyContext,
+            },
+            Packet,
         },
-        session::{
-            active::Ssu2SessionContext,
-            pending::{PacketRetransmitter, PacketRetransmitterEvent, PendingSsu2SessionStatus},
-            KeyContext,
-        },
-        Packet,
+        TerminationReason,
     },
 };
 
@@ -225,7 +230,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             %router_id,
             ?dst_id,
             ?src_id,
-            "send `TokenRequest`",
+            "send TokenRequest",
         );
 
         let pkt = TokenRequestBuilder::default()
@@ -244,7 +249,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 target: LOG_TARGET,
                 ?error,
                 ?address,
-                "failed to send `TokenRequest`",
+                "failed to send TokenRequest",
             );
         }
 
@@ -310,7 +315,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                     dst_id = ?self.dst_id,
                     src_id = ?self.src_id,
                     ?kind,
-                    "unexpected message, expected `Retry`",
+                    "unexpected message, expected Retry",
                 );
                 return Err(Ssu2Error::UnexpectedMessage);
             }
@@ -323,7 +328,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             src_id = ?self.src_id,
             ?pkt_num,
             ?token,
-            "handle `Retry`",
+            "handle Retry",
         );
 
         let mut payload = pkt[32..].to_vec();
@@ -365,7 +370,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 router_id = %self.router_id,
                 dst_id = ?self.dst_id,
                 src_id = ?self.src_id,
-                "failed to send `SessionRequest`",
+                "failed to send SessionRequest",
             );
         }
 
@@ -419,7 +424,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
                         ?kind,
-                        "unexpected message, expected `SessionCreated`",
+                        "unexpected message, expected SessionCreated",
                     );
 
                     self.state = PendingSessionState::AwaitingSessionCreated {
@@ -436,7 +441,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             router_id = %self.router_id,
             dst_id = ?self.dst_id,
             src_id = ?self.src_id,
-            "handle `SessionCreated`",
+            "handle SessionCreated",
         );
 
         // MixHash(header), MixHash(bepk)
@@ -495,7 +500,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 dst_id = ?self.dst_id,
                 src_id = ?self.src_id,
                 ?error,
-                "failed to send `SessionConfirmed`",
+                "failed to send SessionConfirmed",
             );
         }
 
@@ -541,7 +546,8 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             .update([0x02])
             .finalize_new();
 
-        match HeaderReader::new(self.local_intro_key, &mut pkt)?.parse(k_header_2_ba) {
+        let payload = match HeaderReader::new(self.local_intro_key, &mut pkt)?.parse(k_header_2_ba)
+        {
             Ok(HeaderKind::Data { pkt_num, .. }) => {
                 // ensure the data packet decrypts correctly
                 //
@@ -559,12 +565,14 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                         router_id = %self.router_id,
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
-                        "failed to decrypt `Data` message, ignoring",
+                        "failed to decrypt Data message, ignoring",
                     );
 
                     self.state = PendingSessionState::AwaitingFirstAck;
                     return Ok(None);
                 }
+
+                payload
             }
             kind => {
                 tracing::debug!(
@@ -573,21 +581,54 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                     dst_id = ?self.dst_id,
                     src_id = ?self.src_id,
                     ?kind,
-                    "unexpected message, expected `Data`",
+                    "unexpected message, expected Data",
                 );
 
                 self.state = PendingSessionState::AwaitingFirstAck;
                 return Ok(None);
             }
-        }
+        };
 
         tracing::trace!(
             target: LOG_TARGET,
             router_id = %self.router_id,
             dst_id = ?self.dst_id,
             src_id = ?self.src_id,
-            "handle `Data` (first ack)",
+            "handle Data (first ack)",
         );
+
+        match Block::parse(&payload) {
+            Ok(blocks) => {
+                if let Some(Block::Termination { reason, .. }) =
+                    blocks.iter().find(|block| core::matches!(block, Block::Termination { .. }))
+                {
+                    tracing::debug!(
+                        router_id = %self.router_id,
+                        dst_id = ?self.dst_id,
+                        src_id = ?self.src_id,
+                        reason = ?TerminationReason::ssu2(*reason),
+                        "first ack contains termination, aborting",
+                    );
+
+                    return Err(Ssu2Error::SessionTerminated(TerminationReason::ssu2(
+                        *reason,
+                    )));
+                }
+            }
+            Err(error) => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    dst_id = ?self.dst_id,
+                    src_id = ?self.src_id,
+                    ?error,
+                    "failed to parse Data message, ignoring",
+                );
+
+                self.state = PendingSessionState::AwaitingFirstAck;
+                return Ok(None);
+            }
+        }
 
         Ok(Some(PendingSsu2SessionStatus::NewOutboundSession {
             context: Ssu2SessionContext {
@@ -638,7 +679,9 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                     "outbound session state is poisoned",
                 );
                 debug_assert!(false);
+
                 Ok(Some(PendingSsu2SessionStatus::SessionTerminated {
+                    address: Some(self.address),
                     connection_id: self.src_id,
                     router_id: Some(self.router_id.clone()),
                     started: self.started,
@@ -715,8 +758,9 @@ impl<R: Runtime> Future for OutboundSsu2Session<R> {
                     );
 
                     return Poll::Ready(PendingSsu2SessionStatus::SessionTerminated {
+                        address: Some(self.address),
                         connection_id: self.src_id,
-                        router_id: None,
+                        router_id: Some(self.router_id.clone()),
                         started: self.started,
                     });
                 }

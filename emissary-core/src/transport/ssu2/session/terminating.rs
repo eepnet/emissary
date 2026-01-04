@@ -82,6 +82,12 @@ pub struct TerminationContext {
 
     /// TX channel for sending packets to [`Ssu2Socket`].
     pub tx: Sender<Packet>,
+
+    /// Key for decryting the header of `SessionConfirmed` message.
+    ///
+    /// Only used by inbound connections which have been rejected
+    /// by `TransportManager`.
+    pub k_session_confirmed: Option<[u8; 32]>,
 }
 
 /// Terminating SSU2 session.
@@ -96,6 +102,12 @@ pub struct TerminatingSsu2Session<R: Runtime> {
 
     /// Intro key.
     intro_key: [u8; 32],
+
+    /// Key for decryting the header of `SessionConfirmed` message.
+    ///
+    /// Only used by inbound connections which have been rejected
+    /// by `TransportManager`.
+    k_session_confirmed: Option<[u8; 32]>,
 
     /// Termination packet.
     pkt: Vec<u8>,
@@ -149,6 +161,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             address: ctx.address,
             dst_id: ctx.dst_id,
             intro_key: ctx.intro_key,
+            k_session_confirmed: ctx.k_session_confirmed,
             pkt,
             recv_key_ctx: ctx.recv_key_ctx,
             router_id: ctx.router_id,
@@ -221,16 +234,51 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
             match self.rx.poll_recv(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready((self.router_id.clone(), self.dst_id)),
-                Poll::Ready(Some(Packet { pkt, .. })) =>
-                    if let Err(error) = self.on_packet(pkt) {
-                        tracing::debug!(
-                            target: LOG_TARGET,
-                            router_id = %self.router_id,
-                            dst_id = ?self.dst_id,
-                            ?error,
-                            "failed to handle packet",
-                        );
-                    },
+                Poll::Ready(Some(Packet { mut pkt, .. })) => match self.k_session_confirmed {
+                    Some(key) =>
+                        if let Ok(mut reader) = HeaderReader::new(self.intro_key, &mut pkt) {
+                            match reader.parse(key) {
+                                Ok(HeaderKind::SessionConfirmed { .. }) => {
+                                    if let Err(error) = self.tx.try_send(Packet {
+                                        pkt: self.pkt.clone(),
+                                        address: self.address,
+                                    }) {
+                                        tracing::warn!(
+                                            target: LOG_TARGET,
+                                            router_id = %self.router_id,
+                                            dst_id = ?self.dst_id,
+                                            ?error,
+                                            "failed to send termination packet",
+                                        );
+                                    }
+                                }
+                                Ok(pkt) => tracing::debug!(
+                                    target: LOG_TARGET,
+                                    router_id = %self.router_id,
+                                    dst_id = ?self.dst_id,
+                                    ?pkt,
+                                    "unexpected packet, expected SessionConfirmed",
+                                ),
+                                Err(error) => tracing::debug!(
+                                    target: LOG_TARGET,
+                                    router_id = %self.router_id,
+                                    dst_id = ?self.dst_id,
+                                    ?error,
+                                    "failed to parse packet with key meant for SessionConfirmed",
+                                ),
+                            }
+                        },
+                    None =>
+                        if let Err(error) = self.on_packet(pkt) {
+                            tracing::debug!(
+                                target: LOG_TARGET,
+                                router_id = %self.router_id,
+                                dst_id = ?self.dst_id,
+                                ?error,
+                                "failed to handle packet",
+                            );
+                        },
+                },
             }
         }
 

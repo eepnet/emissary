@@ -644,6 +644,7 @@ impl<R: Runtime> Ssu2Session<R> {
             rx: self.pkt_rx,
             send_key_ctx: self.send_key_ctx,
             tx: self.pkt_tx,
+            k_session_confirmed: None,
         }
     }
 }

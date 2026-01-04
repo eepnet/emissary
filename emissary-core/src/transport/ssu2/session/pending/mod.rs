@@ -59,6 +59,12 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
 
         /// Socket address of the remote router.
         target: SocketAddr,
+
+        /// Key for decrypting the header of a `SessionConfirmed` message
+        ///
+        /// Only used by inbound connections which have been rejected by
+        /// `TransportManager` and are now trying to terminate the connection.
+        k_header_2: [u8; 32],
     },
 
     /// New outbound session.
@@ -75,6 +81,9 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
 
     /// Pending session terminated due to fatal error, e.g., decryption error.
     SessionTerminated {
+        /// Address of remote peer.
+        address: Option<SocketAddr>,
+
         /// Connection ID.
         ///
         /// Either destination or source connection ID, depending on whether the session
@@ -136,12 +145,14 @@ impl<R: Runtime> fmt::Debug for PendingSsu2SessionStatus<R> {
                 .field("started", &started)
                 .finish_non_exhaustive(),
             PendingSsu2SessionStatus::SessionTerminated {
+                address,
                 connection_id,
                 router_id,
                 started,
                 ..
             } => f
                 .debug_struct("PendingSsu2SessionStatus::SessionTerminated")
+                .field("address", &address)
                 .field("connection_id", &connection_id)
                 .field("router_id", &router_id)
                 .field("started", &started)
