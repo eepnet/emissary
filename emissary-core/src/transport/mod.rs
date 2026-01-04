@@ -534,6 +534,19 @@ impl<R: Runtime> TransportManager<R> {
             return;
         }
 
+        // `SubsystemManager` might send an outbound connection request just before an inbound
+        // connection has been accepted by the `TransportManager`
+        //
+        // ignore these requests
+        if self.routers.contains(&router_id) {
+            tracing::debug!(
+                target: LOG_TARGET,
+                %router_id,
+                "router is already connected, ignoring dial request",
+            );
+            return;
+        }
+
         match self.router_ctx.profile_storage().get(&router_id) {
             Some(router_info) => {
                 // even though `TransportService` prevents dialing the same router from the same
@@ -2248,6 +2261,133 @@ mod tests {
                 assert_eq!(messages[0].1.payload, vec![2, 2, 2, 2]);
             }
             _ => panic!("invalid event"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dial_connected_router() {
+        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
+        let serialized = Bytes::from(router_info.serialize(&signing_key));
+        let (handle, netdb_rx) = NetDbHandle::create();
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (storage, remote_router_id) = {
+            let (router_info, _static_key, _signing_key) = RouterInfoBuilder::default().build();
+            let router_id = router_info.identity.id();
+            let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
+            storage.add_router(router_info);
+
+            (storage, router_id)
+        };
+        let ctx = RouterContext::new(
+            MockRuntime::register_metrics(vec![], None),
+            storage,
+            router_info.identity.id(),
+            serialized.clone(),
+            static_key,
+            signing_key,
+            2u8,
+            event_handle.clone(),
+        );
+
+        let (dial_tx, dial_rx) = channel(100);
+        let (transport_tx, _transport_rx) = channel(100);
+        let mut builder = TransportManagerBuilder::<MockRuntime>::new(
+            ctx,
+            router_info,
+            true,
+            dial_rx,
+            transport_tx,
+        );
+        builder.register_netdb_handle(handle);
+        let mut manager = builder.build();
+
+        #[derive(Clone, Default)]
+        enum Command {
+            Connect(RouterId),
+            Accept(RouterId),
+            #[default]
+            Dummy,
+        }
+
+        pub struct MockTransport {
+            events: VecDeque<TransportEvent>,
+            tx: Sender<Command>,
+        }
+
+        impl Transport for MockTransport {
+            fn connect(&mut self, info: RouterInfo) {
+                self.tx.try_send(Command::Connect(info.identity.id())).unwrap();
+            }
+
+            fn accept(&mut self, router_id: &RouterId) {
+                self.tx.try_send(Command::Accept(router_id.clone())).unwrap();
+            }
+
+            fn reject(&mut self, _: &RouterId) {
+                unreachable!()
+            }
+        }
+
+        impl Stream for MockTransport {
+            type Item = TransportEvent;
+
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut Context<'_>,
+            ) -> Poll<Option<Self::Item>> {
+                match self.events.pop_front() {
+                    Some(event) => {
+                        cx.waker().wake_by_ref();
+                        return Poll::Ready(Some(event));
+                    }
+                    None => {
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                }
+            }
+        }
+
+        // start mock transport with a single inbound event and send a dial request for that same
+        // router over `dial_rx` to `TransportManager`
+        let (tx, rx) = channel(64);
+
+        manager.transports.push(Box::new(MockTransport {
+            events: VecDeque::from_iter([TransportEvent::ConnectionEstablished {
+                router_id: remote_router_id.clone(),
+                direction: Direction::Inbound,
+            }]),
+            tx,
+        }));
+        dial_tx.try_send(remote_router_id.clone()).unwrap();
+
+        // verify that router doesn't exist in either connected or pending
+        assert!(!manager.routers.contains(&remote_router_id));
+        assert!(!manager.pending_connections.contains(&remote_router_id));
+
+        futures::future::poll_fn(|cx| {
+            let _ = manager.poll_unpin(cx);
+            Poll::Ready(())
+        })
+        .await;
+
+        // verify that `TransportManager` now has the router as a connected peer
+        assert!(manager.routers.contains(&remote_router_id));
+        assert!(!manager.pending_connections.contains(&remote_router_id));
+        assert!(netdb_rx.try_recv().is_err());
+
+        // verify the inbound connection is accepted
+        match rx.try_recv().unwrap() {
+            Command::Accept(router_id) => assert_eq!(router_id, remote_router_id),
+            _ => panic!("invalid command"),
+        }
+
+        // verify that the dial request is ignored
+        match rx.try_recv() {
+            Err(_) => {}
+            Ok(Command::Connect(router_id)) if router_id == remote_router_id =>
+                panic!("connected router dialed"),
+            _ => panic!("unexpected event"),
         }
     }
 }

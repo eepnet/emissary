@@ -483,6 +483,12 @@ impl<R: Runtime> SubsystemManager<R> {
     /// in order to the remote router. If the connection fails, all pending messages are dropped.
     fn on_outbound_message(&mut self, router_id: RouterId, message: OutboundMessage) {
         if router_id == self.router_id {
+            tracing::trace!(
+                target: LOG_TARGET,
+                ?message,
+                "route message to self",
+            );
+
             return match message {
                 OutboundMessage::Message(message) =>
                     self.on_inbound_message(vec![(router_id, message)]),
