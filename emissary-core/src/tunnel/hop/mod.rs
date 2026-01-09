@@ -20,6 +20,7 @@ use crate::{
     crypto::StaticPublicKey,
     i2np::{HopRole, Message},
     primitives::{MessageId, RouterId, Str, TunnelId},
+    runtime::Runtime,
     tunnel::{
         noise::{NoiseContext, OutboundSession},
         pool::TunnelPoolContextHandle,
@@ -89,9 +90,15 @@ pub enum TunnelDirection {
 }
 
 /// Common interface for local tunnels (initiated by us).
-pub trait Tunnel: Send {
+pub trait Tunnel<R: Runtime>: Send {
     /// Create new [`Tunnel`].
-    fn new(name: Str, tunnel_id: TunnelId, receiver: ReceiverKind, hops: Vec<TunnelHop>) -> Self;
+    fn new(
+        name: Str,
+        tunnel_id: TunnelId,
+        receiver: ReceiverKind,
+        hops: Vec<TunnelHop>,
+        metrics_handle: R::MetricsHandle,
+    ) -> Self;
 
     /// Get an iterator of hop roles for the tunnel participants.
     fn hop_roles(num_hops: NonZeroUsize) -> impl Iterator<Item = HopRole>;
@@ -107,9 +114,12 @@ pub trait Tunnel: Send {
 }
 
 /// Tunnel builder.
-pub struct TunnelBuilder<T: Tunnel> {
+pub struct TunnelBuilder<R: Runtime, T: Tunnel<R>> {
     /// Hops.
     hops: VecDeque<TunnelHop>,
+
+    /// Metrics
+    metrics_handle: R::MetricsHandle,
 
     /// Name of the tunnel pool this tunnel belongs to.
     name: Str,
@@ -124,11 +134,17 @@ pub struct TunnelBuilder<T: Tunnel> {
     _tunnel: PhantomData<T>,
 }
 
-impl<T: Tunnel> TunnelBuilder<T> {
+impl<R: Runtime, T: Tunnel<R>> TunnelBuilder<R, T> {
     /// Create new [`TunnelBuilder`].
-    pub fn new(name: Str, tunnel_id: TunnelId, receiver: ReceiverKind) -> Self {
+    pub fn new(
+        name: Str,
+        tunnel_id: TunnelId,
+        receiver: ReceiverKind,
+        metrics_handle: R::MetricsHandle,
+    ) -> Self {
         Self {
             hops: VecDeque::new(),
+            metrics_handle,
             name,
             receiver,
             tunnel_id,
@@ -149,6 +165,7 @@ impl<T: Tunnel> TunnelBuilder<T> {
             self.tunnel_id,
             self.receiver,
             self.hops.into_iter().rev().collect(),
+            self.metrics_handle,
         )
     }
 }
@@ -234,9 +251,15 @@ impl TunnelInfo {
 }
 
 /// Tunnel build parameters.
-pub struct TunnelBuildParameters {
+pub struct TunnelBuildParameters<R: Runtime> {
     /// Tunnel hops.
     pub hops: Vec<(Bytes, StaticPublicKey)>,
+
+    /// Message ID used in the build message.
+    pub message_id: MessageId,
+
+    /// Metrics handle.
+    pub metrics_handle: R::MetricsHandle,
 
     /// Name of the tunnel pool.
     pub name: Str,
@@ -244,14 +267,11 @@ pub struct TunnelBuildParameters {
     /// Noise context.
     pub noise: NoiseContext,
 
-    /// Message ID used in the build message.
-    pub message_id: MessageId,
-
-    /// Tunnel information.
-    pub tunnel_info: TunnelInfo,
-
     /// Message receiver for the pending tunnel.
     ///
     /// See documentation of [`ReceiverKind`] for more details.
     pub receiver: ReceiverKind,
+
+    /// Tunnel information.
+    pub tunnel_info: TunnelInfo,
 }

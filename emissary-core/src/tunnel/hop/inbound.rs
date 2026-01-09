@@ -277,8 +277,14 @@ impl<R: Runtime> InboundTunnel<R> {
     }
 }
 
-impl<R: Runtime> Tunnel for InboundTunnel<R> {
-    fn new(name: Str, tunnel_id: TunnelId, receiver: ReceiverKind, hops: Vec<TunnelHop>) -> Self {
+impl<R: Runtime> Tunnel<R> for InboundTunnel<R> {
+    fn new(
+        name: Str,
+        tunnel_id: TunnelId,
+        receiver: ReceiverKind,
+        hops: Vec<TunnelHop>,
+        metrics_handle: R::MetricsHandle,
+    ) -> Self {
         let (message_rx, handle) = receiver.inbound();
 
         // hop must exist since it was created by us
@@ -289,7 +295,7 @@ impl<R: Runtime> Tunnel for InboundTunnel<R> {
                 R::delay(TUNNEL_EXPIRATION).await;
                 (tunnel_id, gateway_tunnel_id)
             }),
-            fragment: FragmentHandler::new(),
+            fragment: FragmentHandler::new(metrics_handle),
             handle,
             hops,
             message_rx,

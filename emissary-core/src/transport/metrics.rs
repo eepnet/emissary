@@ -20,30 +20,44 @@ use crate::runtime::MetricType;
 
 use alloc::vec::Vec;
 
-pub const NUM_CONNECTIONS: &str = "connections_count";
-pub const NUM_INBOUND: &str = "inbound_connections_count";
-pub const NUM_OUTBOUND: &str = "outbound_connections_count";
-pub const NUM_REJECTED: &str = "rejected_connections_count";
-pub const NUM_DIAL_FAILURES: &str = "dial_failure_count";
+// connection metrics
+pub const NUM_CONNECTIONS: &str = "transport_connections_count";
+pub const NUM_REJECTED: &str = "transport_rejected_connections_count";
+pub const NUM_ACCEPTED: &str = "transport_accepted_connections_count";
+pub const NUM_INITIATED: &str = "transport_initiated_count";
+pub const NUM_DIAL_FAILURES: &str = "transport_dial_failure_count";
+
+// netdb-related metrics
+pub const NUM_NETDB_QUERIES: &str = "transport_ri_query_count";
+pub const NUM_NETDB_QUERY_SUCCESSES: &str = "transport_ri_query_successes";
+pub const NUM_NETDB_QUERY_FAILURES: &str = "transport_ri_query_failures";
 
 /// Register transport metrics.
 pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
     // counters
     metrics.push(MetricType::Counter {
-        name: NUM_INBOUND,
-        description: "total number of inbound connections",
-    });
-    metrics.push(MetricType::Counter {
-        name: NUM_OUTBOUND,
-        description: "total number of outbound connections",
+        name: NUM_INITIATED,
+        description: "number of initiated connections",
     });
     metrics.push(MetricType::Counter {
         name: NUM_DIAL_FAILURES,
-        description: "total number of dial failures",
+        description: "number of dial failures",
     });
     metrics.push(MetricType::Counter {
         name: NUM_REJECTED,
-        description: "total number of rejected connections",
+        description: "number of rejected connections",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_NETDB_QUERIES,
+        description: "number of netdb queries",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_NETDB_QUERY_SUCCESSES,
+        description: "number of successful netdb queries",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_NETDB_QUERY_FAILURES,
+        description: "number of failed netdb queries",
     });
 
     // gauges

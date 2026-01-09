@@ -28,10 +28,14 @@ use crate::{
         Message, MessageType,
     },
     primitives::{MessageId, RouterId, TunnelId},
-    runtime::Runtime,
+    runtime::{Counter, Gauge, MetricsHandle, Runtime},
     subsystem::SubsystemHandle,
     tunnel::{
         fragment::{FragmentHandler, OwnedDeliveryInstructions},
+        metrics::{
+            NUM_DROPPED_MESSAGES, NUM_OBEPS, NUM_ROUTED_MESSAGES, NUM_TRANSIT_TUNNELS,
+            TOTAL_TRANSIT_TUNNELS,
+        },
         noise::TunnelKeys,
         transit::{TransitTunnel, TRANSIT_TUNNEL_EXPIRATION},
     },
@@ -70,7 +74,6 @@ pub struct OutboundEndpoint<R: Runtime> {
     message_rx: Receiver<Message>,
 
     /// Metrics handle.
-    #[allow(unused)]
     metrics_handle: R::MetricsHandle,
 
     /// Used outbound bandwidth.
@@ -312,10 +315,14 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
         message_rx: Receiver<Message>,
         event_handle: EventHandle<R>,
     ) -> Self {
+        metrics_handle.gauge(NUM_OBEPS).increment(1);
+        metrics_handle.gauge(NUM_TRANSIT_TUNNELS).increment(1);
+        metrics_handle.counter(TOTAL_TRANSIT_TUNNELS).increment(1);
+
         OutboundEndpoint {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
-            fragment: FragmentHandler::new(),
+            fragment: FragmentHandler::new(metrics_handle.clone()),
             inbound_bandwidth: 0usize,
             outbound_bandwidth: 0usize,
             message_rx,
@@ -339,6 +346,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                         tunnel_id = %self.tunnel_id,
                         "message channel closed",
                     );
+                    self.metrics_handle.gauge(NUM_OBEPS).decrement(1);
                     return Poll::Ready(self.tunnel_id);
                 }
                 Some(message) => {
@@ -352,6 +360,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                             "unsupported message",
                         );
                         debug_assert!(false);
+                        self.metrics_handle.counter(NUM_DROPPED_MESSAGES).increment(1);
                         continue;
                     };
 
@@ -362,6 +371,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                             "malformed `TunnelData` message",
                         );
                         debug_assert!(false);
+                        self.metrics_handle.counter(NUM_DROPPED_MESSAGES).increment(1);
                         continue;
                     };
 
@@ -369,13 +379,19 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                         Ok(messages) => messages.into_iter().for_each(|(router, message)| {
                             self.outbound_bandwidth += message.serialized_len_short();
 
-                            if let Err(error) = self.subsystem_handle.send(&router, message) {
-                                tracing::error!(
-                                    target: LOG_TARGET,
-                                    tunnel_id = %self.tunnel_id,
-                                    ?error,
-                                    "failed to send message",
-                                )
+                            match self.subsystem_handle.send(&router, message) {
+                                Ok(()) => {
+                                    self.metrics_handle.counter(NUM_ROUTED_MESSAGES).increment(1);
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        target: LOG_TARGET,
+                                        tunnel_id = %self.tunnel_id,
+                                        ?error,
+                                        "failed to send message",
+                                    );
+                                    self.metrics_handle.counter(NUM_DROPPED_MESSAGES).increment(1);
+                                }
                             }
                         }),
                         Err(error) => tracing::warn!(
@@ -397,6 +413,9 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
         }
 
         if self.expiration_timer.poll_unpin(cx).is_ready() {
+            self.metrics_handle.gauge(NUM_OBEPS).decrement(1);
+            self.metrics_handle.gauge(NUM_TRANSIT_TUNNELS).decrement(1);
+
             return Poll::Ready(self.tunnel_id);
         }
 
@@ -437,7 +456,8 @@ mod tests {
     async fn obep_routes_message_to_self() {
         let (_tx, rx) = channel(64);
         let (subsys_handle, event_rx) = SubsystemHandle::new();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
         let obep_router_id = RouterId::random();
@@ -446,26 +466,25 @@ mod tests {
         let obgw_router_id = RouterId::random();
 
         let (pending, router_id, mut message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: vec![(
-                        Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
-                        obep_key.public(),
-                    )],
-                    name: Str::from("tunnel-pool"),
-                    noise: NoiseContext::new(
-                        obgw_key,
-                        Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    ),
-                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway: TunnelId::random(),
-                        tunnel_id: TunnelId::random(),
-                        router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: vec![(
+                    Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
+                    obep_key.public(),
+                )],
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: NoiseContext::new(
+                    obgw_key,
+                    Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
+                ),
+                message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway: TunnelId::random(),
+                    tunnel_id: TunnelId::random(),
+                    router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         assert_eq!(router_id, obep_router_id);
@@ -555,7 +574,8 @@ mod tests {
     async fn expired_unfragmented_message() {
         let (_tx, rx) = channel(64);
         let (subsys_handle, _event_rx) = SubsystemHandle::new();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
         let obep_router_id = RouterId::random();
@@ -564,26 +584,25 @@ mod tests {
         let obgw_router_id = RouterId::random();
 
         let (pending, router_id, mut message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: vec![(
-                        Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
-                        obep_key.public(),
-                    )],
-                    name: Str::from("tunnel-pool"),
-                    noise: NoiseContext::new(
-                        obgw_key,
-                        Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    ),
-                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway: TunnelId::random(),
-                        tunnel_id: TunnelId::random(),
-                        router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: vec![(
+                    Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
+                    obep_key.public(),
+                )],
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: NoiseContext::new(
+                    obgw_key,
+                    Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
+                ),
+                message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway: TunnelId::random(),
+                    tunnel_id: TunnelId::random(),
+                    router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         assert_eq!(router_id, obep_router_id);
@@ -659,7 +678,8 @@ mod tests {
     async fn expired_fragmented_message() {
         let (_tx, rx) = channel(64);
         let (subsys_handle, _event_rx) = SubsystemHandle::new();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
 
         let obep_key = StaticPrivateKey::random(MockRuntime::rng());
         let obep_router_id = RouterId::random();
@@ -668,26 +688,25 @@ mod tests {
         let obgw_router_id = RouterId::random();
 
         let (pending, router_id, mut message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: vec![(
-                        Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
-                        obep_key.public(),
-                    )],
-                    name: Str::from("tunnel-pool"),
-                    noise: NoiseContext::new(
-                        obgw_key,
-                        Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    ),
-                    message_id: MessageId::from(MockRuntime::rng().next_u32()),
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway: TunnelId::random(),
-                        tunnel_id: TunnelId::random(),
-                        router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: vec![(
+                    Bytes::from(Into::<Vec<u8>>::into(obep_router_id.clone())),
+                    obep_key.public(),
+                )],
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: NoiseContext::new(
+                    obgw_key,
+                    Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
+                ),
+                message_id: MessageId::from(MockRuntime::rng().next_u32()),
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway: TunnelId::random(),
+                    tunnel_id: TunnelId::random(),
+                    router_id: Bytes::from(Into::<Vec<u8>>::into(obgw_router_id.clone())),
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         assert_eq!(router_id, obep_router_id);

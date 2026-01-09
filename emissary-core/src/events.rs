@@ -16,7 +16,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::runtime::Runtime;
+use crate::runtime::{MetricType, Runtime};
+
+#[cfg(feature = "events")]
+use crate::runtime::{Counter, MetricsHandle};
 
 #[cfg(feature = "events")]
 use futures::FutureExt;
@@ -42,6 +45,15 @@ use core::{
 /// Default update interval.
 #[cfg(feature = "events")]
 const UPDATE_INTERVAL: Duration = Duration::from_secs(1);
+
+#[cfg(feature = "events")]
+pub const TRANSIT_INBOUND_BANDWIDTH: &str = "transit_inbound_bandwidth_total";
+#[cfg(feature = "events")]
+pub const TRANSIT_OUTBOUND_BANDWIDTH: &str = "transit_outbound_bandwidth_total";
+#[cfg(feature = "events")]
+pub const TRANSPORT_INBOUND_BANDWIDTH: &str = "transport_inbound_bandwidth_total";
+#[cfg(feature = "events")]
+pub const TRANSPORT_OUTBOUND_BANDWIDTH: &str = "transport_outbound_bandwidth_total";
 
 /// Events emitted by [`EventSubscriber`].
 #[derive(Debug, Clone)]
@@ -360,6 +372,9 @@ pub(crate) struct EventManager<R: Runtime> {
     /// Event handle.
     handle: EventHandle<R>,
 
+    /// Metrics handle
+    metrics_handle: R::MetricsHandle,
+
     /// Pending client destinatin updates.
     pending_client_updates: Vec<String>,
 
@@ -374,6 +389,18 @@ pub(crate) struct EventManager<R: Runtime> {
 
     /// Update timer.
     timer: R::Timer,
+
+    /// Inbound transit bandwdith.
+    transit_inbound: usize,
+
+    /// Outbound transit bandwdith.
+    transit_outbound: usize,
+
+    /// Inbound transport bandwdith.
+    transport_inbound: usize,
+
+    /// Outbound transport bandwdith.
+    transport_outbound: usize,
 }
 
 /// Event manager.
@@ -387,6 +414,7 @@ impl<R: Runtime> EventManager<R> {
     #[cfg(feature = "events")]
     pub(crate) fn new(
         update_interval: Option<Duration>,
+        metrics_handle: R::MetricsHandle,
     ) -> (Self, EventSubscriber, EventHandle<R>) {
         let (event_tx, event_rx) = channel(64);
         let (status_tx, status_rx) = channel(64);
@@ -422,14 +450,42 @@ impl<R: Runtime> EventManager<R> {
                     update_interval,
                     timer: None,
                 },
+                metrics_handle,
                 pending_client_updates: Vec::new(),
                 pending_server_updates: Vec::new(),
                 status_tx,
                 timer: R::timer(update_interval),
+                transit_inbound: 0usize,
+                transit_outbound: 0usize,
+                transport_inbound: 0usize,
+                transport_outbound: 0usize,
             },
             EventSubscriber { status_rx },
             handle,
         )
+    }
+
+    /// Collect `EventManager`-related metric counters, gauges and histograms.
+    #[cfg(feature = "events")]
+    pub fn metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
+        metrics.push(MetricType::Counter {
+            name: TRANSIT_INBOUND_BANDWIDTH,
+            description: "how many bytes have transit tunnels received",
+        });
+        metrics.push(MetricType::Counter {
+            name: TRANSIT_OUTBOUND_BANDWIDTH,
+            description: "how many bytes have transit tunnels sent",
+        });
+        metrics.push(MetricType::Counter {
+            name: TRANSPORT_INBOUND_BANDWIDTH,
+            description: "how many bytes have transports received",
+        });
+        metrics.push(MetricType::Counter {
+            name: TRANSPORT_OUTBOUND_BANDWIDTH,
+            description: "how many bytes have transports sent",
+        });
+
+        metrics
     }
 
     /// Create new [`EventManager`].
@@ -489,25 +545,49 @@ impl<R: Runtime> Future for EventManager<R> {
             let server_destinations = mem::take(&mut self.pending_server_updates);
             let client_destinations = mem::take(&mut self.pending_client_updates);
 
+            let transit_outbound = self.handle.transit_outbound_bandwidth.load(Ordering::Acquire);
+            let transit_inbound = self.handle.transit_inbound_bandwidth.load(Ordering::Acquire);
+            let transport_outbound = self.handle.outbound_bandwidth.load(Ordering::Acquire);
+            let transport_inbound = self.handle.inbound_bandwidth.load(Ordering::Acquire);
+
+            {
+                self.metrics_handle
+                    .counter(TRANSIT_INBOUND_BANDWIDTH)
+                    .increment(transit_inbound.saturating_sub(self.transit_inbound));
+                self.transit_inbound = transit_inbound;
+            }
+            {
+                self.metrics_handle
+                    .counter(TRANSIT_OUTBOUND_BANDWIDTH)
+                    .increment(transit_outbound.saturating_sub(self.transit_outbound));
+                self.transit_outbound = transit_outbound;
+            }
+            {
+                self.metrics_handle
+                    .counter(TRANSPORT_INBOUND_BANDWIDTH)
+                    .increment(transport_inbound.saturating_sub(self.transport_inbound));
+                self.transport_inbound = transport_inbound;
+            }
+            {
+                self.metrics_handle
+                    .counter(TRANSPORT_OUTBOUND_BANDWIDTH)
+                    .increment(transport_outbound.saturating_sub(self.transport_outbound));
+                self.transport_outbound = transport_outbound;
+            }
+
             let _ = self.status_tx.try_send(Event::RouterStatus {
                 transit: TransitTunnelStatus {
                     num_tunnels: self.handle.num_transit_tunnels.load(Ordering::Acquire),
-                    inbound_bandwidth: self
-                        .handle
-                        .transit_inbound_bandwidth
-                        .load(Ordering::Acquire),
-                    outbound_bandwidth: self
-                        .handle
-                        .transit_outbound_bandwidth
-                        .load(Ordering::Acquire),
+                    inbound_bandwidth: transit_inbound,
+                    outbound_bandwidth: transit_outbound,
                 },
                 transport: TransportStatus {
                     num_connected_routers: self
                         .handle
                         .num_connected_routers
                         .load(Ordering::Acquire),
-                    outbound_bandwidth: self.handle.outbound_bandwidth.load(Ordering::Acquire),
-                    inbound_bandwidth: self.handle.inbound_bandwidth.load(Ordering::Acquire),
+                    outbound_bandwidth: transport_outbound,
+                    inbound_bandwidth: transport_inbound,
                 },
                 tunnel: TunnelStatus {
                     num_tunnels_built: self.handle.num_tunnels_built.load(Ordering::Acquire),
@@ -561,8 +641,9 @@ mod tests {
 
     #[tokio::test]
     async fn event_handle_timer_works() {
+        let handle = MockRuntime::register_metrics(vec![], None);
         let (_manager, _subscriber, handle) =
-            EventManager::<MockRuntime>::new(Some(Duration::from_secs(1)));
+            EventManager::<MockRuntime>::new(Some(Duration::from_secs(1)), handle);
 
         // make a clone of the handle which initializes the event timer
         let mut new_handle = handle.clone();

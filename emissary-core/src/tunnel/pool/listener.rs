@@ -67,9 +67,9 @@ pub enum ReceiveKind {
 }
 
 /// Tunnel build listener.
-pub struct TunnelBuildListener<R: Runtime, T: Tunnel + 'static> {
+pub struct TunnelBuildListener<R: Runtime, T: Tunnel<R> + 'static> {
     /// Pending tunnels.
-    pending: R::JoinSet<(TunnelId, crate::Result<T>)>,
+    pending: R::JoinSet<(TunnelId, crate::Result<(T, R::Instant)>)>,
 
     /// Profile storage.
     profile: ProfileStorage<R>,
@@ -78,7 +78,7 @@ pub struct TunnelBuildListener<R: Runtime, T: Tunnel + 'static> {
     subsystem_handle: SubsystemHandle,
 }
 
-impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
+impl<R: Runtime, T: Tunnel<R>> TunnelBuildListener<R, T> {
     /// Create new [`TunnelBuildListener`].
     pub fn new(subsystem_handle: SubsystemHandle, profile: ProfileStorage<R>) -> Self {
         Self {
@@ -96,13 +96,14 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
     /// Add pending tunnel into set of tunnels that are being waited.
     pub fn add_pending_tunnel(
         &mut self,
-        tunnel: PendingTunnel<T>,
+        tunnel: PendingTunnel<R, T>,
         receive_kind: ReceiveKind,
         message_rx: oneshot::Receiver<Message>,
         dial_rx: oneshot::Receiver<()>,
     ) {
         let subsystem_handle = self.subsystem_handle.clone();
         let profile = self.profile.clone();
+        let now = R::now();
 
         self.pending.push(async move {
             match select(dial_rx, pin!(R::delay(Duration::from_secs(2 * 60)))).await {
@@ -197,7 +198,7 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
                                 profile.tunnel_accepted(router_id);
                             });
 
-                            (tunnel_id, Ok(tunnel))
+                            (tunnel_id, Ok((tunnel, now)))
                         }
                     }
                 }
@@ -206,8 +207,8 @@ impl<R: Runtime, T: Tunnel> TunnelBuildListener<R, T> {
     }
 }
 
-impl<R: Runtime, T: Tunnel> Stream for TunnelBuildListener<R, T> {
-    type Item = (TunnelId, crate::Result<T>);
+impl<R: Runtime, T: Tunnel<R>> Stream for TunnelBuildListener<R, T> {
+    type Item = (TunnelId, crate::Result<(T, R::Instant)>);
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.pending.poll_next_unpin(cx)
@@ -254,20 +255,19 @@ mod tests {
         let gateway = TunnelId::from(MockRuntime::rng().next_u32());
 
         let (pending_tunnel, _next_router, _message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: hops.clone(),
-                    name: Str::from("tunnel-pool"),
-                    noise: local_noise,
-                    message_id,
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway,
-                        tunnel_id,
-                        router_id: local_hash,
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: hops.clone(),
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: local_noise,
+                message_id,
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway,
+                    tunnel_id,
+                    router_id: local_hash,
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();
@@ -307,20 +307,19 @@ mod tests {
         let gateway = TunnelId::from(MockRuntime::rng().next_u32());
 
         let (pending_tunnel, _next_router, _message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: hops.clone(),
-                    name: Str::from("tunnel-pool"),
-                    noise: local_noise,
-                    message_id,
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway,
-                        tunnel_id,
-                        router_id: local_hash,
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: hops.clone(),
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: local_noise,
+                message_id,
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway,
+                    tunnel_id,
+                    router_id: local_hash,
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();
@@ -360,20 +359,19 @@ mod tests {
         let gateway = TunnelId::from(MockRuntime::rng().next_u32());
 
         let (pending_tunnel, _next_router, _message) =
-            PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-                TunnelBuildParameters {
-                    hops: hops.clone(),
-                    name: Str::from("tunnel-pool"),
-                    noise: local_noise,
-                    message_id,
-                    tunnel_info: TunnelInfo::Outbound {
-                        gateway,
-                        tunnel_id,
-                        router_id: local_hash,
-                    },
-                    receiver: ReceiverKind::Outbound,
+            PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+                hops: hops.clone(),
+                metrics_handle: MockRuntime::register_metrics(vec![], None),
+                name: Str::from("tunnel-pool"),
+                noise: local_noise,
+                message_id,
+                tunnel_info: TunnelInfo::Outbound {
+                    gateway,
+                    tunnel_id,
+                    router_id: local_hash,
                 },
-            )
+                receiver: ReceiverKind::Outbound,
+            })
             .unwrap();
 
         let (handle, _event_rx) = SubsystemHandle::new();

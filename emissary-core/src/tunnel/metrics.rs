@@ -21,34 +21,38 @@ use crate::runtime::MetricType;
 use alloc::{vec, vec::Vec};
 
 // general
-pub const NUM_TUNNEL_MESSAGES: &str = "tunnel_message_count";
-pub const NUM_INBOUND_TUNNELS: &str = "inbound_tunnel_count";
-pub const NUM_OUTBOUND_TUNNELS: &str = "outbound_tunnel_count";
+pub const NUM_INBOUND_TUNNELS: &str = "tunnel_inbound_count";
+pub const NUM_OUTBOUND_TUNNELS: &str = "tunnel_outbound_count";
 pub const NUM_FRAGMENTS: &str = "tunnel_num_fragments";
+pub const NUM_DROPPED_FRAGMENTS: &str = "tunnel_dropped_fragment_count";
 
 // tunnel building
-pub const NUM_PENDING_INBOUND_TUNNELS: &str = "pending_inbound_tunnel_count";
-pub const NUM_PENDING_OUTBOUND_TUNNELS: &str = "pending_outbound_tunnel_count";
+pub const NUM_PENDING_INBOUND_TUNNELS: &str = "tunnel_pending_inbound_count";
+pub const NUM_PENDING_OUTBOUND_TUNNELS: &str = "tunnel_pending_outbound_count";
 pub const NUM_BUILD_FAILURES: &str = "tunnel_build_failure_count";
 pub const NUM_BUILD_SUCCESSES: &str = "tunnel_build_success_count";
 
 // tunnel tests
 pub const NUM_TEST_FAILURES: &str = "tunnel_test_failure_count";
 pub const NUM_TEST_SUCCESSES: &str = "tunnel_test_success_count";
-pub const TUNNEL_TEST_DURATIONS: &str = "tunnel_test_durations_bucket";
+pub const TUNNEL_TEST_DURATIONS: &str = "tunnel_test_durations";
+pub const TUNNEL_BUILD_DURATIONS: &str = "tunnel_build_durations";
 
 // transit
 pub const NUM_TRANSIT_TUNNELS: &str = "transit_tunnels_count";
+pub const TOTAL_TRANSIT_TUNNELS: &str = "transit_tunnels_total_count";
 pub const NUM_TRANSIT_TUNNELS_ACCEPTED: &str = "transit_tunnels_accepted_count";
 pub const NUM_TRANSIT_TUNNELS_REJECTED: &str = "transit_tunnels_rejected_count";
+pub const NUM_BUILD_REQUESTS: &str = "transit_build_request_count";
+pub const NUM_ROUTED_MESSAGES: &str = "transit_routed_messages_count";
+pub const NUM_DROPPED_MESSAGES: &str = "transit_dropped_messages_count";
+pub const NUM_PARTICIPANTS: &str = "transit_num_participants";
+pub const NUM_OBEPS: &str = "transit_num_obeps";
+pub const NUM_IBGWS: &str = "transit_num_ibgws";
 
 /// Register tunnel metrics.
 pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
     // counters
-    metrics.push(MetricType::Counter {
-        name: NUM_TUNNEL_MESSAGES,
-        description: "number of i2np messaged received to tunnel subsystem",
-    });
     metrics.push(MetricType::Counter {
         name: NUM_BUILD_FAILURES,
         description: "number of tunnel build failures",
@@ -73,6 +77,26 @@ pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
         name: NUM_TRANSIT_TUNNELS_REJECTED,
         description: "number of transit tunnels that were rejected",
     });
+    metrics.push(MetricType::Counter {
+        name: NUM_ROUTED_MESSAGES,
+        description: "number of successfully routed messages",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_DROPPED_MESSAGES,
+        description: "number of dropped messages",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_DROPPED_FRAGMENTS,
+        description: "number of dropped incomplete fragments",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_BUILD_REQUESTS,
+        description: "number of tunnel build requests received",
+    });
+    metrics.push(MetricType::Counter {
+        name: TOTAL_TRANSIT_TUNNELS,
+        description: "total number of transit tunnels started",
+    });
 
     // gauges
     metrics.push(MetricType::Gauge {
@@ -95,13 +119,32 @@ pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
         name: NUM_TRANSIT_TUNNELS,
         description: "number of transit tunnels",
     });
+    metrics.push(MetricType::Gauge {
+        name: NUM_PARTICIPANTS,
+        description: "number of participants",
+    });
+    metrics.push(MetricType::Gauge {
+        name: NUM_OBEPS,
+        description: "number of outbound endpoints",
+    });
+    metrics.push(MetricType::Gauge {
+        name: NUM_IBGWS,
+        description: "number of inbound gateways",
+    });
 
     // histograms
     metrics.push(MetricType::Histogram {
         name: TUNNEL_TEST_DURATIONS,
         description: "tunnel test durations",
         buckets: vec![
-            3f64, 5f64, 10f64, 20f64, 40f64, 80f64, 100f64, 150f64, 200f64, 500f64, 1000f64,
+            100f64, 150f64, 200f64, 250f64, 300f64, 400f64, 600f64, 800f64, 1000f64, 1500f64,
+        ],
+    });
+    metrics.push(MetricType::Histogram {
+        name: TUNNEL_BUILD_DURATIONS,
+        description: "tunnel test durations",
+        buckets: vec![
+            200f64, 300f64, 500f64, 700f64, 900f64, 1100f64, 1300f64, 1500f64, 1700f64, 2000f64,
         ],
     });
     metrics.push(MetricType::Histogram {

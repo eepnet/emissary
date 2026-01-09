@@ -224,18 +224,6 @@ impl<R: Runtime> Router<R> {
         let serialized_router_info = local_router_info.serialize(&local_signing_key);
         let local_router_id = local_router_info.identity.id();
         let mut address_info = ProtocolAddressInfo::default();
-        let (event_manager, event_subscriber, event_handle) =
-            EventManager::<R>::new(refresh_interval.and_then(|refresh_interval| {
-                if refresh_interval == 0 {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        "invalid refresh interval, using default value"
-                    );
-                    return None;
-                }
-
-                Some(Duration::from_secs(refresh_interval as u64))
-            }));
 
         // create router shutdown context and allocate handle `TransitTunnelManager`
         //
@@ -262,10 +250,28 @@ impl<R: Runtime> Router<R> {
                 let metrics = TransportManager::<R>::metrics(Vec::new());
                 let metrics = TunnelManager::<R>::metrics(metrics);
                 let metrics = NetDb::<R>::metrics(metrics);
+                #[cfg(feature = "events")]
+                let metrics = EventManager::<R>::metrics(metrics);
 
                 R::register_metrics(metrics, Some(port))
             }
         };
+
+        // initialize the event system
+        let (event_manager, event_subscriber, event_handle) = EventManager::<R>::new(
+            refresh_interval.and_then(|refresh_interval| {
+                if refresh_interval == 0 {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        "invalid refresh interval, using default value"
+                    );
+                    return None;
+                }
+
+                Some(Duration::from_secs(refresh_interval as u64))
+            }),
+            metrics_handle.clone(),
+        );
 
         // create router context that is passed onto other subsystems and contains a collection
         // of common objects utilized by all of the subsystems

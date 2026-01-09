@@ -19,7 +19,8 @@
 use crate::{
     i2np::{tunnel::data::DeliveryInstructions, Message},
     primitives::MessageId,
-    runtime::{Instant, Runtime},
+    runtime::{Counter, Instant, MetricsHandle, Runtime},
+    tunnel::metrics::NUM_DROPPED_FRAGMENTS,
 };
 
 use futures::future::FutureExt;
@@ -169,12 +170,15 @@ impl<R: Runtime> Fragment<R> {
 
 /// Fragment handler.
 pub struct FragmentHandler<R: Runtime> {
-    /// Pending messages.
-    messages: HashMap<MessageId, Fragment<R>>,
-
     /// Queue of `MessageId`, pushed on insertion into `Self::messages` (and thus ordered by
     /// expiration time) and popped in `Self::poll` when expired or the message no longer exists
     message_first_seen_queue: VecDeque<MessageId>,
+
+    /// Pending messages.
+    messages: HashMap<MessageId, Fragment<R>>,
+
+    /// Metrics handle.
+    metrics_handle: R::MetricsHandle,
 
     /// Timer for when the earliest expiring message expires
     next_expiration_timer: Option<R::Timer>,
@@ -182,10 +186,11 @@ pub struct FragmentHandler<R: Runtime> {
 
 impl<R: Runtime> FragmentHandler<R> {
     /// Create new [`FragmentHandler`].
-    pub fn new() -> Self {
+    pub fn new(metrics_handle: R::MetricsHandle) -> Self {
         Self {
-            messages: HashMap::new(),
             message_first_seen_queue: VecDeque::new(),
+            messages: HashMap::new(),
+            metrics_handle,
             next_expiration_timer: None,
         }
     }
@@ -283,6 +288,7 @@ impl<R: Runtime> Future for FragmentHandler<R> {
             }
 
             self.message_first_seen_queue.pop_front();
+            self.metrics_handle.counter(NUM_DROPPED_FRAGMENTS).increment(1);
         }
 
         if let Some(message_id) = self.message_first_seen_queue.front() {
@@ -340,7 +346,8 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -382,7 +389,8 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         let mut fragments = split(2, message);
 
@@ -419,7 +427,8 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         let mut fragments = split(4, message);
         assert_eq!(fragments.len(), 4);
 
@@ -459,7 +468,8 @@ mod tests {
             .build();
 
         let message_id = MessageId::from(1337);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
         let mut fragments = split(4, message);
 
         assert_eq!(fragments.len(), 4);
@@ -492,7 +502,8 @@ mod tests {
     #[tokio::test]
     async fn garbage_collection_incomplete() {
         let message_id = MessageId::from(1338);
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         // last fragment is delivered first
         assert!(handler.first_fragment(message_id, &DeliveryInstructions::Local, &[0]).is_none());
@@ -511,7 +522,8 @@ mod tests {
 
     #[tokio::test]
     async fn garbage_collection_complete() {
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         let message_id = MessageId::from(1337);
         let expiration = MockRuntime::time_since_epoch();
@@ -558,7 +570,8 @@ mod tests {
 
     #[tokio::test]
     async fn garbage_collection_multiple() {
-        let mut handler = FragmentHandler::<MockRuntime>::new();
+        let mut handler =
+            FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
 
         // Interleave: first message that will expire, second message that will complete, third
         // message that will expire

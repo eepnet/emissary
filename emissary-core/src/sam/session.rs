@@ -1660,7 +1660,8 @@ mod tests {
         let (datagram_tx, datagram_rx) = mpsc::channel(10);
         let (sub_tx, sub_rx) = mpsc::channel(10);
         let (netdb_handle, netdb_rx) = NetDbHandle::create();
-        let (event_manager, event_subscriber, event_handle) = EventManager::new(None);
+        let (event_manager, event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (tunnel_pool_handle, tm_recv, tp_event, shutdown_rx) = TunnelPoolHandle::create();
         let (tx, rx) = mpsc::with_recycle(64, SamSessionCommandRecycle::default());
 

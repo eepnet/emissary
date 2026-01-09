@@ -340,6 +340,7 @@ impl<R: Runtime> Ssu2Socket<R> {
 
                 self.sessions.insert(connection_id, tx);
                 self.pending_sessions.push(session);
+                self.router_ctx.metrics_handle().counter(NUM_INBOUND_SSU2).increment(1);
 
                 Ok(())
             }
@@ -404,6 +405,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         let (tx, rx) = channel(CHANNEL_SIZE);
         self.sessions.insert(src_id, tx);
         self.pending_outbound.insert(address, intro_key);
+        self.router_ctx.metrics_handle().counter(NUM_OUTBOUND_SSU2).increment(1);
 
         self.pending_sessions.push(
             OutboundSsu2Session::<R>::new(OutboundSsu2Context {

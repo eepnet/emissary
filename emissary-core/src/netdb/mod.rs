@@ -39,7 +39,7 @@ use crate::{
     primitives::{LeaseSet2, RouterId, RouterInfo},
     profile::Bucket,
     router::context::RouterContext,
-    runtime::{Counter, Gauge, JoinSet, MetricType, MetricsHandle, Runtime},
+    runtime::{Counter, Gauge, Histogram, Instant, JoinSet, MetricType, MetricsHandle, Runtime},
     subsystem::{NetDbEvent, SubsystemHandle},
     tunnel::{TunnelPoolEvent, TunnelPoolHandle},
 };
@@ -858,11 +858,27 @@ impl<R: Runtime> NetDb<R> {
             },
             Some(kind) => match (payload, kind) {
                 (DatabaseStorePayload::LeaseSet2 { lease_set }, QueryKind::LeaseSet { query }) => {
+                    self.router_ctx.metrics_handle().counter(NUM_LS_QUERY_SUCCESSES).increment(1);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(QUERY_DURATION_BUCKET)
+                        .record(query.started.elapsed().as_millis() as f64);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(LS_NUM_QUERIED)
+                        .record(query.queried.len() as f64);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(NUM_QUERIED)
+                        .record(query.queried.len() as f64);
+                    self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                     tracing::trace!(
                         target: LOG_TARGET,
                         destination_id = %lease_set.header.destination.id(),
                         "lease set query reply received",
                     );
+
                     query.complete(Ok(lease_set));
                 }
                 (DatabaseStorePayload::RouterInfo { router_info }, QueryKind::Router) => {
@@ -918,6 +934,21 @@ impl<R: Runtime> NetDb<R> {
                     DatabaseStorePayload::RouterInfo { router_info },
                     QueryKind::RouterInfo { query },
                 ) => {
+                    self.router_ctx.metrics_handle().counter(NUM_RI_QUERY_SUCCESSES).increment(1);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(QUERY_DURATION_BUCKET)
+                        .record(query.started.elapsed().as_millis() as f64);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(RI_NUM_QUERIED)
+                        .record(query.queried.len() as f64);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(NUM_QUERIED)
+                        .record(query.queried.len() as f64);
+                    self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                     tracing::trace!(
                         target: LOG_TARGET,
                         router_id = %router_info.identity.id(),
@@ -1148,13 +1179,9 @@ impl<R: Runtime> NetDb<R> {
     ///
     /// `sender` is the [`RouterId`] if the message was received directly from the sender.
     fn on_message(&mut self, message: Message, sender: Option<RouterId>) -> crate::Result<()> {
-        self.router_ctx.metrics_handle().counter(NUM_NETDB_MESSAGES).increment(1);
-
         match message.message_type {
             MessageType::DatabaseStore => return self.on_database_store(message, sender),
             MessageType::DatabaseLookup if self.floodfill => {
-                self.router_ctx.metrics_handle().counter(NUM_QUERIES).increment(1);
-
                 let DatabaseLookup {
                     ignore,
                     key,
@@ -1220,7 +1247,7 @@ impl<R: Runtime> NetDb<R> {
                     target: LOG_TARGET,
                     ?kind,
                     key = ?key.to_vec(),
-                    "unable to handle lease set query, different kind of query alreayd in progress",
+                    "unable to handle lease set query, different kind of query already in progress",
                 );
                 return;
             }
@@ -1237,6 +1264,8 @@ impl<R: Runtime> NetDb<R> {
                     target: LOG_TARGET,
                     "cannot query lease set, no floodfills",
                 );
+                self.router_ctx.metrics_handle().counter(NUM_LS_QUERY_FAILURES).increment(1);
+
                 let _ = tx.send(Err(QueryError::NoFloodfills));
                 return;
             };
@@ -1286,12 +1315,15 @@ impl<R: Runtime> NetDb<R> {
                         R::delay(QUERY_TIMEOUT).await;
                         key
                     });
+                    self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).increment(1);
                 }
                 Err(_) => {
+                    self.router_ctx.metrics_handle().counter(NUM_LS_QUERY_FAILURES).increment(1);
                     let _ = tx.send(Err(QueryError::RetryFailure));
                 }
             },
             Err(error) => {
+                self.router_ctx.metrics_handle().counter(NUM_LS_QUERY_FAILURES).increment(1);
                 let _ = tx.send(Err(error));
             }
         }
@@ -1337,6 +1369,7 @@ impl<R: Runtime> NetDb<R> {
                 target: LOG_TARGET,
                 "cannot query router info, no floodfills",
             );
+            self.router_ctx.metrics_handle().counter(NUM_RI_QUERY_FAILURES).increment(1);
             let _ = tx.send(Err(QueryError::NoFloodfills));
             return;
         };
@@ -1368,12 +1401,15 @@ impl<R: Runtime> NetDb<R> {
                         R::delay(QUERY_TIMEOUT).await;
                         key
                     });
+                    self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).increment(1);
                 }
                 Err(_) => {
+                    self.router_ctx.metrics_handle().counter(NUM_RI_QUERY_FAILURES).increment(1);
                     let _ = tx.send(Err(QueryError::RetryFailure));
                 }
             },
             Err(error) => {
+                self.router_ctx.metrics_handle().counter(NUM_RI_QUERY_FAILURES).increment(1);
                 let _ = tx.send(Err(error));
             }
         }
@@ -1564,6 +1600,12 @@ impl<R: Runtime> NetDb<R> {
                                 ?error,
                                 "lease set query timed out",
                             );
+                            self.router_ctx
+                                .metrics_handle()
+                                .counter(NUM_LS_QUERY_FAILURES)
+                                .increment(1);
+                            self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                             query.complete(Err(error));
                             return;
                         }
@@ -1613,10 +1655,22 @@ impl<R: Runtime> NetDb<R> {
                             });
                         }
                         Err(_) => {
+                            self.router_ctx
+                                .metrics_handle()
+                                .counter(NUM_LS_QUERY_FAILURES)
+                                .increment(1);
+                            self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                             query.complete(Err(QueryError::RetryFailure));
                         }
                     },
                     Err(error) => {
+                        self.router_ctx
+                            .metrics_handle()
+                            .counter(NUM_LS_QUERY_FAILURES)
+                            .increment(1);
+                        self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                         query.complete(Err(error));
                     }
                 }
@@ -1638,6 +1692,12 @@ impl<R: Runtime> NetDb<R> {
                             ?error,
                             "router info query timed out",
                         );
+                        self.router_ctx
+                            .metrics_handle()
+                            .counter(NUM_RI_QUERY_FAILURES)
+                            .increment(1);
+                        self.router_ctx.metrics_handle().gauge(ACTIVE_QUERIES).decrement(1);
+
                         query.complete(Err(error));
                         return;
                     }
@@ -1703,10 +1763,6 @@ impl<R: Runtime> Future for NetDb<R> {
                     let is_floodfill = self.router_ctx.profile_storage().is_floodfill(&router_id);
                     if is_floodfill {
                         self.floodfill_dht.add_router(router_id.clone());
-                        self.router_ctx
-                            .metrics_handle()
-                            .gauge(NUM_CONNECTED_FLOODFILLS)
-                            .increment(1);
                     } else {
                         self.router_dht.as_mut().map(|dht| dht.add_router(router_id.clone()));
                     }
@@ -1902,7 +1958,8 @@ mod tests {
                 Bytes::from(router_info.identity.id().to_vec()),
             ),
         );
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -2013,7 +2070,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -2109,7 +2167,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -2207,7 +2266,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, event_rx) = SubsystemHandle::new();
 
@@ -2522,7 +2582,8 @@ mod tests {
                 Bytes::from(router_info.identity.id().to_vec()),
             ),
         );
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -2629,7 +2690,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -2717,7 +2779,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -2837,7 +2900,8 @@ mod tests {
             .collect::<Vec<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -2938,7 +3002,8 @@ mod tests {
                 Bytes::from(router_info.identity.id().to_vec()),
             ),
         );
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -3076,7 +3141,8 @@ mod tests {
                 Bytes::from(router_info.identity.id().to_vec()),
             ),
         );
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(
@@ -3183,7 +3249,8 @@ mod tests {
             ),
         );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
@@ -3260,7 +3327,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3347,7 +3415,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3438,7 +3507,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3526,7 +3596,8 @@ mod tests {
             .collect::<VecDeque<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3711,7 +3782,8 @@ mod tests {
             ),
         );
         let serialized = Bytes::from(router_info.serialize(&signing_key));
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, handle) = NetDb::<MockRuntime>::new(
@@ -3808,7 +3880,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3877,7 +3950,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -3953,7 +4027,8 @@ mod tests {
             .collect::<HashSet<_>>();
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
         let (handle, _event_rx) = SubsystemHandle::new();
 
@@ -4047,7 +4122,8 @@ mod tests {
                 Bytes::from(router_info.identity.id().to_vec()),
             ),
         );
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (_netdb_tx, netdb_rx) = channel(64);
 
         let (mut netdb, _handle) = NetDb::<MockRuntime>::new(

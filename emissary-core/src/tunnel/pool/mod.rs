@@ -397,9 +397,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                         "build outbound tunnel via 0-hop tunnel",
                     );
 
-                    match PendingTunnel::<OutboundTunnel<R>>::create_tunnel::<R>(
+                    match PendingTunnel::<R, OutboundTunnel<R>>::create_tunnel(
                         TunnelBuildParameters {
                             hops,
+                            metrics_handle: self.router_ctx.metrics_handle().clone(),
                             name: self.config.name.clone(),
                             noise: self.router_ctx.noise().clone(),
                             message_id,
@@ -487,9 +488,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
                         "build outbound tunnel via existing inbound tunnel",
                     );
 
-                    match PendingTunnel::<OutboundTunnel<R>>::create_tunnel::<R>(
+                    match PendingTunnel::<R, OutboundTunnel<R>>::create_tunnel(
                         TunnelBuildParameters {
                             hops,
+                            metrics_handle: self.router_ctx.metrics_handle().clone(),
                             name: self.config.name.clone(),
                             noise: self.router_ctx.noise().clone(),
                             message_id,
@@ -595,8 +597,9 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> TunnelPool<R, S> {
             let (tunnel_id, tunnel_rx) =
                 self.subsystem_handle.insert_tunnel::<TUNNEL_CHANNEL_SIZE>(&mut R::rng());
 
-            match PendingTunnel::<InboundTunnel<R>>::create_tunnel::<R>(TunnelBuildParameters {
+            match PendingTunnel::<R, InboundTunnel<R>>::create_tunnel(TunnelBuildParameters {
                 hops,
+                metrics_handle: self.router_ctx.metrics_handle().clone(),
                 name: self.config.name.clone(),
                 noise: self.router_ctx.noise().clone(),
                 message_id,
@@ -868,7 +871,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                         .decrement(1);
                     self.num_tunnel_build_failures += 1;
                 }
-                Ok(tunnel) => {
+                Ok((tunnel, started)) => {
                     tracing::info!(
                         target: LOG_TARGET,
                         name = %self.config.name,
@@ -885,6 +888,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                         .decrement(1);
                     self.router_ctx.metrics_handle().gauge(NUM_OUTBOUND_TUNNELS).increment(1);
                     self.router_ctx.metrics_handle().counter(NUM_BUILD_SUCCESSES).increment(1);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(TUNNEL_BUILD_DURATIONS)
+                        .record(started.elapsed().as_millis() as f64);
                     self.num_tunnels_built += 1;
 
                     // inform the owner of the tunnel pool that a new outbound tunnel has been built
@@ -922,7 +929,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                         .gauge(NUM_PENDING_INBOUND_TUNNELS)
                         .decrement(1);
                 }
-                Ok(tunnel) => {
+                Ok((tunnel, started)) => {
                     tracing::info!(
                         target: LOG_TARGET,
                         name = %self.config.name,
@@ -970,6 +977,10 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                         .gauge(NUM_PENDING_INBOUND_TUNNELS)
                         .decrement(1);
                     self.router_ctx.metrics_handle().counter(NUM_BUILD_SUCCESSES).increment(1);
+                    self.router_ctx
+                        .metrics_handle()
+                        .histogram(TUNNEL_BUILD_DURATIONS)
+                        .record(started.elapsed().as_millis() as f64);
                 }
             }
         }
@@ -1343,6 +1354,7 @@ impl<R: Runtime, S: TunnelSelector + HopSelector> Future for TunnelPool<R, S> {
                     self.outbound.remove(&tunnel_id);
                     self.expiring_outbound.remove(&tunnel_id);
                     self.selector.remove_outbound_tunnel(&tunnel_id);
+                    self.router_ctx.metrics_handle().gauge(NUM_OUTBOUND_TUNNELS).decrement(1);
 
                     // inform the owner of the tunnel pool that an inbound tunnel has expired
                     if let Err(error) = self.context.register_outbound_tunnel_expired(tunnel_id) {
@@ -1504,7 +1516,7 @@ mod tests {
         };
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let handle = MockRuntime::register_metrics(Vec::new(), None);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
         let SubsystemManagerContext {
             dial_rx,
             handle: subsys_handle,
@@ -1637,7 +1649,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -1749,7 +1761,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -1876,7 +1888,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -2013,7 +2025,7 @@ mod tests {
 
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
         let exploratory_selector =
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false);
         let router_ctx = RouterContext::new(
@@ -2296,7 +2308,7 @@ mod tests {
 
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
         let exploratory_selector =
             ExploratorySelector::new(profile_storage.clone(), pool_handle, false);
         let router_ctx = RouterContext::new(
@@ -2570,7 +2582,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -2689,7 +2701,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -2832,7 +2844,7 @@ mod tests {
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
         let our_id = router_info.identity.id();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -3066,7 +3078,7 @@ mod tests {
 
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, _handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,
@@ -3250,7 +3262,7 @@ mod tests {
         tokio::spawn(manager);
         let parameters = TunnelPoolBuildParameters::new(pool_config);
         let pool_handle = parameters.context_handle.clone();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
 
         let (mut tunnel_pool, mut handle) = TunnelPool::<MockRuntime, _>::new(
             parameters,

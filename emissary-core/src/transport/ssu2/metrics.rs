@@ -27,19 +27,21 @@ pub const OUTBOUND_BANDWIDTH: &str = "ssu2_outbound_bytes_count";
 pub const HANDSHAKE_DURATION: &str = "ssu2_handshake_duration_buckets";
 pub const NUM_HANDSHAKE_FAILURES: &str = "ssu2_handshake_failure_count";
 pub const NUM_HANDSHAKE_SUCCESSES: &str = "ssu2_handshake_success_count";
+pub const NUM_INBOUND_SSU2: &str = "ssu2_num_inbound";
+pub const NUM_OUTBOUND_SSU2: &str = "ssu2_num_outbound";
 
 // active connection
-pub const INBOUND_PKT_SIZES: &str = "ssu2_ib_pkt_size_buckets";
+pub const INBOUND_PKT_SIZES: &str = "ssu2_ib_pkt_sizes";
 pub const INBOUND_PKT_COUNT: &str = "ssu2_ib_pkt_count";
 pub const OUTBOUND_PKT_COUNT: &str = "ssu2_ob_pkt_count";
 pub const NUM_DROPS_CHANNEL_FULL: &str = "ssu2_chan_full_pkt_dropped_count";
 pub const DUPLICATE_PKT_COUNT: &str = "ssu2_duplicate_pkt_count";
 pub const EXPIRED_PKT_COUNT: &str = "ssu2_expired_pkt_count";
 pub const RETRANSMISSION_COUNT: &str = "ssu2_retransmission_count";
-pub const INBOUND_FRAGMENT_COUNT: &str = "ssu2_inbound_fragment_count_buckets";
-pub const OUTBOUND_FRAGMENT_COUNT: &str = "ssu2_outbound_fragment_count_buckets";
+pub const INBOUND_FRAGMENT_COUNT: &str = "ssu2_inbound_fragment_counts";
+pub const OUTBOUND_FRAGMENT_COUNT: &str = "ssu2_outbound_fragment_counts";
 pub const GARBAGE_COLLECTED_COUNT: &str = "ssu2_gc_fragments_count";
-pub const ACK_RECEIVE_TIME: &str = "ssu2_ack_receive_time_buckets";
+pub const ACK_RECEIVE_TIME: &str = "ssu2_ack_receive_times";
 
 /// Register SSU2 metrics.
 pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {

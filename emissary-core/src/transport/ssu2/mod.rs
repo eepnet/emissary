@@ -242,7 +242,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_ssu2() {
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (ctx1, address1) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
             port: 0u16,
             host: Some("127.0.0.1".parse().unwrap()),
@@ -350,7 +351,8 @@ mod tests {
 
     #[tokio::test]
     async fn connect_ssu2_wrong_network() {
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (ctx1, address1) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
             port: 0u16,
             host: Some("127.0.0.1".parse().unwrap()),

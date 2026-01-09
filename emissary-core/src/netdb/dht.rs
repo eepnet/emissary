@@ -321,7 +321,8 @@ mod tests {
             RouterId::from(&base64_decode("x4Q9dpbvHfyUuIhK9xDiy1XL9lvrpe9Kmmy9Gg~wFeQ=").unwrap()),
         ]);
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let mut dht = Dht::<MockRuntime>::new(
             router_info.identity.id(),
             routers,

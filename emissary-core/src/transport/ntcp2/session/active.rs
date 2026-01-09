@@ -24,11 +24,14 @@ use crate::{
     crypto::{chachapoly::ChaChaPoly, siphash::SipHash},
     events::EventHandle,
     primitives::{RouterId, RouterInfo},
-    runtime::{AsyncRead, AsyncWrite, Runtime},
+    runtime::{AsyncRead, AsyncWrite, Counter, Histogram, MetricsHandle, Runtime},
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ntcp2::{
             message::MessageBlock,
+            metrics::{
+                MESSAGE_SIZES, NUM_BLOCKS_PER_MSG, NUM_INBOUND_MESSAGES, NUM_OUTBOUND_MESSAGES,
+            },
             session::{KeyContext, Role},
         },
         Direction, TerminationReason,
@@ -129,6 +132,9 @@ pub struct Ntcp2Session<R: Runtime> {
     /// Total inbound bandwidth.
     inbound_bandwidth: usize,
 
+    /// Metrics handle.
+    metrics_handle: R::MetricsHandle,
+
     /// Total outbound bandwidth.
     outbound_bandwidth: usize,
 
@@ -156,6 +162,9 @@ pub struct Ntcp2Session<R: Runtime> {
     /// SipHasher for (de)obfuscating message lengths.
     sip: SipHash,
 
+    /// When was the hanshake started.
+    started: R::Instant,
+
     /// TCP stream.
     stream: R::TcpStream,
 
@@ -173,6 +182,8 @@ impl<R: Runtime> Ntcp2Session<R> {
         direction: Direction,
         event_handle: EventHandle<R>,
         transport_tx: Sender<SubsystemEvent>,
+        started: R::Instant,
+        metrics_handle: R::MetricsHandle,
     ) -> Self {
         let KeyContext {
             send_key,
@@ -188,6 +199,7 @@ impl<R: Runtime> Ntcp2Session<R> {
             direction,
             event_handle,
             inbound_bandwidth: 0usize,
+            metrics_handle,
             outbound_bandwidth: 0usize,
             read_buffer: vec![0u8; 0xffff],
             read_state: ReadState::ReadSize { offset: 0usize },
@@ -197,6 +209,7 @@ impl<R: Runtime> Ntcp2Session<R> {
             router_info,
             send_cipher: ChaChaPoly::new(&send_key),
             sip,
+            started,
             stream,
             transport_tx,
             write_state: WriteState::GetMessage,
@@ -211,6 +224,11 @@ impl<R: Runtime> Ntcp2Session<R> {
     /// Get role of the session.
     pub fn role(&self) -> Role {
         self.role
+    }
+
+    /// When was the handshake started.
+    pub fn started(&self) -> &R::Instant {
+        &self.started
     }
 
     /// Get `RouterInfo` of the remote peer.
@@ -312,6 +330,10 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 continue;
                             }
                             this.inbound_bandwidth += this.read_buffer[..size].len();
+                            this.metrics_handle
+                                .histogram(MESSAGE_SIZES)
+                                .record(this.read_buffer[..size].len() as f64);
+                            this.metrics_handle.counter(NUM_INBOUND_MESSAGES).increment(1);
 
                             let data_block =
                                 match this.recv_cipher.decrypt(this.read_buffer[..size].to_vec()) {
@@ -332,6 +354,9 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                     continue;
                                 }
                             };
+                            this.metrics_handle
+                                .histogram(NUM_BLOCKS_PER_MSG)
+                                .record(messages.len() as f64);
 
                             tracing::trace!(
                                 target: LOG_TARGET,
@@ -554,6 +579,8 @@ impl<R: Runtime> Future for Ntcp2Session<R> {
                                 if let Some(tx) = feedback_tx {
                                     let _ = tx.send(());
                                 }
+
+                                this.metrics_handle.counter(NUM_OUTBOUND_MESSAGES).increment(1);
                                 this.write_state = WriteState::GetMessage;
                             }
                             false => {

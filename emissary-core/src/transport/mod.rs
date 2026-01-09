@@ -575,7 +575,9 @@ impl<R: Runtime> TransportManager<R> {
                         caps = %router_info.capabilities,
                         "cannot dial router, ntcp2 address is not reachable",
                     );
+
                     self.pending_connections.remove(&router_id);
+                    self.router_ctx.metrics_handle().counter(NUM_DIAL_FAILURES).increment(1);
 
                     // report connection failure to subsystems
                     let transport_tx = self.transport_tx.clone();
@@ -599,6 +601,7 @@ impl<R: Runtime> TransportManager<R> {
 
                 // TODO: compare transport costs
                 self.transports[0].connect(router_info);
+                self.router_ctx.metrics_handle().counter(NUM_INITIATED).increment(1);
             }
             None => {
                 tracing::debug!(
@@ -677,6 +680,8 @@ impl<R: Runtime> Future for TransportManager<R> {
                                 %router_id,
                                 "outbound connection pending, rejecting inbound connection",
                             );
+
+                            self.router_ctx.metrics_handle().counter(NUM_REJECTED).increment(1);
                             self.transports[index].reject(&router_id);
                         }
                         Direction::Outbound if !self.pending_connections.contains(&router_id) => {
@@ -685,6 +690,8 @@ impl<R: Runtime> Future for TransportManager<R> {
                                 %router_id,
                                 "pending connection doesn't exist for router, rejecting connection",
                             );
+
+                            self.router_ctx.metrics_handle().counter(NUM_REJECTED).increment(1);
                             self.transports[index].reject(&router_id);
                         }
                         direction => match self.routers.insert(router_id.clone()) {
@@ -702,6 +709,7 @@ impl<R: Runtime> Future for TransportManager<R> {
                                     .metrics_handle()
                                     .gauge(NUM_CONNECTIONS)
                                     .increment(1);
+                                self.router_ctx.metrics_handle().counter(NUM_ACCEPTED).increment(1);
                                 self.router_ctx.profile_storage().dial_succeeded(&router_id);
                             }
                             false => {
@@ -710,6 +718,8 @@ impl<R: Runtime> Future for TransportManager<R> {
                                     %router_id,
                                     "router already connected, rejecting",
                                 );
+
+                                self.router_ctx.metrics_handle().counter(NUM_REJECTED).increment(1);
                                 self.transports[index].reject(&router_id);
                             }
                         },
@@ -771,6 +781,11 @@ impl<R: Runtime> Future for TransportManager<R> {
 
                     self.pending_queries.remove(&router_id);
                     self.pending_connections.remove(&router_id);
+                    self.router_ctx
+                        .metrics_handle()
+                        .counter(NUM_NETDB_QUERY_SUCCESSES)
+                        .increment(1);
+
                     self.on_dial_router(router_id);
                 }
                 Poll::Ready(Some((router_id, Err(error)))) => {
@@ -782,6 +797,8 @@ impl<R: Runtime> Future for TransportManager<R> {
                     );
                     self.pending_connections.remove(&router_id);
                     self.pending_queries.remove(&router_id);
+                    self.router_ctx.metrics_handle().gauge(NUM_DIAL_FAILURES).increment(1);
+                    self.router_ctx.metrics_handle().counter(NUM_NETDB_QUERY_FAILURES).increment(1);
 
                     // report connection failure to subsystems
                     let transport_tx = self.transport_tx.clone();
@@ -886,7 +903,8 @@ mod tests {
         let (dial_tx, dial_rx) = channel(100);
         let (transport_tx, transport_rx) = channel(100);
         let (handle, _) = NetDbHandle::create();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             ProfileStorage::<MockRuntime>::new(&[], &[]),
@@ -1324,7 +1342,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (handle, _) = NetDbHandle::create();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             ProfileStorage::<MockRuntime>::new(&[], &[]),
@@ -1441,7 +1460,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle, _) = NetDbHandle::create();
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
@@ -1579,7 +1599,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle, netdb_rx) = NetDbHandle::create();
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
@@ -1715,7 +1736,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle, _netdb_rx) = NetDbHandle::create();
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
@@ -1779,7 +1801,8 @@ mod tests {
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (handle, _netdb_rx) = NetDbHandle::create();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             storage.clone(),
@@ -1833,7 +1856,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle, netdb_rx) = NetDbHandle::create();
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
@@ -1954,7 +1978,8 @@ mod tests {
         let remote_router_id = remote_router_info.identity.id();
         storage.add_router(remote_router_info);
 
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle, _netdb_rx) = NetDbHandle::create();
         let ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
@@ -2109,8 +2134,10 @@ mod tests {
         storage1.add_router(router_info2.clone());
         storage2.add_router(router_info1.clone());
 
-        let (_event_mgr1, _event_subscriber1, event_handle1) = EventManager::new(None);
-        let (_event_mgr2, _event_subscriber2, event_handle2) = EventManager::new(None);
+        let (_event_mgr1, _event_subscriber1, event_handle1) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
+        let (_event_mgr2, _event_subscriber2, event_handle2) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (handle1, _netdb_rx1) = NetDbHandle::create();
         let (handle2, _netdb_rx2) = NetDbHandle::create();
 
@@ -2269,7 +2296,8 @@ mod tests {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
         let (handle, netdb_rx) = NetDbHandle::create();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let (storage, remote_router_id) = {
             let (router_info, _static_key, _signing_key) = RouterInfoBuilder::default().build();
             let router_id = router_info.identity.id();

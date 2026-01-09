@@ -137,7 +137,8 @@ impl TestTransitTunnelManager {
         let (router_hash, static_key, signing_key, noise, router_info) = make_router(fast);
         let public_key = static_key.public();
         let mut _shutdown_ctx = ShutdownContext::<MockRuntime>::new();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let SubsystemManagerContext {
             dial_rx,
             handle: subsystem_handle,
@@ -328,20 +329,19 @@ pub fn build_outbound_tunnel(
     let gateway = TunnelId::from(MockRuntime::rng().next_u32());
 
     let (pending_tunnel, _next_router, message) =
-        PendingTunnel::<OutboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-            TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Outbound {
-                    gateway,
-                    tunnel_id,
-                    router_id: local_hash.clone(),
-                },
-                receiver: ReceiverKind::Outbound,
+        PendingTunnel::<_, OutboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+            hops: hops.clone(),
+            metrics_handle: MockRuntime::register_metrics(vec![], None),
+            name: Str::from("tunnel-pool"),
+            noise: local_noise,
+            message_id,
+            tunnel_info: TunnelInfo::Outbound {
+                gateway,
+                tunnel_id,
+                router_id: local_hash.clone(),
             },
-        )
+            receiver: ReceiverKind::Outbound,
+        })
         .unwrap();
 
     let message = hops.iter().zip(transit_managers.iter_mut()).fold(
@@ -397,22 +397,21 @@ pub fn build_inbound_tunnel(
     } = TunnelPoolBuildParameters::new(Default::default());
 
     let (pending_tunnel, next_router, message) =
-        PendingTunnel::<InboundTunnel<MockRuntime>>::create_tunnel::<MockRuntime>(
-            TunnelBuildParameters {
-                hops: hops.clone(),
-                name: Str::from("tunnel-pool"),
-                noise: local_noise,
-                message_id,
-                tunnel_info: TunnelInfo::Inbound {
-                    tunnel_id,
-                    router_id: local_hash.clone(),
-                },
-                receiver: ReceiverKind::Inbound {
-                    message_rx: rx,
-                    handle,
-                },
+        PendingTunnel::<_, InboundTunnel<MockRuntime>>::create_tunnel(TunnelBuildParameters {
+            hops: hops.clone(),
+            metrics_handle: MockRuntime::register_metrics(vec![], None),
+            name: Str::from("tunnel-pool"),
+            noise: local_noise,
+            message_id,
+            tunnel_info: TunnelInfo::Inbound {
+                tunnel_id,
+                router_id: local_hash.clone(),
             },
-        )
+            receiver: ReceiverKind::Inbound {
+                message_rx: rx,
+                handle,
+            },
+        })
         .unwrap();
 
     let message = match transit_managers[0].garlic().handle_message(message).unwrap().next() {
