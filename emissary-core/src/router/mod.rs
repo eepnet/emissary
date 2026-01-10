@@ -270,6 +270,7 @@ impl<R: Runtime> Router<R> {
 
                 Some(Duration::from_secs(refresh_interval as u64))
             }),
+            #[cfg(feature = "events")]
             metrics_handle.clone(),
         );
 

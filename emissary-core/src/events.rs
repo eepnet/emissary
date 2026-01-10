@@ -16,10 +16,10 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::runtime::{MetricType, Runtime};
+use crate::runtime::Runtime;
 
 #[cfg(feature = "events")]
-use crate::runtime::{Counter, MetricsHandle};
+use crate::runtime::{Counter, MetricType, MetricsHandle};
 
 #[cfg(feature = "events")]
 use futures::FutureExt;
