@@ -31,6 +31,12 @@ export default defineConfig({
           { text: "Rust", link: "/embedding-rust.md" },
         ]
       },
+      {
+        text: "Development",
+        items: [
+          { text: "Debugging", link: "/debugging.md" },
+        ]
+      },
     ],
 
     socialLinks: [

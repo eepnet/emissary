@@ -14,7 +14,7 @@ hero:
       text: Embedding emissary
       link: /embedding-overview
     - theme: alt
-      text: For developers
-      link: /developers
+      text: Development
+      link: /debugging
 ---
 
