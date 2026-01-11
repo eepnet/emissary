@@ -38,6 +38,9 @@ use core::{
 pub mod inbound;
 pub mod outbound;
 
+/// Maximum allowed clock skew.
+const MAX_CLOCK_SKEW: Duration = Duration::from_secs(60);
+
 /// Status returned by [`PendingSession`] to [`Ssu2Socket`].
 pub enum PendingSsu2SessionStatus<R: Runtime> {
     /// New session has been opened.

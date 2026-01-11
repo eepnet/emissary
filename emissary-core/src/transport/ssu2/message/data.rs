@@ -252,7 +252,7 @@ impl<'a> DataMessageBuilder<'a> {
                     },
             }
 
-            if let Some(_reason) = self.termination_reason {
+            if let Some(reason) = self.termination_reason {
                 if bytes_left < TERMINATION_BLOCK_MIN_SIZE {
                     tracing::error!(
                         target: LOG_TARGET,
@@ -264,7 +264,7 @@ impl<'a> DataMessageBuilder<'a> {
                 out.put_u8(BlockType::Termination.as_u8());
                 out.put_u16(9u16);
                 out.put_u64(pkt_num as u64); // TODO: not correct
-                out.put_u8(2u8);
+                out.put_u8(reason.from_ssu2());
             }
 
             if out.len() < DATA_PKT_MIN_SIZE {

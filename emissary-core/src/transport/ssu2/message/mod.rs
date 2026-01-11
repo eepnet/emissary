@@ -839,6 +839,16 @@ impl Block {
 
                 out
             }
+            Self::Termination {
+                num_valid_pkts,
+                reason,
+            } => {
+                out.put_u8(BlockType::Termination.as_u8());
+                out.put_u16(9u16);
+                out.put_u64(num_valid_pkts);
+                out.put_u8(reason);
+                out
+            }
             block_type => todo!("unsupported block type: {block_type:?}"),
         }
     }

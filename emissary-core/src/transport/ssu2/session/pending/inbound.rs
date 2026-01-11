@@ -23,18 +23,24 @@ use crate::{
     },
     error::Ssu2Error,
     runtime::Runtime,
-    transport::ssu2::{
-        message::{
-            data::DataMessageBuilder,
-            handshake::{RetryBuilder, SessionCreatedBuilder},
-            Block, HeaderKind, HeaderReader,
+    transport::{
+        ssu2::{
+            message::{
+                data::DataMessageBuilder,
+                handshake::{RetryBuilder, SessionCreatedBuilder},
+                Block, HeaderKind, HeaderReader,
+            },
+            session::{
+                active::Ssu2SessionContext,
+                pending::{
+                    PacketRetransmitter, PacketRetransmitterEvent, PendingSsu2SessionStatus,
+                    MAX_CLOCK_SKEW,
+                },
+                KeyContext,
+            },
+            Packet,
         },
-        session::{
-            active::Ssu2SessionContext,
-            pending::{PacketRetransmitter, PacketRetransmitterEvent, PendingSsu2SessionStatus},
-            KeyContext,
-        },
-        Packet,
+        TerminationReason,
     },
 };
 
@@ -184,8 +190,13 @@ pub struct InboundSsu2Session<R: Runtime> {
 
 impl<R: Runtime> InboundSsu2Session<R> {
     /// Create new [`PendingSsu2Session`].
-    //
-    // TODO: explain what happens here
+    ///
+    /// Decrypt the `TokenRequest` payload, locate the `DateTime` block and check clock skew of the
+    /// remote router.
+    ///
+    /// If the block doesn't exist or clock skew is more than `MAX_CLOCK_SKEW`, send `Retry` with a
+    /// termination block and return an error, indicating that the inbound session cannot be
+    /// started.
     pub fn new(context: InboundSsu2Context) -> Result<Self, Ssu2Error> {
         let InboundSsu2Context {
             address,
@@ -206,7 +217,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         ChaChaPoly::with_nonce(&intro_key, pkt_num as u64)
             .decrypt_with_ad(&pkt[..32], &mut payload)?;
 
-        Block::parse(&payload).map_err(|error| {
+        let blocks = Block::parse(&payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
                 ?dst_id,
@@ -220,6 +231,25 @@ impl<R: Runtime> InboundSsu2Session<R> {
         })?;
 
         let token = R::rng().next_u64();
+        let session = Self {
+            address,
+            dst_id,
+            intro_key,
+            net_id,
+            noise_ctx: NoiseContext::new(
+                TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
+                TryInto::<[u8; 32]>::try_into(state.to_vec()).expect("to succeed"),
+            ),
+            pkt_retransmitter: PacketRetransmitter::inactive(SESSION_REQUEST_TIMEOUT),
+            pkt_tx,
+            rx: Some(rx),
+            src_id,
+            started: R::now(),
+            state: PendingSessionState::AwaitingSessionRequest { token },
+            static_key,
+        };
+        session.check_clock_skew(&blocks)?;
+
         let pkt = RetryBuilder::default()
             .with_k_header_1(intro_key)
             .with_src_id(dst_id)
@@ -240,7 +270,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         );
 
         // retry messages are not retransmitted
-        if let Err(error) = pkt_tx.try_send(Packet { pkt, address }) {
+        if let Err(error) = session.pkt_tx.try_send(Packet { pkt, address }) {
             tracing::warn!(
                 target: LOG_TARGET,
                 ?dst_id,
@@ -251,23 +281,71 @@ impl<R: Runtime> InboundSsu2Session<R> {
             );
         }
 
-        Ok(Self {
-            address,
-            dst_id,
-            intro_key,
-            net_id,
-            noise_ctx: NoiseContext::new(
-                TryInto::<[u8; 32]>::try_into(chaining_key.to_vec()).expect("to succeed"),
-                TryInto::<[u8; 32]>::try_into(state.to_vec()).expect("to succeed"),
-            ),
-            pkt_retransmitter: PacketRetransmitter::inactive(SESSION_REQUEST_TIMEOUT),
-            pkt_tx,
-            rx: Some(rx),
-            src_id,
-            started: R::now(),
-            state: PendingSessionState::AwaitingSessionRequest { token },
-            static_key,
-        })
+        Ok(session)
+    }
+
+    /// Check clock skew of remote router.
+    ///
+    /// If `blocks` doesn't contain `DateTime` block or the timestamp is either too far in the past
+    /// or future, send `Retry` message with a termination block and return error.
+    fn check_clock_skew(&self, blocks: &[Block]) -> Result<(), Ssu2Error> {
+        let Some(Block::DateTime { timestamp }) =
+            blocks.iter().find(|block| core::matches!(block, Block::DateTime { .. }))
+        else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                "date time block not found from SessionRequest",
+            );
+            return Err(Ssu2Error::Malformed);
+        };
+
+        let now = R::time_since_epoch();
+        let remote_time = Duration::from_secs(*timestamp as u64);
+        let future = remote_time.saturating_sub(now);
+        let past = now.saturating_sub(remote_time);
+
+        if past <= MAX_CLOCK_SKEW && future <= MAX_CLOCK_SKEW {
+            return Ok(());
+        }
+
+        tracing::warn!(
+            target: LOG_TARGET,
+            dst_id = ?self.dst_id,
+            src_id = ?self.src_id,
+            our_time = ?now,
+            ?remote_time,
+            ?past,
+            ?future,
+            "excessive clock skew",
+        );
+
+        let pkt = RetryBuilder::default()
+            .with_k_header_1(self.intro_key)
+            .with_src_id(self.dst_id)
+            .with_dst_id(self.src_id)
+            .with_token(0)
+            .with_termination(TerminationReason::ClockSkew)
+            .with_address(self.address)
+            .with_net_id(self.net_id)
+            .build::<R>()
+            .to_vec();
+
+        if let Err(error) = self.pkt_tx.try_send(Packet {
+            pkt,
+            address: self.address,
+        }) {
+            tracing::warn!(
+                target: LOG_TARGET,
+                local_dst_id = ?self.dst_id,
+                local_src_id = ?self.src_id,
+                remote_src_id = ?self.src_id,
+                address = ?self.address,
+                ?error,
+                "failed to send Retry with termination",
+            );
+        }
+
+        Err(Ssu2Error::SessionTerminated(TerminationReason::ClockSkew))
     }
 
     /// Handle `SessionRequest` message.
@@ -400,7 +478,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
         // MixHash(ciphertext)
         self.noise_ctx.mix_hash(&pkt[64..pkt.len()]);
 
-        if let Err(error) = Block::parse(&payload) {
+        let blocks = Block::parse(&payload).map_err(|error| {
             tracing::warn!(
                 target: LOG_TARGET,
                 dst_id = ?self.dst_id,
@@ -409,8 +487,9 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 "malformed SessionRequest payload",
             );
             debug_assert!(false);
-            return Err(Ssu2Error::Malformed);
-        }
+            Ssu2Error::Malformed
+        })?;
+        self.check_clock_skew(&blocks)?;
 
         let sk = EphemeralPrivateKey::random(R::rng());
         let pk = sk.public();
@@ -1252,6 +1331,73 @@ mod tests {
             Ok(Err(_)) => panic!("error"),
             Ok(Ok(PendingSsu2SessionStatus::Timeout { .. })) => {}
             _ => panic!("invalid result"),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_request_clock_skew() {
+        let (
+            InboundContext {
+                mut inbound_session,
+                inbound_socket_rx,
+                inbound_session_tx: ib_sess_tx,
+            },
+            OutboundContext {
+                outbound_session,
+                outbound_session_tx: ob_sess_tx,
+                outbound_socket_rx,
+                ..
+            },
+        ) = create_session();
+        let intro_key = inbound_session.intro_key;
+
+        // spawn outbound session in a separate thread and modify its
+        // clock to be behind 2x maximum clock skew
+        let _handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async move {
+                MockRuntime::set_time(Some(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .expect("to succeed")
+                        - 2 * MAX_CLOCK_SKEW,
+                ));
+
+                outbound_session.await;
+            })
+        });
+
+        // send retry message to outbound session
+        {
+            let Packet { mut pkt, address } = inbound_socket_rx.try_recv().unwrap();
+            let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+            let _connection_id = reader.dst_id();
+
+            ob_sess_tx.send(Packet { pkt, address }).await.unwrap();
+        }
+
+        // read session request from outbound session and verify inbound session is terminated
+        let Packet { mut pkt, address } = outbound_socket_rx.recv().await.unwrap();
+        let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+        let _connection_id = reader.dst_id();
+        ib_sess_tx.send(Packet { pkt, address }).await.unwrap();
+
+        tokio::select! {
+            res = &mut inbound_session => match res {
+                PendingSsu2SessionStatus::SessionTerminated { .. } => {}
+                _ => panic!("invalid session status"),
+            },
+            _ = inbound_socket_rx.recv() => unreachable!(),
+        }
+
+        let Packet { mut pkt, .. } = inbound_socket_rx.try_recv().unwrap();
+        let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+        let _connection_id = reader.dst_id();
+        match reader.parse(intro_key).unwrap() {
+            HeaderKind::Retry { token, .. } => {
+                assert_eq!(token, 0);
+            }
+            _ => panic!("invalid header type"),
         }
     }
 }

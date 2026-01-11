@@ -186,6 +186,35 @@ impl TerminationReason {
             _ => TerminationReason::Unspecified,
         }
     }
+
+    /// Convert SSU2 termination reason into `u8`.
+    pub fn from_ssu2(self) -> u8 {
+        match self {
+            TerminationReason::Unspecified => 0,
+            TerminationReason::TerminationReceived => 1,
+            TerminationReason::IdleTimeout => 2,
+            TerminationReason::RouterShutdown => 3,
+            TerminationReason::AeadFailure => 4,
+            TerminationReason::IncompatibleOptions => 5,
+            TerminationReason::IncompatibleSignatureKind => 6,
+            TerminationReason::ClockSkew => 7,
+            TerminationReason::PaddinViolation => 8,
+            TerminationReason::AeadFramingError => 9,
+            TerminationReason::PayloadFormatError => 10,
+            TerminationReason::Ssu2HandshakeError(1) => 11,
+            TerminationReason::Ssu2HandshakeError(2) => 12,
+            TerminationReason::Ssu2HandshakeError(3) => 13,
+            TerminationReason::IntraFrameReadTimeout => 14,
+            TerminationReason::InvalidRouterInfo => 15,
+            TerminationReason::Banned => 17,
+            TerminationReason::BadToken => 18,
+            TerminationReason::ConnectionLimits => 19,
+            TerminationReason::IncompatibleVersion => 20,
+            TerminationReason::WrongNetId => 21,
+            TerminationReason::ReplacedByNewSession => 22,
+            _ => 255,
+        }
+    }
 }
 
 /// Direction of the connection.

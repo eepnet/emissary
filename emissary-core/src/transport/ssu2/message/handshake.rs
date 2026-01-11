@@ -22,7 +22,7 @@ use crate::{
         EphemeralPublicKey, StaticPublicKey,
     },
     runtime::Runtime,
-    transport::ssu2::message::*,
+    transport::{ssu2::message::*, TerminationReason},
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -492,6 +492,9 @@ pub struct RetryBuilder {
     /// Source connection ID.
     src_id: Option<u64>,
 
+    /// Termination reason.
+    termination: Option<TerminationReason>,
+
     /// Token.
     token: Option<u64>,
 }
@@ -504,6 +507,7 @@ impl Default for RetryBuilder {
             k_header_1: None,
             net_id: 2u8,
             src_id: None,
+            termination: None,
             token: None,
         }
     }
@@ -540,6 +544,12 @@ impl RetryBuilder {
         self
     }
 
+    /// Specify termination reason.
+    pub fn with_termination(mut self, termination: TerminationReason) -> Self {
+        self.termination = Some(termination);
+        self
+    }
+
     /// Specify network ID.
     pub fn with_net_id(mut self, net_id: u8) -> Self {
         self.net_id = net_id;
@@ -573,15 +583,31 @@ impl RetryBuilder {
         let payload_size = 3 * 3 + 4 + 6 + padding.len() + POLY13055_MAC_LEN;
         let k_header_1 = self.k_header_1.expect("to exist");
 
-        let mut payload = [
-            Block::DateTime {
-                timestamp: R::time_since_epoch().as_secs() as u32,
-            },
-            Block::Address {
-                address: self.address.expect("to exist"),
-            },
-            Block::Padding { padding },
-        ]
+        let mut payload = if let Some(reason) = self.termination {
+            vec![
+                Block::DateTime {
+                    timestamp: R::time_since_epoch().as_secs() as u32,
+                },
+                Block::Address {
+                    address: self.address.expect("to exist"),
+                },
+                Block::Termination {
+                    num_valid_pkts: 0,
+                    reason: reason.from_ssu2(),
+                },
+                Block::Padding { padding },
+            ]
+        } else {
+            vec![
+                Block::DateTime {
+                    timestamp: R::time_since_epoch().as_secs() as u32,
+                },
+                Block::Address {
+                    address: self.address.expect("to exist"),
+                },
+                Block::Padding { padding },
+            ]
+        }
         .into_iter()
         .fold(BytesMut::with_capacity(payload_size), |mut out, block| {
             out.put_slice(&block.serialize());
