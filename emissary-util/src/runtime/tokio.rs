@@ -26,7 +26,7 @@ use flate2::{
 };
 use futures::{AsyncRead as _, AsyncWrite as _, Stream};
 use rand_core::{CryptoRng, RngCore};
-use tokio::{net, task, time::Sleep};
+use tokio::{io::ReadBuf, net, task, time::Sleep};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[cfg(feature = "metrics")]
@@ -216,6 +216,33 @@ impl UdpSocket for TokioUdpSocket {
     #[inline]
     fn recv_from(&mut self, buf: &mut [u8]) -> impl Future<Output = Option<(usize, SocketAddr)>> {
         async move { self.0.recv_from(buf).await.ok() }
+    }
+
+    #[inline]
+    fn poll_send_to(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: SocketAddr,
+    ) -> Poll<Option<usize>> {
+        Poll::Ready(futures::ready!(self.0.poll_send_to(cx, buf, target)).ok())
+    }
+
+    #[inline]
+    fn poll_recv_from(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Option<(usize, SocketAddr)>> {
+        let mut buf = ReadBuf::new(buf);
+
+        match futures::ready!(self.0.poll_recv_from(cx, &mut buf)) {
+            Err(_) => Poll::Ready(None),
+            Ok(from) => {
+                let nread = buf.filled().len();
+                Poll::Ready(Some((nread, from)))
+            }
+        }
     }
 
     fn local_address(&self) -> Option<SocketAddr> {

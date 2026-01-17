@@ -76,6 +76,17 @@ pub trait UdpSocket: Unpin + Send + Sized + Clone {
         &mut self,
         buf: &mut [u8],
     ) -> impl Future<Output = Option<(usize, SocketAddr)>> + Send;
+    fn poll_send_to(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+        target: SocketAddr,
+    ) -> Poll<Option<usize>>;
+    fn poll_recv_from(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<Option<(usize, SocketAddr)>>;
     fn local_address(&self) -> Option<SocketAddr>;
 }
 
