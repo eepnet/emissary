@@ -620,22 +620,25 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             }
         }
 
-        loop {
-            match this.active_sessions.poll_next_unpin(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(None),
-                Poll::Ready(Some(termination_ctx)) => {
-                    tracing::trace!(
-                        target: LOG_TARGET,
-                        router_id = %termination_ctx.router_id,
-                        connection_id = %termination_ctx.dst_id,
-                        "terminate active ssu2 session",
-                    );
+        match this.active_sessions.poll_next_unpin(cx) {
+            Poll::Pending => {}
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Ready(Some(termination_ctx)) => {
+                let router_id = termination_ctx.router_id.clone();
+                let reason = termination_ctx.reason;
 
-                    this.terminating_session
-                        .push(TerminatingSsu2Session::<R>::new(termination_ctx));
-                    this.router_ctx.metrics_handle().gauge(NUM_CONNECTIONS).decrement(1);
-                }
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    %router_id,
+                    connection_id = %termination_ctx.dst_id,
+                    ?reason,
+                    "terminate active ssu2 session",
+                );
+
+                this.terminating_session.push(TerminatingSsu2Session::<R>::new(termination_ctx));
+                this.router_ctx.metrics_handle().gauge(NUM_CONNECTIONS).decrement(1);
+
+                return Poll::Ready(Some(TransportEvent::ConnectionClosed { router_id, reason }));
             }
         }
 
@@ -886,5 +889,128 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
 
         self.waker = Some(cx.waker().clone());
         Poll::Pending
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::{
+        events::EventManager,
+        i2np::{Message, MessageType, I2NP_MESSAGE_EXPIRATION},
+        primitives::RouterInfoBuilder,
+        profile::ProfileStorage,
+        runtime::{mock::MockRuntime, UdpSocket},
+        subsystem::OutboundMessage,
+        transport::ssu2::session::KeyContext,
+    };
+
+    #[tokio::test]
+    async fn session_terminated() {
+        let storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
+        let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
+        let router_ctx = RouterContext::new(
+            MockRuntime::register_metrics(vec![], None),
+            storage,
+            router_info.identity.id(),
+            Bytes::from(router_info.serialize(&signing_key)),
+            static_key.clone(),
+            signing_key,
+            2u8,
+            event_handle.clone(),
+        );
+        let (transport_tx, transport_rx) = channel(128);
+        let mut socket = Ssu2Socket::<MockRuntime>::new(
+            <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap(),
+            static_key,
+            [0xaa; 32],
+            transport_tx,
+            router_ctx,
+        );
+
+        let (_pkt_tx, pkt_rx) = channel(128);
+        let context = Ssu2SessionContext {
+            address: "127.0.0.1:8888".parse().unwrap(),
+            dst_id: 1337u64,
+            intro_key: [0xbb; 32],
+            pkt_rx,
+            recv_key_ctx: KeyContext {
+                k_data: [0xcc; 32],
+                k_header_2: [0xdd; 32],
+            },
+            router_id: RouterId::random(),
+            send_key_ctx: KeyContext {
+                k_data: [0xee; 32],
+                k_header_2: [0xff; 32],
+            },
+        };
+        socket.active_sessions.push(
+            Ssu2Session::<MockRuntime>::new(
+                context,
+                socket.pkt_tx.clone(),
+                socket.transport_tx.clone(),
+                socket.router_ctx.metrics_handle().clone(),
+            )
+            .run(),
+        );
+
+        let tx = tokio::select! {
+            event = socket.next() => {
+                panic!("did not expect event {event:?}")
+            }
+            event = transport_rx.recv() => match event.unwrap() {
+                SubsystemEvent::ConnectionEstablished { tx, .. } => tx,
+                event => panic!("unexpected event: {event:?}"),
+            }
+        };
+
+        // send outbound message to the active session
+        tx.send(OutboundMessage::Message(Message {
+            message_type: MessageType::DatabaseStore,
+            message_id: 1337,
+            expiration: MockRuntime::time_since_epoch() + I2NP_MESSAGE_EXPIRATION,
+            payload: vec![0; 512],
+        }))
+        .await
+        .unwrap();
+
+        // verify the message is received by `Ssu2Socket`
+        let _pkt = tokio::time::timeout(Duration::from_secs(5), socket.pkt_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        let mut subsys_notified = false;
+        let mut transport_manager_notified = false;
+
+        let future = async {
+            while !subsys_notified || !transport_manager_notified {
+                tokio::select! {
+                    event = transport_rx.recv() => match event.unwrap() {
+                        SubsystemEvent::ConnectionClosed { .. } => {
+                            subsys_notified = true;
+                        }
+                        _ => {}
+                    },
+                    event = socket.next() => match event.unwrap() {
+                        TransportEvent::ConnectionClosed { .. } => {
+                            transport_manager_notified = true
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(15), future).await {
+            Err(_) => panic!("subsystem manager or transport manager was not notified in time"),
+            Ok(_) => {}
+        }
     }
 }
