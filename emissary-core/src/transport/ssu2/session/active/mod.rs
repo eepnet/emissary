@@ -25,8 +25,9 @@ use crate::{
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
-            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader, PeerTestMessage},
             metrics::*,
+            peer_test::types::PeerTestHandle,
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -210,6 +211,9 @@ pub struct Ssu2Session<R: Runtime> {
     /// to send messages to this connection.
     msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
 
+    /// Peer test handle.
+    peer_test_handle: PeerTestHandle,
+
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
 
@@ -251,6 +255,7 @@ impl<R: Runtime> Ssu2Session<R> {
         socket: R::UdpSocket,
         transport_tx: Sender<SubsystemEvent>,
         metrics: R::MetricsHandle,
+        peer_test_handle: PeerTestHandle,
     ) -> Self {
         let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
         let pkt_num = Arc::new(AtomicU32::new(1u32));
@@ -273,6 +278,7 @@ impl<R: Runtime> Ssu2Session<R> {
             metrics: metrics.clone(),
             msg_rx,
             msg_tx,
+            peer_test_handle,
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             recv_key_ctx: context.recv_key_ctx,
@@ -326,6 +332,23 @@ impl<R: Runtime> Ssu2Session<R> {
                 ?error,
                 "failed to dispatch messages to subsystems",
             );
+        }
+    }
+
+    /// Handle peer test message.
+    fn handle_peer_test(&mut self, message: PeerTestMessage) {
+        match &message {
+            PeerTestMessage::Message1 {
+                nonce: _,
+                timestamp: _,
+                address: _,
+                signature: _,
+            } => {
+                // TODO: verify signature
+                // TODO: validate address
+                // TODO: send message to `PeerTestManager`
+            }
+            PeerTestMessage::Dummy => unreachable!(),
         }
     }
 
@@ -481,8 +504,13 @@ impl<R: Runtime> Ssu2Session<R> {
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
                     self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
                 }
+                Block::PeerTest { message } => {
+                    self.remote_ack.register_pkt(pkt_num);
+                    self.ack_timer.schedule_ack(self.transmission.round_trip_time());
+                    self.handle_peer_test(message);
+                }
                 block => {
-                    tracing::debug!(
+                    tracing::warn!(
                         target: LOG_TARGET,
                         router_id = %self.router_id,
                         ?block,
@@ -771,6 +799,7 @@ mod tests {
         i2np::{MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::MessageId,
         runtime::mock::MockRuntime,
+        transport::ssu2::peer_test::types::PeerTestEventRecycle,
     };
     use thingbuf::mpsc::channel;
 
@@ -800,6 +829,8 @@ mod tests {
                 k_header_2: [2u8; 32],
             },
         };
+        let (event_tx, event_rx) = with_recycle(16, PeerTestEventRecycle::default());
+        let handle = PeerTestHandle::new(event_tx);
 
         let cmd_tx = {
             let (transport_tx, transport_rx) = channel(16);
@@ -810,6 +841,7 @@ mod tests {
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
+                    peer_test_handle,
                 )
                 .run(),
             );
@@ -946,6 +978,8 @@ mod tests {
                 k_header_2: [2u8; 32],
             },
         };
+        let (event_tx, event_rx) = with_recycle(16, PeerTestEventRecycle::default());
+        let handle = PeerTestHandle::new(event_tx);
 
         let (cmd_tx, handle) = {
             let handle = tokio::spawn(
@@ -954,6 +988,7 @@ mod tests {
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
+                    peer_test_handle,
                 )
                 .run(),
             );

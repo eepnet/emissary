@@ -39,6 +39,7 @@ use thingbuf::mpsc::Sender;
 
 mod message;
 mod metrics;
+mod peer_test;
 mod session;
 mod socket;
 

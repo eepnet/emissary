@@ -37,7 +37,7 @@ use nom::{
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
     ops::{Deref, Range},
 };
 
@@ -76,6 +76,9 @@ const PKT_MIN_SIZE: usize = 24usize;
 
 /// Protocol version.
 const PROTOCOL_VERSION: u8 = 2u8;
+
+/// Router hash length.
+const ROUTER_HASH_LEN: usize = 32usize;
 
 /// SSU2 block type.
 #[derive(Debug)]
@@ -161,8 +164,29 @@ impl BlockType {
     }
 }
 
+/// Parsed `PeerTest` message.
+#[derive(Debug, Default, Clone)]
+pub enum PeerTestMessage {
+    /// Message 1, sent from Alice to Bob.
+    Message1 {
+        /// Test nonce.
+        nonce: u32,
+
+        /// Timestamp.
+        timestamp: u32,
+
+        /// Alice's address.
+        address: SocketAddr,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
+    #[default]
+    Dummy,
+}
+
 /// SSU2 message block.
-#[allow(unused)]
 pub enum Block {
     /// Date time.
     DateTime {
@@ -249,18 +273,22 @@ pub enum Block {
     },
 
     /// Relay request.
+    #[allow(unused)]
     RelayRequest {},
 
     /// Relay response.
+    #[allow(unused)]
     RelayResponse {},
 
     /// Relay intro.
+    #[allow(unused)]
     RelayIntro {},
 
     /// Peer test.
-    PeerTest {},
+    PeerTest { message: PeerTestMessage },
 
     /// Next nonce.
+    #[allow(unused)]
     NextNonce {},
 
     /// Ack.
@@ -284,9 +312,11 @@ pub enum Block {
     },
 
     /// Relay tag request.
+    #[allow(unused)]
     RelayTagRequest {},
 
     /// Relay tag.
+    #[allow(unused)]
     RelayTag {},
 
     /// New token.
@@ -421,6 +451,8 @@ impl fmt::Debug for Block {
                 .finish(),
             Self::Congestion { flag } =>
                 f.debug_struct("Block::Congestion").field("flag", &flag).finish(),
+            Self::PeerTest { message } =>
+                f.debug_struct("Block::PeerTest").field("message", &message).finish(),
             _ => f.debug_struct("Unsupported").finish(),
         }
     }
@@ -691,6 +723,74 @@ impl Block {
         Ok((rest, Block::Congestion { flag }))
     }
 
+    /// Parse [`MessageBlock::PeerTest`].
+    fn parse_peer_test(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
+        let (rest, _size) = be_u16(input)?;
+        let (rest, msg) = be_u8(rest)?;
+        let (rest, _code) = be_u8(rest)?;
+        let (rest, _flag) = be_u8(rest)?;
+        let (rest, _maybe_hash) = match msg {
+            2 | 4 => {
+                let (rest, hash) = take(ROUTER_HASH_LEN)(rest)?;
+                (rest, Some(hash))
+            }
+            _ => (rest, None),
+        };
+        let (rest, _version) = be_u8(rest)?;
+        let (rest, nonce) = be_u32(rest)?;
+        let (rest, timestamp) = be_u32(rest)?;
+        let (rest, address_size) = be_u8(rest)?;
+        let (rest, address) = match address_size {
+            6 => {
+                let (rest, port) = be_u16(rest)?;
+                let (rest, address) = be_u32(rest)?;
+
+                (
+                    rest,
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::from(address), port)),
+                )
+            }
+            18 => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "ipv6 not supported"
+                );
+                return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
+            }
+            _ => return Err(Err::Error(Ssu2ParseError::InvalidBitstream)),
+        };
+        let (rest, maybe_signature) = match msg {
+            1..=4 => {
+                let (rest, signature) = take(64usize)(rest)?;
+
+                (rest, Some(signature))
+            }
+            _ => {
+                // TODO: parse optional signature
+                // TODO: use `_size` to determine if it's set
+                (rest, None)
+            }
+        };
+
+        match msg {
+            1 => match maybe_signature {
+                Some(signature) => Ok((
+                    rest,
+                    Block::PeerTest {
+                        message: PeerTestMessage::Message1 {
+                            nonce,
+                            timestamp,
+                            address,
+                            signature: signature.to_vec(),
+                        },
+                    },
+                )),
+                None => Err(Err::Error(Ssu2ParseError::PeerTest1SignatureMissing)),
+            },
+            _ => todo!(),
+        }
+    }
+
     /// Attempt to parse unsupported block from `input`
     fn parse_unsupported_block(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
@@ -719,6 +819,7 @@ impl Block {
             Some(BlockType::FirstPacketNumber) => Self::parse_first_packet_number(rest),
             Some(BlockType::Congestion) => Self::parse_congestion(rest),
             Some(BlockType::Padding) => Self::parse_padding(rest),
+            Some(BlockType::PeerTest) => Self::parse_peer_test(rest),
             Some(block_type) => {
                 tracing::warn!(
                     target: LOG_TARGET,

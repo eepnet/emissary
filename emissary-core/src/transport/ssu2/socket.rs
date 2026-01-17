@@ -27,6 +27,7 @@ use crate::{
         ssu2::{
             message::{HeaderKind, HeaderReader},
             metrics::*,
+            peer_test::PeerTestManager,
             session::{
                 active::{Ssu2Session, Ssu2SessionContext},
                 pending::{
@@ -175,6 +176,9 @@ pub struct Ssu2Socket<R: Runtime> {
     /// Outbound state.
     outbound_state: Bytes,
 
+    /// Peer test manager.
+    peer_test_manager: PeerTestManager<R>,
+
     /// Pending outbound sessions.
     ///
     /// Remote routers' intro keys indexed by their socket addresses.
@@ -234,6 +238,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             .update(&outbound_state)
             .update(static_key.public().to_vec())
             .finalize();
+        let peer_test_manager = PeerTestManager::new(router_ctx.profile_storage().clone());
 
         Self {
             active_sessions: R::join_set(),
@@ -241,6 +246,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             inbound_state: Bytes::from(inbound_state),
             intro_key,
             outbound_state: Bytes::from(outbound_state),
+            peer_test_manager,
             pending_outbound: HashMap::new(),
             pending_pkts: VecDeque::new(),
             pending_sessions: R::join_set(),
@@ -466,12 +472,20 @@ impl<R: Runtime> Ssu2Socket<R> {
             }
         };
 
+        // get handle to peer test manager.
+        let handle = self.peer_test_manager.handle();
+
+        // register session to `PeerTestManager`
+        self.peer_test_manager
+            .add_session(&context.router_id, context.dst_id, handle.cmd_tx());
+
         self.active_sessions.push(
             Ssu2Session::<R>::new(
                 context,
                 self.socket.clone(),
                 self.transport_tx.clone(),
                 self.router_ctx.metrics_handle().clone(),
+                handle,
             )
             .run(),
         );
@@ -926,12 +940,14 @@ mod tests {
                 k_header_2: [0xff; 32],
             },
         };
+        let handle = socket.peer_test_manager.handle();
         socket.active_sessions.push(
             Ssu2Session::<MockRuntime>::new(
                 context,
                 udp_socket,
                 socket.transport_tx.clone(),
                 socket.router_ctx.metrics_handle().clone(),
+                handle,
             )
             .run(),
         );
