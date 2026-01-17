@@ -230,20 +230,23 @@ pub struct ProfileStorage<R: Runtime> {
     /// Discovered routers.
     discovered_routers: Arc<RwLock<HashMap<RouterId, Vec<u8>>>>,
 
-    /// Untracked routers.
-    untracked: Arc<RwLock<HashSet<RouterId>>>,
-
     /// Fast routers.
     fast: Arc<RwLock<HashSet<RouterId>>>,
 
     /// Router profiles.
     profiles: Arc<RwLock<HashMap<RouterId, Profile>>>,
 
+    /// Raw router infos.
+    raw_router_infos: Arc<RwLock<HashMap<RouterId, Vec<u8>>>>,
+
     /// Router infos.
     routers: Arc<RwLock<HashMap<RouterId, RouterInfo>>>,
 
     /// Standard routers.
     standard: Arc<RwLock<HashSet<RouterId>>>,
+
+    /// Untracked routers.
+    untracked: Arc<RwLock<HashSet<RouterId>>>,
 
     /// Marker for `Runtime`.
     _runtime: PhantomData<R>,
@@ -259,12 +262,19 @@ impl<R: Runtime> ProfileStorage<R> {
             "initialize profile storage",
         );
 
-        let routers = routers
+        // TODO: not good
+        let (routers, raw_router_infos): (HashMap<_, _>, HashMap<_, _>) = routers
             .iter()
             .filter_map(|router| {
-                RouterInfo::parse(router).map(|router| (router.identity.id(), router)).ok()
+                RouterInfo::parse(router)
+                    .map(|parsed| {
+                        let router_id = parsed.identity.id();
+
+                        ((router_id.clone(), parsed), (router_id, router.clone()))
+                    })
+                    .ok()
             })
-            .collect::<HashMap<_, _>>();
+            .unzip();
 
         let mut profiles = profiles
             .iter()
@@ -406,6 +416,7 @@ impl<R: Runtime> ProfileStorage<R> {
             discovered_routers: Default::default(),
             fast: Arc::new(RwLock::new(fast)),
             profiles: Arc::new(RwLock::new(profiles)),
+            raw_router_infos: Arc::new(RwLock::new(raw_router_infos)),
             routers: Arc::new(RwLock::new(routers)),
             standard: Arc::new(RwLock::new(standard)),
             untracked: Arc::new(RwLock::new(untracked)),
@@ -448,7 +459,11 @@ impl<R: Runtime> ProfileStorage<R> {
         // if the router was accepted to profile storage, store the serialized router info
         // which is used to make a backup of the router
         if self.add_router(router_info) {
-            self.discovered_routers.write().insert(router_id, serialized.to_vec());
+            let serialized = serialized.to_vec();
+
+            self.raw_router_infos.write().insert(router_id.clone(), serialized.clone());
+            self.discovered_routers.write().insert(router_id, serialized);
+
             return true;
         }
 
@@ -464,6 +479,11 @@ impl<R: Runtime> ProfileStorage<R> {
     // TODO: why?
     pub fn get(&self, router: &RouterId) -> Option<RouterInfo> {
         self.routers.read().get(router).cloned()
+    }
+
+    /// Get raw router info of `router_id`.
+    pub fn get_raw(&self, router_id: &RouterId) -> Option<Vec<u8>> {
+        self.raw_router_infos.read().get(router_id).cloned()
     }
 
     /// Check if [`ProfileStorage`] contains `router_id`.
@@ -761,6 +781,7 @@ impl<R: Runtime> ProfileStorage<R> {
             discovered_routers: Default::default(),
             fast: Arc::new(RwLock::new(fast.into_iter().flatten().collect())),
             profiles: Arc::new(RwLock::new(profiles)),
+            raw_router_infos: Default::default(),
             routers: Arc::new(RwLock::new(routers)),
             standard: Arc::new(RwLock::new(standard.into_iter().flatten().collect())),
             untracked: Default::default(),

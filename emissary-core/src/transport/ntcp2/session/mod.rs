@@ -407,8 +407,6 @@ impl<R: Runtime> SessionManager<R> {
                     return Err(Error::NetworkMismatch);
                 }
 
-                profile_storage.add_router(router.clone());
-
                 Ok(Ntcp2Session::new(
                     Role::Responder,
                     router,
