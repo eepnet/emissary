@@ -510,8 +510,8 @@ pub enum Ssu2ParseError {
     /// Invalid SSU2 message block
     InvalidBlock(u8),
 
-    /// PeerTest message 1 is missing signature.
-    PeerTest1SignatureMissing,
+    /// Unknown peer test message code
+    UnknownPeerTestMessage(u8),
 }
 
 impl From<I2npParseError> for Ssu2ParseError {

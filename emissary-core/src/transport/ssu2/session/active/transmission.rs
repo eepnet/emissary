@@ -286,6 +286,11 @@ impl<R: Runtime> TransmissionManager<R> {
         }
     }
 
+    /// Does a payload of size `size` fit inside a single datagram.
+    pub fn fits_in_datagram(&self, size: usize) -> bool {
+        size + SSU2_OVERHEAD <= 1200
+    }
+
     /// Split `message` into segments.
     ///
     /// The created segments are stored into [`TransmissionManager`] which keeps track of which of
@@ -298,7 +303,7 @@ impl<R: Runtime> TransmissionManager<R> {
     /// `message` doesn't find inside an MTU, the iterator yields one `MessageKind::FirstFragment`
     /// and one or more `MessageKind::FollowOnFragment`s.
     pub fn segment(&mut self, message: Message) -> Option<Vec<(u32, MessageKind<'_>)>> {
-        if message.serialized_len_short() + SSU2_OVERHEAD <= 1200 {
+        if self.fits_in_datagram(message.serialized_len_short()) {
             self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
 
             // no window size left to send more packets
@@ -331,7 +336,7 @@ impl<R: Runtime> TransmissionManager<R> {
 
         let fragments = message.payload.chunks(1200).collect::<Vec<_>>();
         let num_fragments = fragments.len();
-        self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
+        self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(num_fragments as f64);
 
         let fragments = fragments
             .into_iter()

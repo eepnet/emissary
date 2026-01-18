@@ -64,25 +64,59 @@ impl PeerTestHandle {
     }
 
     /// Send peer test message 1 (Alice -> Bob) to `PeerTestManager` for further processing.
-    pub fn send_message_1(
+    pub fn handle_alice_request(
         &mut self,
         router_id: RouterId,
         nonce: u32,
         address: SocketAddr,
         signature_payload: Vec<u8>,
     ) {
-        self.pending_tests.insert(nonce, signature_payload);
+        self.pending_tests.insert(nonce, signature_payload.clone());
 
-        let _ = self.event_tx.try_send(PeerTestEvent::Message1 {
+        let _ = self.event_tx.try_send(PeerTestEvent::AliceRequest {
             address,
+            message: signature_payload,
             nonce,
             router_id,
             tx: self.cmd_tx.clone(),
         });
     }
 
-    /// Attempt to take signature payload of peer test 1 message.
-    pub fn take_signature_payload(&mut self, nonce: &u32) -> Option<Vec<u8>> {
+    /// Send peer test message 2 (Bob -> Charlie) to `PeerTestManager` for further processing.
+    pub fn handle_bob_request(
+        &mut self,
+        router_id: RouterId,
+        nonce: u32,
+        address: SocketAddr,
+        message: Vec<u8>,
+    ) {
+        self.pending_tests.insert(nonce, message.clone());
+
+        let _ = self.event_tx.try_send(PeerTestEvent::BobRequest {
+            address,
+            nonce,
+            router_id,
+            message,
+            tx: self.cmd_tx.clone(),
+        });
+    }
+
+    /// Relay Charlie's peer test response to Alice.
+    pub fn handle_charlie_response(
+        &mut self,
+        nonce: u32,
+        rejection: Option<RejectionReason>,
+        message: Vec<u8>,
+    ) {
+        let _ = self.event_tx.try_send(PeerTestEvent::CharlieResponse {
+            nonce,
+            rejection,
+            message,
+        });
+    }
+
+    /// Attempt to take the stored message of Alice/Bob request peer test message.
+    pub fn take_message(&mut self, nonce: &u32) -> Option<Vec<u8>> {
         self.pending_tests.remove(nonce)
     }
 }
@@ -111,10 +145,13 @@ impl thingbuf::Recycle<PeerTestEvent> for PeerTestEventRecycle {
 
 #[derive(Default)]
 pub enum PeerTestEvent {
-    /// Handle peer test message 1.
-    Message1 {
+    /// Handle peer test message 1, i.e., Alice requesting Bob.
+    AliceRequest {
         /// Socket address of Alice.
         address: SocketAddr,
+
+        /// Message received from Alice + signature.
+        message: Vec<u8>,
 
         /// Test nonce.
         nonce: u32,
@@ -124,6 +161,38 @@ pub enum PeerTestEvent {
 
         /// TX channel for sending commands back to active session.
         tx: Sender<PeerTestCommand>,
+    },
+
+    /// Handle peer test message 2, i.e., Bob requesting Charlie.
+    BobRequest {
+        /// Socket address of Alice.
+        address: SocketAddr,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Message received from Alice.
+        message: Vec<u8>,
+
+        /// Router ID of Alice.
+        router_id: RouterId,
+
+        /// TX channel for sending commands back to active session.
+        tx: Sender<PeerTestCommand>,
+    },
+
+    /// Handle peer test response from Charlie.
+    CharlieResponse {
+        /// Test nonce.
+        nonce: u32,
+
+        /// Rejection reason.
+        ///
+        /// `None` if Charlie accepted peer test request.
+        rejection: Option<RejectionReason>,
+
+        /// Message + signature sent by Charlie.
+        message: Vec<u8>,
     },
 
     #[default]
@@ -230,15 +299,47 @@ pub enum PeerTestCommand {
     },
 
     /// Send peer test request from Bob to Charlie.
-    TestPeer {
+    RequestCharlie {
         /// Socket address of Alice.
         address: SocketAddr,
+
+        /// Message received from Alice.
+        message: Vec<u8>,
 
         /// Test nonce.
         nonce: u32,
 
+        /// Router ID of Alice.
+        router_id: RouterId,
+
         /// Serialized router info of Alice.
         router_info: Vec<u8>,
+    },
+
+    /// Accept peer test request from Alice as Charlie.
+    AcceptAlice {
+        /// Router ID of Alice.
+        router_id: RouterId,
+
+        /// Test nonce.
+        nonce: u32,
+    },
+
+    /// Relay Charlie's response to Alice.
+    RelayCharlieResponse {
+        /// Test nonce,
+        nonce: u32,
+
+        /// Rejection reason.
+        ///
+        /// `None` if Charlie accepted the peer test request.
+        rejection: Option<RejectionReason>,
+
+        /// Charlie's router ID.
+        router_id: RouterId,
+
+        /// Message + signature received from Charlie.
+        message: Vec<u8>,
     },
 
     #[default]

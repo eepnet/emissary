@@ -28,6 +28,27 @@ use core::fmt;
 
 pub mod parser;
 
+/// Peer test error.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PeerTestError {
+    /// Peer test session doesn't exist
+    NonExistentPeerTestSession(u64),
+
+    /// Unexpected peer test message.
+    UnexpectedMessage(u8),
+}
+
+impl fmt::Display for PeerTestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonExistentPeerTestSession(id) =>
+                write!(f, "remote peer test session doesn't exist: {id}"),
+            Self::UnexpectedMessage(expected) =>
+                write!(f, "unexpected message, expected {expected}"),
+        }
+    }
+}
+
 /// SSU2 error.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Ssu2Error {
@@ -57,6 +78,9 @@ pub enum Ssu2Error {
 
     /// Network mismatch.
     NetworkMismatch,
+
+    /// Peer test error.
+    PeerTest(PeerTestError),
 }
 
 impl fmt::Display for Ssu2Error {
@@ -71,6 +95,7 @@ impl fmt::Display for Ssu2Error {
             Self::UnexpectedMessage => write!(f, "unexpected message"),
             Self::TokenMismatch => write!(f, "token mismatch"),
             Self::NetworkMismatch => write!(f, "network mismatch"),
+            Self::PeerTest(error) => write!(f, "{error}"),
         }
     }
 }
@@ -494,6 +519,12 @@ impl From<Error> for Ssu2Error {
 impl From<RoutingError> for Error {
     fn from(value: RoutingError) -> Self {
         Error::Routing(value)
+    }
+}
+
+impl From<PeerTestError> for Ssu2Error {
+    fn from(value: PeerTestError) -> Self {
+        Ssu2Error::PeerTest(value)
     }
 }
 

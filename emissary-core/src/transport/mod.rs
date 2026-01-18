@@ -377,7 +377,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             router_ctx: self.router_ctx,
             // publish the router info 10 seconds after booting, otherwise republish it periodically
             // in intervals of [`ROUTER_INFO_REPUBLISH_INTERVAL`]
-            router_info_republish_timer: R::timer(Duration::from_secs(10)),
+            router_info_republish_timer: R::timer(Duration::from_secs(2)),
             routers: HashSet::new(),
             shutting_down: false,
             ssu2_config: self.ssu2_config,

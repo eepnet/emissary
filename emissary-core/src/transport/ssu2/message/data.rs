@@ -19,6 +19,7 @@
 use crate::{
     crypto::chachapoly::{ChaCha, ChaChaPoly},
     i2np::MessageType as I2npMessageType,
+    primitives::RouterId,
     runtime::Runtime,
     transport::{
         ssu2::{message::*, peer_test::types::RejectionReason, session::KeyContext},
@@ -93,8 +94,59 @@ pub enum PeerTestBlock {
         ///
         /// Sent by Alice in peer test 1 message and covers all the fields
         /// the signature verifies and the signature itself.
-        signature_payload: Vec<u8>,
+        message: Vec<u8>,
     },
+
+    /// Request Charlie to participate in a peer test for Alice.
+    RequestCharlie {
+        /// Router ID of Alice.
+        router_id: RouterId,
+
+        /// Message sent by Alice + signature.
+        message: Vec<u8>,
+    },
+
+    /// Accept peer test request from Bob for Alice as Charlie.
+    AcceptAlice {
+        /// Message sent by Alice + signature from Charlie.
+        message: Vec<u8>,
+
+        /// Rejection reason.
+        ///
+        /// `None` if Charlie accepted the peer test request.
+        rejection: Option<RejectionReason>,
+    },
+
+    /// Relay Charlie's response to Alice's request as Bob.
+    RelayCharlieResponse {
+        /// Message sent by Alice + signature from Charlie.
+        message: Vec<u8>,
+
+        /// Rejection reason.
+        ///
+        /// `None` if Charlie accepted the peer test request.
+        rejection: Option<RejectionReason>,
+
+        /// Router ID of Charlie.
+        router_id: RouterId,
+    },
+}
+
+#[allow(unused)]
+impl PeerTestBlock {
+    /// Get serialized length of the block.
+    pub fn serialized_len(&self) -> usize {
+        // block type + block length + message number + code + flag
+        let overhead = 1 + 2 + 1 + 1 + 1;
+
+        match self {
+            Self::BobReject { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
+            Self::RequestCharlie { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
+            Self::AcceptAlice { message, .. } => overhead + message.len(),
+            Self::RelayCharlieResponse { message, .. } =>
+                overhead + message.len() + ROUTER_HASH_LEN,
+        }
+    }
 }
 
 /// Data message
@@ -281,18 +333,44 @@ impl<'a> DataMessageBuilder<'a> {
 
             match self.peer_test_block.take() {
                 None => {}
-                Some(PeerTestBlock::BobReject {
-                    reason,
-                    signature_payload,
-                }) => {
-                    // TODO: add test and ensure `signature_payload` is the same that was sent
+                Some(PeerTestBlock::BobReject { reason, message }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + signature_payload.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
                     out.put_u8(4); // message 4 (bob -> alice)
-                    out.put_u8(reason.as_bob());
+                    out.put_u8(reason.as_bob()); // code
                     out.put_u8(0u8); // flag
                     out.put_slice(&[0u8; 32]);
-                    out.put_slice(&signature_payload);
+                    out.put_slice(&message);
+                }
+                Some(PeerTestBlock::RequestCharlie { router_id, message }) => {
+                    out.put_u8(BlockType::PeerTest.as_u8());
+                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u8(2); // message 2 (bob -> charlie)
+                    out.put_u8(0); // accept
+                    out.put_u8(0u8); // flag
+                    out.put_slice(&router_id.to_vec());
+                    out.put_slice(&message);
+                }
+                Some(PeerTestBlock::AcceptAlice { message, rejection }) => {
+                    out.put_u8(BlockType::PeerTest.as_u8());
+                    out.put_u16((3 + message.len()) as u16);
+                    out.put_u8(3); // message 3 (charlie -> bob)
+                    out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
+                    out.put_u8(0u8); // flag
+                    out.put_slice(&message);
+                }
+                Some(PeerTestBlock::RelayCharlieResponse {
+                    message,
+                    rejection,
+                    router_id,
+                }) => {
+                    out.put_u8(BlockType::PeerTest.as_u8());
+                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u8(4); // message 4 (bob -> alice)
+                    out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
+                    out.put_u8(0u8); // flag
+                    out.put_slice(&router_id.to_vec());
+                    out.put_slice(&message);
                 }
             }
 

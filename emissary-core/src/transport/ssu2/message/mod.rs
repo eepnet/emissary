@@ -21,10 +21,15 @@
 //! https://geti2p.net/spec/ssu2#noise-payload
 
 use crate::{
-    crypto::{chachapoly::ChaCha, EphemeralPublicKey},
+    crypto::{
+        chachapoly::{ChaCha, ChaChaPoly},
+        EphemeralPublicKey,
+    },
     error::{parser::Ssu2ParseError, Ssu2Error},
     i2np::{Message, MessageType as I2npMessageType},
-    primitives::{MessageId, RouterInfo},
+    primitives::{MessageId, RouterId, RouterInfo},
+    runtime::Runtime,
+    transport::ssu2::peer_test::types::RejectionReason,
 };
 
 use bytes::{BufMut, BytesMut};
@@ -33,6 +38,7 @@ use nom::{
     number::complete::{be_u16, be_u32, be_u64, be_u8},
     Err, IResult,
 };
+use rand_core::RngCore;
 
 use alloc::{boxed::Box, vec::Vec};
 use core::{
@@ -183,6 +189,45 @@ pub enum PeerTestMessage {
 
         /// Portion of the message that is covered by `signature`.
         message: Vec<u8>,
+    },
+
+    /// Message 2, sent from Bob to Charlie.
+    Message2 {
+        /// Alice's address.
+        address: SocketAddr,
+
+        /// Portion of the message that is covered by `signature`.
+        message: Vec<u8>,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Router ID of Alice.
+        router_id: RouterId,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
+    /// Message 3, sent from Charlie to Bob.
+    Message3 {
+        /// Portion of the message that is covered by `signature`.
+        message: Vec<u8>,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Rejection reason from Charlie, if request was not accepted.
+        rejection: Option<RejectionReason>,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
+    /// Message 6, from Alice to Charlie (out-of-session).
+    Message6 {
+        /// Test nonce.
+        nonce: u32,
     },
 
     #[default]
@@ -728,11 +773,11 @@ impl Block {
 
     /// Parse [`MessageBlock::PeerTest`].
     fn parse_peer_test(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
-        let (rest, _size) = be_u16(input)?;
+        let (rest, size) = be_u16(input)?;
         let (rest, msg) = be_u8(rest)?;
-        let (rest, _code) = be_u8(rest)?;
+        let (rest, code) = be_u8(rest)?;
         let (rest, _flag) = be_u8(rest)?;
-        let (rest, _maybe_hash) = match msg {
+        let (rest, router_hash) = match msg {
             2 | 4 => {
                 let (rest, hash) = take(ROUTER_HASH_LEN)(rest)?;
                 (rest, Some(hash))
@@ -775,36 +820,98 @@ impl Block {
                 (rest, Some(signature))
             }
             _ => {
-                // TODO: parse optional signature
-                // TODO: use `_size` to determine if it's set
-                (rest, None)
+                let bytes_left = (size as usize)
+                    .saturating_sub(1 + 1 + 1) // message, code, flag
+                    .saturating_sub(router_hash.map_or(0, |hash| hash.len()))
+                    .saturating_sub(1) // version
+                    .saturating_sub(4) // nonce
+                    .saturating_sub(4) // timesetamp
+                    .saturating_sub(1) // address size
+                    .saturating_sub(address_size as usize);
+
+                if bytes_left == ED25519_SIGNATURE_LEN {
+                    let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
+
+                    (rest, Some(signature))
+                } else {
+                    return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
+                }
             }
         };
 
         match msg {
-            1 => match maybe_signature {
-                Some(signature) => Ok((
-                    rest,
-                    Block::PeerTest {
-                        message: PeerTestMessage::Message1 {
-                            nonce,
-                            address,
-                            signature: signature.to_vec(),
-                            message: {
-                                let message_end = 1usize // version
+            1 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message1 {
+                        nonce,
+                        address,
+                        // signature exists since it was extracted for message 1
+                        signature: maybe_signature.expect("to exist").to_vec(),
+                        message: {
+                            let message_end = 1usize // version
                                     .saturating_add(4) // nonce
                                     .saturating_add(4) // timestamp
                                     .saturating_add(1) // address size
                                     .saturating_add(address_size as usize);
 
-                                message_start[..message_end].to_vec()
-                            },
+                            message_start[..message_end].to_vec()
                         },
                     },
-                )),
-                None => Err(Err::Error(Ssu2ParseError::PeerTest1SignatureMissing)),
-            },
-            _ => todo!(),
+                },
+            )),
+            2 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message2 {
+                        nonce,
+                        address,
+                        // signature exists since it was extracted for message 2
+                        signature: maybe_signature.expect("to exist").to_vec(),
+                        message: {
+                            let message_end = 1usize // version
+                                    .saturating_add(4) // nonce
+                                    .saturating_add(4) // timestamp
+                                    .saturating_add(1) // address size
+                                    .saturating_add(address_size as usize);
+
+                            message_start[..message_end].to_vec()
+                        },
+                        // `router_hash` must exist since it was extracted for message 2
+                        router_id: RouterId::from(router_hash.expect("to exist")),
+                    },
+                },
+            )),
+            3 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message3 {
+                        nonce,
+                        rejection: (code != 0).then(|| RejectionReason::from(code)),
+                        // signature exists since it was extracted for message 4
+                        signature: maybe_signature.expect("to exist").to_vec(),
+                        message: {
+                            let message_end = 1usize // version
+                                    .saturating_add(4) // nonce
+                                    .saturating_add(4) // timestamp
+                                    .saturating_add(1) // address size
+                                    .saturating_add(address_size as usize);
+
+                            message_start[..message_end].to_vec()
+                        },
+                    },
+                },
+            )),
+            4 => todo!("alice support not implemented"),
+            5 => todo!("alice support not implemented"),
+            6 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message6 { nonce },
+                },
+            )),
+            7 => todo!("alice support not implemented"),
+            msg => return Err(Err::Error(Ssu2ParseError::UnknownPeerTestMessage(msg))),
         }
     }
 
@@ -1089,12 +1196,24 @@ pub enum HeaderKind {
         /// Packet number.
         pkt_num: u32,
     },
+
+    /// Peer test
+    PeerTest {
+        /// Network ID.
+        net_id: u8,
+
+        /// Packet number.
+        pkt_num: u32,
+
+        /// Source connection ID.
+        src_id: u64,
+    },
 }
 
 impl fmt::Debug for HeaderKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            HeaderKind::Retry {
+            Self::Retry {
                 net_id,
                 pkt_num,
                 token,
@@ -1104,11 +1223,11 @@ impl fmt::Debug for HeaderKind {
                 .field("pkt_num", &pkt_num)
                 .field("token", &token)
                 .finish(),
-            HeaderKind::SessionConfirmed { pkt_num } => f
+            Self::SessionConfirmed { pkt_num } => f
                 .debug_struct("HeaderKind::SessionConfirmed")
                 .field("pkt_num", &pkt_num)
                 .finish(),
-            HeaderKind::SessionCreated {
+            Self::SessionCreated {
                 net_id, pkt_num, ..
             } => f
                 .debug_struct("HeaderKind::SessionCreated")
@@ -1143,6 +1262,16 @@ impl fmt::Debug for HeaderKind {
                 .debug_struct("HeaderKind::Data")
                 .field("pkt_num", &pkt_num)
                 .field("immediate_ack", &immediate_ack)
+                .finish(),
+            Self::PeerTest {
+                net_id,
+                pkt_num,
+                src_id,
+            } => f
+                .debug_struct("HeaderKind::PeerTest")
+                .field("net_id", &net_id)
+                .field("pkt_num", &pkt_num)
+                .field("src_id", &src_id)
                 .finish(),
         }
     }
@@ -1340,6 +1469,29 @@ impl<'a> HeaderReader<'a> {
                     src_id,
                 })
             }
+            MessageType::PeerTest => {
+                if ((header >> 40) as u8) != PROTOCOL_VERSION {
+                    return Err(Ssu2Error::InvalidVersion);
+                }
+
+                if self.pkt.len() < 32 {
+                    return Err(Ssu2Error::NotEnoughBytes);
+                }
+
+                ChaCha::with_iv(k_header_2, [0u8; 12]).decrypt_ref(&mut self.pkt[16..32]);
+
+                let net_id = ((header >> 48) & 0xff) as u8;
+                let pkt_num = u32::from_be(header as u32);
+                let src_id = u64::from_le_bytes(
+                    TryInto::<[u8; 8]>::try_into(&self.pkt[16..24]).expect("to succeed"),
+                );
+
+                Ok(HeaderKind::PeerTest {
+                    net_id,
+                    pkt_num,
+                    src_id,
+                })
+            }
             message_type => {
                 tracing::warn!(
                     target: LOG_TARGET,
@@ -1349,5 +1501,163 @@ impl<'a> HeaderReader<'a> {
                 Err(Ssu2Error::UnexpectedMessage)
             }
         }
+    }
+}
+
+/// Builder for `PeerTest`.
+pub struct PeerTestBuilder<'a> {
+    /// Address block.
+    address: Option<SocketAddr>,
+
+    /// Destination connection ID.
+    dst_id: Option<u64>,
+
+    /// Remote router's intro key.
+    intro_key: Option<[u8; 32]>,
+
+    /// Message.
+    message: &'a [u8],
+
+    /// Peer test message code.
+    msg_code: u8,
+
+    /// Network ID.
+    ///
+    /// Defaults to 2.
+    net_id: u8,
+
+    /// Source connection ID.
+    src_id: Option<u64>,
+}
+
+impl<'a> PeerTestBuilder<'a> {
+    /// Create new `PeerTestBuilder`.
+    pub fn new(msg_code: u8, message: &'a [u8]) -> Self {
+        Self {
+            address: None,
+            dst_id: None,
+            intro_key: None,
+            message,
+            msg_code,
+            net_id: 2u8,
+            src_id: None,
+        }
+    }
+
+    /// Specify destination connection ID.
+    pub fn with_dst_id(mut self, dst_id: u64) -> Self {
+        self.dst_id = Some(dst_id);
+        self
+    }
+
+    /// Specify source connection ID.
+    pub fn with_src_id(mut self, src_id: u64) -> Self {
+        self.src_id = Some(src_id);
+        self
+    }
+
+    /// Specify remote router's intro key.
+    pub fn with_intro_key(mut self, intro_key: [u8; 32]) -> Self {
+        self.intro_key = Some(intro_key);
+        self
+    }
+
+    /// Specify network ID.
+    pub fn with_net_id(mut self, net_id: u8) -> Self {
+        self.net_id = net_id;
+        self
+    }
+
+    /// Specfy address.
+    pub fn with_addres(mut self, address: SocketAddr) -> Self {
+        self.address = Some(address);
+        self
+    }
+
+    /// Build [`PeerTestBuilder`] into a byte vector.
+    pub fn build<R: Runtime>(mut self) -> BytesMut {
+        let intro_key = self.intro_key.take().expect("to exist");
+        let mut rng = R::rng();
+        let padding = {
+            let padding_len = rng.next_u32() % MAX_PADDING as u32 + 8;
+            let mut padding = vec![0u8; padding_len as usize];
+            rng.fill_bytes(&mut padding);
+
+            padding
+        };
+
+        let (mut header, pkt_num) = {
+            let mut out = BytesMut::with_capacity(LONG_HEADER_LEN);
+            let pkt_num = rng.next_u32();
+
+            out.put_u64_le(self.dst_id.take().expect("to exist"));
+            out.put_u32(pkt_num);
+            out.put_u8(*MessageType::PeerTest);
+            out.put_u8(2u8); // version
+            out.put_u8(self.net_id);
+            out.put_u8(0u8); // flag
+            out.put_u64_le(self.src_id.take().expect("to exist"));
+            out.put_u64(0u64);
+
+            (out, pkt_num)
+        };
+
+        let mut payload = Vec::with_capacity(10 + padding.len() + POLY13055_MAC_LEN);
+        payload.extend_from_slice(
+            &Block::DateTime {
+                timestamp: R::time_since_epoch().as_secs() as u32,
+            }
+            .serialize(),
+        );
+        if let Some(address) = self.address.take() {
+            payload.extend_from_slice(&Block::Address { address }.serialize());
+        }
+        // TODO: not good...
+        {
+            // message number + code + flag + message
+            let size = (1 + 1 + 1 + self.message.len()) as u16;
+
+            payload.push(BlockType::PeerTest.as_u8());
+            payload.extend_from_slice(&size.to_be_bytes());
+            payload.push(self.msg_code);
+            payload.push(0);
+            payload.push(0);
+            payload.extend_from_slice(&self.message);
+        }
+        payload.extend_from_slice(&Block::Padding { padding }.serialize());
+
+        // must succeed since all the parameters are controlled by us
+        ChaChaPoly::with_nonce(&intro_key, pkt_num as u64)
+            .encrypt_with_ad_new(&header, &mut payload)
+            .expect("to succeed");
+
+        // encrypt first 16 bytes of the long header
+        //
+        // https://geti2p.net/spec/ssu2#header-encryption-kdf
+        payload[payload.len() - 2 * IV_SIZE..]
+            .chunks(IV_SIZE)
+            .zip(header.chunks_mut(8usize))
+            .zip([intro_key, intro_key])
+            .for_each(|((chunk, header_chunk), key)| {
+                ChaCha::with_iv(
+                    key,
+                    TryInto::<[u8; IV_SIZE]>::try_into(chunk).expect("to succeed"),
+                )
+                .decrypt([0u8; 8])
+                .iter()
+                .zip(header_chunk.iter_mut())
+                .for_each(|(mask_byte, header_byte)| {
+                    *header_byte ^= mask_byte;
+                });
+            });
+
+        // encrypt last 16 bytes of the header
+        ChaCha::with_iv(intro_key, [0u8; IV_SIZE]).encrypt_ref(&mut header[16..32]);
+
+        let mut out = BytesMut::with_capacity(LONG_HEADER_LEN + payload.len());
+        out.put_slice(&header);
+        out.put_slice(&payload);
+
+        out
     }
 }

@@ -238,7 +238,13 @@ impl<R: Runtime> Ssu2Socket<R> {
             .update(&outbound_state)
             .update(static_key.public().to_vec())
             .finalize();
-        let peer_test_manager = PeerTestManager::new(router_ctx.profile_storage().clone());
+
+        // TODO: pass intro key
+        let peer_test_manager = PeerTestManager::new(
+            intro_key,
+            socket.clone(),
+            router_ctx.profile_storage().clone(),
+        );
 
         Self {
             active_sessions: R::join_set(),
@@ -333,6 +339,23 @@ impl<R: Runtime> Ssu2Socket<R> {
                 self.router_ctx.metrics_handle().counter(NUM_INBOUND_SSU2).increment(1);
 
                 Ok(())
+            }
+            Ok(HeaderKind::PeerTest {
+                net_id,
+                pkt_num,
+                src_id,
+            }) => {
+                if net_id != self.router_ctx.net_id() {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        our_net_id = ?self.router_ctx.net_id(),
+                        their_net_id = ?net_id,
+                        "network id mismatch",
+                    );
+                    return Err(Ssu2Error::NetworkMismatch);
+                }
+
+                self.peer_test_manager.handle_peer_test(src_id, pkt_num, datagram, address)
             }
             _ => match self.pending_outbound.get(&address) {
                 Some(intro_key) =>
@@ -476,7 +499,6 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         // get handle to peer test manager.
         let handle = self.peer_test_manager.handle();
-        let our_router_hash = self.router_ctx.router_id().to_vec();
 
         // register session to `PeerTestManager`
         self.peer_test_manager
@@ -487,9 +509,8 @@ impl<R: Runtime> Ssu2Socket<R> {
                 context,
                 self.socket.clone(),
                 self.transport_tx.clone(),
-                self.router_ctx.metrics_handle().clone(),
+                self.router_ctx.clone(),
                 handle,
-                our_router_hash,
             )
             .run(),
         );
@@ -876,7 +897,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
         }
 
         // poll peer test manager
-        let _ = this.peer_test_manager.poll_unpin(cx);
+        if let Poll::Ready(()) = this.peer_test_manager.poll_unpin(cx) {
+            return Poll::Ready(None);
+        }
 
         self.waker = Some(cx.waker().clone());
         Poll::Pending
@@ -956,9 +979,8 @@ mod tests {
                 context,
                 udp_socket,
                 socket.transport_tx.clone(),
-                socket.router_ctx.metrics_handle().clone(),
+                socket.router_ctx.clone(),
                 handle,
-                RouterId::random().to_vec(),
             )
             .run(),
         );
