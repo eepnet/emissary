@@ -73,6 +73,14 @@ const R4SAS_RESEED: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/certificates/r4sas-reseed_at_mail.i2p.crt"
 ));
+const DIYARCIFTCI_RESEED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/certificates/diyarciftci_at_protonmail.com.crt"
+));
+const SAHIL_RESEED: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/certificates/sahil_at_mail.i2p.crt"
+));
 
 pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -80,7 +88,7 @@ pub const CREATIVECOWPAT_SSL: &str = include_str!(concat!(
 ));
 
 /// Certificates of the reseed bundle signers.
-pub const CERTIFICATES: &[(&str, &str); 13] = &[
+pub const CERTIFICATES: &[(&str, &str); 15] = &[
     ("acetone@mail.i2p", ACETONE),
     ("creativecowpat@mail.i2p", CREATIVECOWPAT),
     ("hottuna@mail.i2p", HOTTUNA),
@@ -94,6 +102,8 @@ pub const CERTIFICATES: &[(&str, &str); 13] = &[
     ("hankhill19580@gmail.com", HANKHILL19580),
     ("igor@novg.net", IGOR),
     ("r4sas-reseed@mail.i2p", R4SAS_RESEED),
+    ("sahil@mail.i2p", SAHIL_RESEED),
+    ("diyarciftci@protonmail.com", DIYARCIFTCI_RESEED),
 ];
 
 /// Public keys of the reseed bundle signers.
