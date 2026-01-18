@@ -21,7 +21,7 @@ use crate::{
     i2np::MessageType as I2npMessageType,
     runtime::Runtime,
     transport::{
-        ssu2::{message::*, session::KeyContext},
+        ssu2::{message::*, peer_test::types::RejectionReason, session::KeyContext},
         TerminationReason,
     },
 };
@@ -39,6 +39,9 @@ const TERMINATION_BLOCK_MIN_SIZE: usize = 12usize;
 
 /// Minimum size for `Data` packet.
 const DATA_PKT_MIN_SIZE: usize = 24usize;
+
+/// Router hash length.
+const ROUTER_HASH_LEN: usize = 32usize;
 
 /// Message kind for [`DataMessageBuilder`].
 pub enum MessageKind<'a> {
@@ -79,6 +82,21 @@ pub enum MessageKind<'a> {
     },
 }
 
+/// Peer test block.
+pub enum PeerTestBlock {
+    /// Bob rejected Alice's peer test request.
+    BobReject {
+        /// Rejection reason.
+        reason: RejectionReason,
+
+        /// Message + signature.
+        ///
+        /// Sent by Alice in peer test 1 message and covers all the fields
+        /// the signature verifies and the signature itself.
+        signature_payload: Vec<u8>,
+    },
+}
+
 /// Data message
 #[derive(Default)]
 pub struct DataMessageBuilder<'a> {
@@ -88,14 +106,17 @@ pub struct DataMessageBuilder<'a> {
     // Destination connection ID.
     dst_id: Option<u64>,
 
+    /// Should the immediate ACK bit be set.
+    immediate_ack: bool,
+
     /// Key context for the message.
     key_context: Option<([u8; 32], &'a KeyContext)>,
 
     /// Packet number and [`MessageKind`].
     message: Option<(u32, MessageKind<'a>)>,
 
-    /// Should the immediate ACK bit be set.
-    immediate_ack: bool,
+    /// Peer test block.
+    peer_test_block: Option<PeerTestBlock>,
 
     /// Packet number.
     ///
@@ -122,6 +143,12 @@ impl<'a> DataMessageBuilder<'a> {
     /// Set immediate ACK in the header.
     pub fn with_immediate_ack(mut self) -> Self {
         self.immediate_ack = true;
+        self
+    }
+
+    /// Specify `PeerTestBlock`.
+    pub fn with_peer_test_block(mut self, block: PeerTestBlock) -> Self {
+        self.peer_test_block = Some(block);
         self
     }
 
@@ -250,6 +277,23 @@ impl<'a> DataMessageBuilder<'a> {
                                 out.put_u8(ack);
                             });
                     },
+            }
+
+            match self.peer_test_block.take() {
+                None => {}
+                Some(PeerTestBlock::BobReject {
+                    reason,
+                    signature_payload,
+                }) => {
+                    // TODO: add test and ensure `signature_payload` is the same that was sent
+                    out.put_u8(BlockType::PeerTest.as_u8());
+                    out.put_u16((3 + signature_payload.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u8(4); // message 4 (bob -> alice)
+                    out.put_u8(reason.as_bob());
+                    out.put_u8(0u8); // flag
+                    out.put_slice(&[0u8; 32]);
+                    out.put_slice(&signature_payload);
+                }
             }
 
             if let Some(reason) = self.termination_reason {

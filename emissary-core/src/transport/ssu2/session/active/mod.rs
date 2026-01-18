@@ -17,7 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    crypto::chachapoly::ChaChaPoly,
+    crypto::{chachapoly::ChaChaPoly, SigningPublicKey},
     error::Ssu2Error,
     i2np::Message,
     primitives::RouterId,
@@ -25,9 +25,12 @@ use crate::{
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
-            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader, PeerTestMessage},
+            message::{
+                data::{DataMessageBuilder, PeerTestBlock},
+                Block, HeaderKind, HeaderReader, PeerTestMessage,
+            },
             metrics::*,
-            peer_test::types::PeerTestHandle,
+            peer_test::types::{PeerTestCommand, PeerTestHandle},
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -45,7 +48,7 @@ use crate::{
 };
 
 use bytes::BytesMut;
-use futures::FutureExt;
+use futures::{FutureExt, StreamExt};
 use thingbuf::mpsc::{with_recycle, Receiver, Sender};
 
 use alloc::{collections::VecDeque, sync::Arc, vec};
@@ -174,6 +177,9 @@ pub struct Ssu2SessionContext {
 
     /// Key context for outbound packets.
     pub send_key_ctx: KeyContext,
+
+    /// Signing key of remote router.
+    pub signing_key: SigningPublicKey,
 }
 
 /// Active SSU2 session.
@@ -235,6 +241,9 @@ pub struct Ssu2Session<R: Runtime> {
     /// Key context for outbound packets.
     send_key_ctx: KeyContext,
 
+    /// Signing key of remote router.
+    signing_key: SigningPublicKey,
+
     /// UDP socket.
     socket: R::UdpSocket,
 
@@ -246,6 +255,9 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Write buffer
     write_buffer: VecDeque<BytesMut>,
+
+    /// Our router hash.
+    our_router_hash: Vec<u8>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -256,6 +268,7 @@ impl<R: Runtime> Ssu2Session<R> {
         transport_tx: Sender<SubsystemEvent>,
         metrics: R::MetricsHandle,
         peer_test_handle: PeerTestHandle,
+        our_router_hash: Vec<u8>,
     ) -> Self {
         let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
         let pkt_num = Arc::new(AtomicU32::new(1u32));
@@ -278,6 +291,7 @@ impl<R: Runtime> Ssu2Session<R> {
             metrics: metrics.clone(),
             msg_rx,
             msg_tx,
+            our_router_hash,
             peer_test_handle,
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
@@ -286,6 +300,7 @@ impl<R: Runtime> Ssu2Session<R> {
             resend_timer: None,
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
+            signing_key: context.signing_key,
             socket,
             transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
             transport_tx,
@@ -336,19 +351,111 @@ impl<R: Runtime> Ssu2Session<R> {
     }
 
     /// Handle peer test message.
-    fn handle_peer_test(&mut self, message: PeerTestMessage) {
-        match &message {
+    fn handle_peer_test_message(&mut self, message: PeerTestMessage) {
+        match message {
             PeerTestMessage::Message1 {
-                nonce: _,
-                timestamp: _,
-                address: _,
-                signature: _,
+                nonce,
+                address,
+                signature,
+                mut message,
             } => {
-                // TODO: verify signature
-                // TODO: validate address
-                // TODO: send message to `PeerTestManager`
+                // verify signature
+                {
+                    let mut signed_data = Vec::<u8>::new();
+                    signed_data.extend(b"PeerTestValidate");
+                    signed_data.extend(&self.our_router_hash);
+                    signed_data.extend(&message);
+
+                    if let Err(error) = self.signing_key.verify(&signed_data, &signature) {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            router_id = %self.router_id,
+                            ?nonce,
+                            ?error,
+                            "failed to verify signature of peer test message 1",
+                        );
+                        return;
+                    }
+                }
+
+                // validate address
+                {
+                    if address.ip() != self.address.ip() {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            router_id = %self.router_id,
+                            ?nonce,
+                            specified_address = ?address,
+                            current_address = ?self.address,
+                            "ip address mismatch for peer test request, rejecting"
+                        );
+                        return;
+                    }
+
+                    if address.port() <= 1023 {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            router_id = %self.router_id,
+                            ?nonce,
+                            port = ?address.port(),
+                            "invalid port for peer test request, rejecting",
+                        );
+                        return;
+                    }
+                }
+
+                // extend signature at the end of message so if the peer test request
+                // is rejected, the latter portion of the peer test message 1 can be
+                // sent as-is back to alice
+                message.extend(&signature);
+
+                self.peer_test_handle.send_message_1(
+                    self.router_id.clone(),
+                    nonce,
+                    address,
+                    message,
+                );
             }
             PeerTestMessage::Dummy => unreachable!(),
+        }
+    }
+
+    /// Handle peer test command received from `PeerTestManager`.
+    fn handle_peer_test_command(&mut self, command: PeerTestCommand) {
+        match command {
+            PeerTestCommand::Reject { nonce, reason } => {
+                tracing::debug!(
+                    target: "emissary::ssu2::peer-test",
+                    router_id = %self.router_id,
+                    ?nonce,
+                    ?reason,
+                    "send peer test rejection",
+                );
+
+                let Some(payload) = self.peer_test_handle.take_signature_payload(&nonce) else {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        ?nonce,
+                        "message for peer test 1 does not exist",
+                    );
+                    debug_assert!(false);
+                    return;
+                };
+
+                self.write_buffer.push_back(
+                    DataMessageBuilder::default()
+                        .with_dst_id(self.dst_id)
+                        .with_pkt_num(self.transmission.next_pkt_num())
+                        .with_peer_test_block(PeerTestBlock::BobReject {
+                            reason,
+                            signature_payload: payload,
+                        })
+                        .with_key_context(self.intro_key, &self.send_key_ctx)
+                        .build::<R>(),
+                );
+            }
+            PeerTestCommand::TestPeer { .. } => todo!(),
+            PeerTestCommand::Dummy => unreachable!(),
         }
     }
 
@@ -507,7 +614,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 Block::PeerTest { message } => {
                     self.remote_ack.register_pkt(pkt_num);
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
-                    self.handle_peer_test(message);
+                    self.handle_peer_test_message(message);
                 }
                 block => {
                     tracing::warn!(
@@ -728,6 +835,14 @@ impl<R: Runtime> Future for Ssu2Session<R> {
             }
         }
 
+        loop {
+            match self.peer_test_handle.poll_next_unpin(cx) {
+                Poll::Pending => break,
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
+                Poll::Ready(Some(command)) => self.handle_peer_test_command(command),
+            }
+        }
+
         // send all outbound packets
         {
             let address = self.address;
@@ -796,12 +911,75 @@ impl<R: Runtime> Future for Ssu2Session<R> {
 mod tests {
     use super::*;
     use crate::{
+        crypto::SigningPrivateKey,
         i2np::{MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::MessageId,
-        runtime::mock::MockRuntime,
-        transport::ssu2::peer_test::types::PeerTestEventRecycle,
+        runtime::mock::{MockRuntime, MockUdpSocket},
+        transport::ssu2::peer_test::types::{PeerTestEvent, PeerTestEventRecycle},
     };
     use thingbuf::mpsc::channel;
+
+    #[allow(unused)]
+    struct ActiveSessionContext {
+        event_rx: Receiver<PeerTestEvent, PeerTestEventRecycle>,
+        pkt_tx: Sender<Packet>,
+        recv_socket: MockUdpSocket,
+        router_id: Vec<u8>,
+        session: Ssu2Session<MockRuntime>,
+        signing_key: SigningPrivateKey,
+        transport_rx: Receiver<SubsystemEvent>,
+    }
+
+    async fn make_active_session() -> ActiveSessionContext {
+        let (from_socket_tx, from_socket_rx) = channel(128);
+        let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let recv_socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let signing_key = SigningPrivateKey::random(&mut rand::thread_rng());
+        let router_id = RouterId::random();
+
+        let ctx = Ssu2SessionContext {
+            address: recv_socket.local_address().unwrap(),
+            dst_id: 1337u64,
+            intro_key: [1u8; 32],
+            pkt_rx: from_socket_rx,
+            recv_key_ctx: KeyContext {
+                k_data: [2u8; 32],
+                k_header_2: [3u8; 32],
+            },
+            router_id: RouterId::random(),
+            send_key_ctx: KeyContext {
+                k_data: [3u8; 32],
+                k_header_2: [2u8; 32],
+            },
+            signing_key: signing_key.public(),
+        };
+        let (event_tx, event_rx) = with_recycle(16, PeerTestEventRecycle::default());
+        let handle = PeerTestHandle::new(event_tx);
+        let (transport_tx, transport_rx) = channel(16);
+
+        let session = Ssu2Session::<MockRuntime>::new(
+            ctx,
+            socket,
+            transport_tx,
+            MockRuntime::register_metrics(vec![], None),
+            handle,
+            router_id.to_vec(),
+        );
+
+        ActiveSessionContext {
+            event_rx,
+            pkt_tx: from_socket_tx,
+            recv_socket,
+            router_id: router_id.to_vec(),
+            session,
+            signing_key,
+            transport_rx,
+        }
+    }
 
     #[tokio::test]
     async fn backpressure_works() {
@@ -828,8 +1006,9 @@ mod tests {
                 k_data: [3u8; 32],
                 k_header_2: [2u8; 32],
             },
+            signing_key: SigningPublicKey::from_bytes(&[0xa1; 32]).unwrap(),
         };
-        let (event_tx, event_rx) = with_recycle(16, PeerTestEventRecycle::default());
+        let (event_tx, _event_rx) = with_recycle(16, PeerTestEventRecycle::default());
         let handle = PeerTestHandle::new(event_tx);
 
         let cmd_tx = {
@@ -841,7 +1020,8 @@ mod tests {
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
-                    peer_test_handle,
+                    handle,
+                    RouterId::random().to_vec(),
                 )
                 .run(),
             );
@@ -977,8 +1157,9 @@ mod tests {
                 k_data: [3u8; 32],
                 k_header_2: [2u8; 32],
             },
+            signing_key: SigningPublicKey::from_bytes(&[0xa1; 32]).unwrap(),
         };
-        let (event_tx, event_rx) = with_recycle(16, PeerTestEventRecycle::default());
+        let (event_tx, _event_rx) = with_recycle(16, PeerTestEventRecycle::default());
         let handle = PeerTestHandle::new(event_tx);
 
         let (cmd_tx, handle) = {
@@ -988,7 +1169,8 @@ mod tests {
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
-                    peer_test_handle,
+                    handle,
+                    RouterId::random().to_vec(),
                 )
                 .run(),
             );
@@ -1029,5 +1211,128 @@ mod tests {
             Ok(Err(_)) => panic!("session panicked"),
             Err(_) => panic!("timeout"),
         }
+    }
+
+    // TODO: convert to proper test when support for all messages have been implemented
+    #[tokio::test]
+    async fn peer_test_message_1_invalid_signature() {
+        let ActiveSessionContext {
+            mut session,
+            event_rx,
+            ..
+        } = make_active_session().await;
+
+        session.handle_peer_test_message(PeerTestMessage::Message1 {
+            nonce: 1337,
+            address: session.address,
+            signature: vec![1u8; 32],
+            message: b"PeerTestValidate".to_vec(),
+        });
+
+        // verify `PeerTestManager` doesn't receive an event since the signature was invalid
+        // and the test request was rejected
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    // TODO: convert to proper test when support for all messages have been implemented
+    #[tokio::test]
+    async fn peer_test_message_1_invalid_address() {
+        let ActiveSessionContext {
+            mut session,
+            event_rx,
+            signing_key,
+            router_id,
+            ..
+        } = make_active_session().await;
+
+        let message = {
+            let mut message = Vec::<u8>::new();
+            message.extend(b"PeerTestValidate");
+            message.extend(&router_id);
+            message.extend(b"hello, world!");
+
+            message
+        };
+        let signature = signing_key.sign(&message);
+        let message = b"hello, world!".to_vec();
+
+        session.handle_peer_test_message(PeerTestMessage::Message1 {
+            nonce: 1337,
+            address: "8.8.8.8:8888".parse().unwrap(),
+            signature: signature,
+            message,
+        });
+
+        // verify `PeerTestManager` doesn't receive an event since the address was invalid
+        // and the test request was rejected
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    // TODO: convert to proper test when support for all messages have been implemented
+    #[tokio::test]
+    async fn peer_test_message_1_invalid_port() {
+        let ActiveSessionContext {
+            mut session,
+            event_rx,
+            signing_key,
+            router_id,
+            ..
+        } = make_active_session().await;
+
+        let message = {
+            let mut message = Vec::<u8>::new();
+            message.extend(b"PeerTestValidate");
+            message.extend(&router_id);
+            message.extend(b"hello, world!");
+
+            message
+        };
+        let signature = signing_key.sign(&message);
+        let message = b"hello, world!".to_vec();
+        let address = SocketAddr::new(session.address.ip(), 512);
+
+        session.handle_peer_test_message(PeerTestMessage::Message1 {
+            nonce: 1337,
+            address,
+            signature: signature,
+            message,
+        });
+
+        // verify `PeerTestManager` doesn't receive an event since the address was invalid
+        // and the test request was rejected
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    // TODO: convert to proper test when support for all messages have been implemented
+    #[tokio::test]
+    async fn peer_test_message_1_sent_to_manager() {
+        let ActiveSessionContext {
+            mut session,
+            event_rx,
+            signing_key,
+            router_id,
+            ..
+        } = make_active_session().await;
+
+        let message = {
+            let mut message = Vec::<u8>::new();
+            message.extend(b"PeerTestValidate");
+            message.extend(&router_id);
+            message.extend(b"hello, world!");
+
+            message
+        };
+        let signature = signing_key.sign(&message);
+        let message = b"hello, world!".to_vec();
+
+        session.handle_peer_test_message(PeerTestMessage::Message1 {
+            nonce: 1337,
+            address: session.address,
+            signature: signature,
+            message,
+        });
+
+        // verify `PeerTestManager` receives the peer test request
+        assert!(event_rx.try_recv().is_ok());
     }
 }

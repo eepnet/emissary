@@ -44,7 +44,7 @@ use crate::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
 use hashbrown::HashMap;
 use rand_core::RngCore;
 use thingbuf::mpsc::{channel, errors::TrySendError, Sender};
@@ -370,6 +370,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         let router_id = router_info.identity.id();
         let intro_key = router_info.ssu2_intro_key().expect("to succeed");
         let static_key = router_info.ssu2_static_key().expect("to succeed");
+        let signing_key = router_info.identity.signing_key().clone();
         let address = router_info
             .addresses
             .get(&TransportKind::Ssu2)
@@ -409,6 +410,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 router_id,
                 router_info,
                 rx,
+                signing_key,
                 socket: self.socket.clone(),
                 src_id,
                 state,
@@ -474,6 +476,7 @@ impl<R: Runtime> Ssu2Socket<R> {
 
         // get handle to peer test manager.
         let handle = self.peer_test_manager.handle();
+        let our_router_hash = self.router_ctx.router_id().to_vec();
 
         // register session to `PeerTestManager`
         self.peer_test_manager
@@ -486,6 +489,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 self.transport_tx.clone(),
                 self.router_ctx.metrics_handle().clone(),
                 handle,
+                our_router_hash,
             )
             .run(),
         );
@@ -529,6 +533,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                     recv_key_ctx,
                     router_id,
                     send_key_ctx,
+                    ..
                 } = context;
 
                 self.terminating_session.push(TerminatingSsu2Session::<R>::new(
@@ -870,6 +875,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             }
         }
 
+        // poll peer test manager
+        let _ = this.peer_test_manager.poll_unpin(cx);
+
         self.waker = Some(cx.waker().clone());
         Poll::Pending
     }
@@ -881,6 +889,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        crypto::SigningPublicKey,
         events::EventManager,
         i2np::{Message, MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::RouterInfoBuilder,
@@ -939,6 +948,7 @@ mod tests {
                 k_data: [0xee; 32],
                 k_header_2: [0xff; 32],
             },
+            signing_key: SigningPublicKey::from_bytes(&[0x22; 32]).unwrap(),
         };
         let handle = socket.peer_test_manager.handle();
         socket.active_sessions.push(
@@ -948,6 +958,7 @@ mod tests {
                 socket.transport_tx.clone(),
                 socket.router_ctx.metrics_handle().clone(),
                 handle,
+                RouterId::random().to_vec(),
             )
             .run(),
         );

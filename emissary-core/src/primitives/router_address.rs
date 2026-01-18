@@ -178,7 +178,7 @@ impl RouterAddress {
         );
         options.insert(Str::from("host"), Str::from(host.to_string()));
         options.insert(Str::from("port"), Str::from(port.to_string()));
-        options.insert(Str::from("caps"), Str::from("BC4"));
+        options.insert(Str::from("caps"), Str::from("BC"));
 
         Self {
             cost: 8,
@@ -241,24 +241,12 @@ impl RouterAddress {
 
     /// Does the router support IPv4.
     pub fn supports_ipv4(&self) -> bool {
-        if self.transport == TransportKind::Ntcp2 {
-            return false;
-        }
-
-        self.options
-            .iter()
-            .any(|(key, value)| &(**key) == "caps" && value.contains("4"))
+        self.socket_address.map(|address| address.is_ipv4()).unwrap_or(false)
     }
 
     /// Does the router support IPv6.
     pub fn supports_ipv6(&self) -> bool {
-        if self.transport == TransportKind::Ntcp2 {
-            return false;
-        }
-
-        self.options
-            .iter()
-            .any(|(key, value)| &(**key) == "caps" && value.contains("6"))
+        self.socket_address.map(|address| address.is_ipv6()).unwrap_or(false)
     }
 
     /// Try to convert `bytes` into a [`RouterAddress`].

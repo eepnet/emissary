@@ -80,6 +80,9 @@ const PROTOCOL_VERSION: u8 = 2u8;
 /// Router hash length.
 const ROUTER_HASH_LEN: usize = 32usize;
 
+/// Ed25519 signature length.
+const ED25519_SIGNATURE_LEN: usize = 64usize;
+
 /// SSU2 block type.
 #[derive(Debug)]
 pub enum BlockType {
@@ -172,14 +175,14 @@ pub enum PeerTestMessage {
         /// Test nonce.
         nonce: u32,
 
-        /// Timestamp.
-        timestamp: u32,
-
         /// Alice's address.
         address: SocketAddr,
 
         /// Signature.
         signature: Vec<u8>,
+
+        /// Portion of the message that is covered by `signature`.
+        message: Vec<u8>,
     },
 
     #[default]
@@ -736,9 +739,15 @@ impl Block {
             }
             _ => (rest, None),
         };
+
+        // keep track of message start so it can be sent unmodified to alice/charlie
+        //
+        // https://geti2p.net/spec/ssu2#peertest
+        let message_start = rest;
+
         let (rest, _version) = be_u8(rest)?;
         let (rest, nonce) = be_u32(rest)?;
-        let (rest, timestamp) = be_u32(rest)?;
+        let (rest, _timestamp) = be_u32(rest)?;
         let (rest, address_size) = be_u8(rest)?;
         let (rest, address) = match address_size {
             6 => {
@@ -761,7 +770,7 @@ impl Block {
         };
         let (rest, maybe_signature) = match msg {
             1..=4 => {
-                let (rest, signature) = take(64usize)(rest)?;
+                let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
 
                 (rest, Some(signature))
             }
@@ -779,9 +788,17 @@ impl Block {
                     Block::PeerTest {
                         message: PeerTestMessage::Message1 {
                             nonce,
-                            timestamp,
                             address,
                             signature: signature.to_vec(),
+                            message: {
+                                let message_end = 1usize // version
+                                    .saturating_add(4) // nonce
+                                    .saturating_add(4) // timestamp
+                                    .saturating_add(1) // address size
+                                    .saturating_add(address_size as usize);
+
+                                message_start[..message_end].to_vec()
+                            },
                         },
                     },
                 )),

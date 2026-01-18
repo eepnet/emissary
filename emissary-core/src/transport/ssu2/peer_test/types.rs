@@ -19,6 +19,7 @@
 use crate::primitives::{RouterId, RouterInfo};
 
 use futures::Stream;
+use hashbrown::HashMap;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
 use core::{
@@ -39,6 +40,9 @@ pub struct PeerTestHandle {
 
     /// TX channel for sending events to `PeerTestManager`.
     event_tx: Sender<PeerTestEvent, PeerTestEventRecycle>,
+
+    /// Pending tests.
+    pending_tests: HashMap<u32, Vec<u8>>,
 }
 
 impl PeerTestHandle {
@@ -50,6 +54,7 @@ impl PeerTestHandle {
             cmd_tx,
             cmd_rx,
             event_tx,
+            pending_tests: HashMap::new(),
         }
     }
 
@@ -59,13 +64,26 @@ impl PeerTestHandle {
     }
 
     /// Send peer test message 1 (Alice -> Bob) to `PeerTestManager` for further processing.
-    pub fn send_message_1(&self, router_id: RouterId, nonce: u32, address: SocketAddr) {
+    pub fn send_message_1(
+        &mut self,
+        router_id: RouterId,
+        nonce: u32,
+        address: SocketAddr,
+        signature_payload: Vec<u8>,
+    ) {
+        self.pending_tests.insert(nonce, signature_payload);
+
         let _ = self.event_tx.try_send(PeerTestEvent::Message1 {
             address,
             nonce,
             router_id,
             tx: self.cmd_tx.clone(),
         });
+    }
+
+    /// Attempt to take signature payload of peer test 1 message.
+    pub fn take_signature_payload(&mut self, nonce: &u32) -> Option<Vec<u8>> {
+        self.pending_tests.remove(nonce)
     }
 }
 
@@ -113,7 +131,7 @@ pub enum PeerTestEvent {
 }
 
 /// Rejection reason.
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum RejectionReason {
     /// Unspecified.
     Unspecified,
@@ -167,6 +185,36 @@ impl From<u8> for RejectionReason {
     }
 }
 
+impl RejectionReason {
+    /// Convert `RejectionReason` to a status code from Bob.
+    pub fn as_bob(self) -> u8 {
+        match self {
+            Self::Unspecified => 1,
+            Self::NoRouterAvailable => 2,
+            Self::LimitExceeded => 3,
+            Self::SignatureFailure => 4,
+            Self::UnsupportedAddress => 5,
+            Self::Unknown => 128,
+            _ => 1,
+        }
+    }
+
+    /// Convert `RejectionReason` to a status code from Charlie.
+    pub fn as_charlie(self) -> u8 {
+        match self {
+            Self::Unspecified => 64,
+            Self::UnsupportedAddress => 65,
+            Self::LimitExceeded => 66,
+            Self::SignatureFailure => 67,
+            Self::AlreadyConnected => 68,
+            Self::Banned => 69,
+            Self::RouterUnknown => 70,
+            Self::Unknown => 128,
+            _ => 1,
+        }
+    }
+}
+
 /// Peer test commands.
 ///
 /// Sent by `PeerTestManager` to active connections.
@@ -195,4 +243,67 @@ pub enum PeerTestCommand {
 
     #[default]
     Dummy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bob_rejection_codes() {
+        assert_eq!(RejectionReason::Unspecified.as_bob(), 1);
+        assert_eq!(RejectionReason::NoRouterAvailable.as_bob(), 2);
+        assert_eq!(RejectionReason::LimitExceeded.as_bob(), 3);
+        assert_eq!(RejectionReason::SignatureFailure.as_bob(), 4);
+        assert_eq!(RejectionReason::UnsupportedAddress.as_bob(), 5);
+        assert_eq!(RejectionReason::Unknown.as_bob(), 128);
+
+        assert_eq!(RejectionReason::from(1u8), RejectionReason::Unspecified);
+        assert_eq!(
+            RejectionReason::from(2u8),
+            RejectionReason::NoRouterAvailable
+        );
+        assert_eq!(RejectionReason::from(3u8), RejectionReason::LimitExceeded);
+        assert_eq!(
+            RejectionReason::from(4u8),
+            RejectionReason::SignatureFailure
+        );
+        assert_eq!(
+            RejectionReason::from(5u8),
+            RejectionReason::UnsupportedAddress
+        );
+        assert_eq!(RejectionReason::from(128u8), RejectionReason::Unknown);
+
+        for i in 6u8..=63u8 {
+            assert_eq!(RejectionReason::from(i), RejectionReason::Unspecified);
+        }
+    }
+
+    #[test]
+    fn charlie_rejection_reason() {
+        assert_eq!(RejectionReason::Unspecified.as_charlie(), 64);
+        assert_eq!(RejectionReason::UnsupportedAddress.as_charlie(), 65);
+        assert_eq!(RejectionReason::LimitExceeded.as_charlie(), 66);
+        assert_eq!(RejectionReason::SignatureFailure.as_charlie(), 67);
+        assert_eq!(RejectionReason::AlreadyConnected.as_charlie(), 68);
+        assert_eq!(RejectionReason::Banned.as_charlie(), 69);
+        assert_eq!(RejectionReason::RouterUnknown.as_charlie(), 70);
+        assert_eq!(RejectionReason::Unknown.as_charlie(), 128);
+
+        assert_eq!(RejectionReason::from(64), RejectionReason::Unspecified);
+        assert_eq!(
+            RejectionReason::from(65),
+            RejectionReason::UnsupportedAddress
+        );
+        assert_eq!(RejectionReason::from(66), RejectionReason::LimitExceeded);
+        assert_eq!(RejectionReason::from(67), RejectionReason::SignatureFailure);
+        assert_eq!(RejectionReason::from(68), RejectionReason::AlreadyConnected);
+        assert_eq!(RejectionReason::from(69), RejectionReason::Banned);
+        assert_eq!(RejectionReason::from(70), RejectionReason::RouterUnknown);
+        assert_eq!(RejectionReason::from(128), RejectionReason::Unknown);
+
+        for i in 71u8..=127 {
+            assert_eq!(RejectionReason::from(i), RejectionReason::Unspecified);
+        }
+    }
 }
