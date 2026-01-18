@@ -35,6 +35,7 @@ pub const INBOUND_PKT_SIZES: &str = "ssu2_ib_pkt_sizes";
 pub const INBOUND_PKT_COUNT: &str = "ssu2_ib_pkt_count";
 pub const OUTBOUND_PKT_COUNT: &str = "ssu2_ob_pkt_count";
 pub const NUM_DROPS_CHANNEL_FULL: &str = "ssu2_chan_full_pkt_dropped_count";
+pub const NUM_DROPPED_DATAGRAMS: &str = "ssu2_dropped_datagram_count";
 pub const DUPLICATE_PKT_COUNT: &str = "ssu2_duplicate_pkt_count";
 pub const EXPIRED_PKT_COUNT: &str = "ssu2_expired_pkt_count";
 pub const RETRANSMISSION_COUNT: &str = "ssu2_retransmission_count";
@@ -89,6 +90,10 @@ pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
     metrics.push(MetricType::Counter {
         name: GARBAGE_COLLECTED_COUNT,
         description: "how many fragments have been garbage collected",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_DROPPED_DATAGRAMS,
+        description: "how many datagrams have been dropped",
     });
 
     // gauges

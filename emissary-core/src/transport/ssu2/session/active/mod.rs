@@ -21,7 +21,7 @@ use crate::{
     error::Ssu2Error,
     i2np::Message,
     primitives::RouterId,
-    runtime::{Counter, MetricsHandle, Runtime},
+    runtime::{Counter, MetricsHandle, Runtime, UdpSocket},
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
@@ -43,10 +43,11 @@ use crate::{
     },
 };
 
+use bytes::BytesMut;
 use futures::FutureExt;
 use thingbuf::mpsc::{with_recycle, Receiver, Sender};
 
-use alloc::{sync::Arc, vec};
+use alloc::{collections::VecDeque, sync::Arc, vec};
 use core::{
     cmp::min,
     future::Future,
@@ -182,13 +183,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Socket address of the remote router.
     address: SocketAddr,
 
-    /// RX channel for receiving messages from `SubsystemManager`.
-    msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
-
-    /// TX channel given to `SubsystemManager` which it uses
-    /// to send messages to this connection.
-    msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
-
     /// Destination connection ID.
     dst_id: u64,
 
@@ -209,16 +203,18 @@ pub struct Ssu2Session<R: Runtime> {
     /// Metrics handle.
     metrics: R::MetricsHandle,
 
+    /// RX channel for receiving messages from `SubsystemManager`.
+    msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
+
+    /// TX channel given to `SubsystemManager` which it uses
+    /// to send messages to this connection.
+    msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
+
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
 
     /// RX channel for receiving inbound packets from [`Ssu2Socket`].
     pkt_rx: Receiver<Packet>,
-
-    /// TX channel for sending packets to [`Ssu2Socket`].
-    //
-    // TODO: `R::UdpSocket` should be clonable
-    pkt_tx: Sender<Packet>,
 
     /// Key context for inbound packets.
     recv_key_ctx: KeyContext,
@@ -235,11 +231,18 @@ pub struct Ssu2Session<R: Runtime> {
     /// Key context for outbound packets.
     send_key_ctx: KeyContext,
 
+    /// UDP socket.
+    socket: R::UdpSocket,
+
     /// Transmission manager.
     transmission: TransmissionManager<R>,
 
     /// TX channel for communicating with `SubsystemManager`.
     transport_tx: Sender<SubsystemEvent>,
+
+    /// Write buffer
+    write_buffer: VecDeque<BytesMut>,
+    pkt_tx: Sender<Packet>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
@@ -247,6 +250,7 @@ impl<R: Runtime> Ssu2Session<R> {
     pub fn new(
         context: Ssu2SessionContext,
         pkt_tx: Sender<Packet>,
+        socket: R::UdpSocket,
         transport_tx: Sender<SubsystemEvent>,
         metrics: R::MetricsHandle,
     ) -> Self {
@@ -266,6 +270,7 @@ impl<R: Runtime> Ssu2Session<R> {
             dst_id: context.dst_id,
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(metrics.clone()),
+            pkt_tx,
             intro_key: context.intro_key,
             last_immediate_ack: 0u32,
             metrics: metrics.clone(),
@@ -273,14 +278,15 @@ impl<R: Runtime> Ssu2Session<R> {
             msg_tx,
             pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
-            pkt_tx,
             recv_key_ctx: context.recv_key_ctx,
             remote_ack: RemoteAckManager::new(),
             resend_timer: None,
             router_id: context.router_id.clone(),
             send_key_ctx: context.send_key_ctx,
+            socket,
             transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
             transport_tx,
+            write_buffer: VecDeque::new(),
         }
     }
 
@@ -467,18 +473,7 @@ impl<R: Runtime> Ssu2Session<R> {
                             .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
                             .build::<R>();
 
-                            if let Err(error) = self.pkt_tx.try_send(Packet {
-                                pkt: message.to_vec(),
-                                address: self.address,
-                            }) {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    router_id = %self.router_id,
-                                    ?error,
-                                    "failed to send packet",
-                                );
-                                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
-                            }
+                            self.write_buffer.push_back(message);
 
                             if self.resend_timer.is_none() {
                                 self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
@@ -546,19 +541,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 ?pkt_len,
                 "send i2np message",
             );
-
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: message.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    ?error,
-                    "failed to send packet",
-                );
-                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
-            }
+            self.write_buffer.push_back(message);
 
             if self.resend_timer.is_none() {
                 self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
@@ -583,26 +566,15 @@ impl<R: Runtime> Ssu2Session<R> {
             .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
                 self.last_immediate_ack = pkt_num;
 
-                let message = DataMessageBuilder::default()
-                    .with_dst_id(self.dst_id)
-                    .with_key_context(self.intro_key, &self.send_key_ctx)
-                    .with_message(pkt_num, message_kind)
-                    .with_immediate_ack()
-                    .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                    .build::<R>();
-
-                if let Err(error) = self.pkt_tx.try_send(Packet {
-                    pkt: message.to_vec(),
-                    address: self.address,
-                }) {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        router_id = %self.router_id,
-                        ?error,
-                        "failed to send packet",
-                    );
-                    self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
-                }
+                self.write_buffer.push_back(
+                    DataMessageBuilder::default()
+                        .with_dst_id(self.dst_id)
+                        .with_key_context(self.intro_key, &self.send_key_ctx)
+                        .with_message(pkt_num, message_kind)
+                        .with_immediate_ack()
+                        .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
+                        .build::<R>(),
+                );
 
                 pkt_count + 1
             }))
@@ -731,6 +703,22 @@ impl<R: Runtime> Future for Ssu2Session<R> {
             }
         }
 
+        // send all outbound packets
+        {
+            let address = self.address;
+
+            while let Some(pkt) = self.write_buffer.pop_front() {
+                match Pin::new(&mut self.socket).poll_send_to(cx, &pkt, address) {
+                    Poll::Pending => {
+                        self.write_buffer.push_front(pkt);
+                        break;
+                    }
+                    Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
+                    Poll::Ready(Some(_)) => {}
+                }
+            }
+        }
+
         if self.ack_timer.poll_unpin(cx).is_ready() {
             let AckInfo {
                 highest_seen,
@@ -756,17 +744,16 @@ impl<R: Runtime> Future for Ssu2Session<R> {
 
             // TODO: report `pkt_num` to `RemoteAckManager`?
 
-            if let Err(error) = self.pkt_tx.try_send(Packet {
-                pkt: message.to_vec(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    ?error,
-                    "failed to send explicit ack packet",
-                );
-                self.metrics.counter(NUM_DROPS_CHANNEL_FULL).increment(1);
+            // try to send the immediate ack right away and if it fails,
+            // push it at the front of the queue
+            let address = self.address;
+
+            match Pin::new(&mut self.socket).poll_send_to(cx, &message, address) {
+                Poll::Pending => {
+                    self.write_buffer.push_front(message);
+                }
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
+                Poll::Ready(Some(_)) => {}
             }
         }
 
@@ -793,10 +780,17 @@ mod tests {
     #[tokio::test]
     async fn backpressure_works() {
         let (from_socket_tx, from_socket_rx) = channel(128);
-        let (to_socket_tx, to_socket_rx) = channel(128);
+        let (to_socket_tx, _to_socket_rx) = channel(128);
+        let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let mut recv_socket =
+            <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap();
 
         let ctx = Ssu2SessionContext {
-            address: "127.0.0.1:8888".parse().unwrap(),
+            address: recv_socket.local_address().unwrap(),
             dst_id: 1337u64,
             intro_key: [1u8; 32],
             pkt_rx: from_socket_rx,
@@ -818,6 +812,7 @@ mod tests {
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
                     to_socket_tx,
+                    socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
@@ -853,10 +848,13 @@ mod tests {
             .is_err());
 
         // read and parse all packets
-        for _ in 0..16 {
-            let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
+        let mut buffer = vec![0u8; 0xffff];
 
-            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
+        for _ in 0..16 {
+            let (nread, _from) = recv_socket.recv_from(&mut buffer).await.unwrap();
+            let pkt = &mut buffer[..nread];
+
+            match HeaderReader::new([1u8; 32], pkt).unwrap().parse([2u8; 32]).unwrap() {
                 HeaderKind::Data { .. } => {}
                 _ => panic!("invalid packet"),
             }
@@ -929,11 +927,18 @@ mod tests {
     #[tokio::test]
     async fn session_terminated_after_too_many_resends() {
         let (_from_socket_tx, from_socket_rx) = channel(128);
-        let (to_socket_tx, to_socket_rx) = channel(128);
+        let (to_socket_tx, _to_socket_rx) = channel(128);
         let (transport_tx, transport_rx) = channel(16);
+        let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let mut recv_socket =
+            <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap();
 
         let ctx = Ssu2SessionContext {
-            address: "127.0.0.1:8888".parse().unwrap(),
+            address: recv_socket.local_address().unwrap(),
             dst_id: 1337u64,
             intro_key: [1u8; 32],
             pkt_rx: from_socket_rx,
@@ -953,6 +958,7 @@ mod tests {
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
                     to_socket_tx,
+                    socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
                 )
@@ -978,10 +984,13 @@ mod tests {
         }
 
         // read and parse all packets
-        for _ in 0..16 {
-            let Packet { mut pkt, .. } = to_socket_rx.recv().await.unwrap();
+        let mut buffer = vec![0u8; 0xffff];
 
-            match HeaderReader::new([1u8; 32], &mut pkt).unwrap().parse([2u8; 32]).unwrap() {
+        for _ in 0..16 {
+            let (nread, _from) = recv_socket.recv_from(&mut buffer).await.unwrap();
+            let pkt = &mut buffer[..nread];
+
+            match HeaderReader::new([1u8; 32], pkt).unwrap().parse([2u8; 32]).unwrap() {
                 HeaderKind::Data { .. } => {}
                 _ => panic!("invalid packet"),
             }

@@ -489,6 +489,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             Ssu2Session::<R>::new(
                 context,
                 self.pkt_tx.clone(),
+                self.socket.clone(),
                 self.transport_tx.clone(),
                 self.router_ctx.metrics_handle().clone(),
             )
@@ -605,7 +606,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             );
                             this.router_ctx
                                 .metrics_handle()
-                                .counter(NUM_DROPS_CHANNEL_FULL)
+                                .counter(NUM_DROPPED_DATAGRAMS)
                                 .increment(1);
                         }
                         Err(error) => tracing::debug!(
@@ -931,10 +932,17 @@ mod tests {
             transport_tx,
             router_ctx,
         );
+        let udp_socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let mut recv_socket =
+            <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
+                .await
+                .unwrap();
 
         let (_pkt_tx, pkt_rx) = channel(128);
         let context = Ssu2SessionContext {
-            address: "127.0.0.1:8888".parse().unwrap(),
+            address: recv_socket.local_address().unwrap(),
             dst_id: 1337u64,
             intro_key: [0xbb; 32],
             pkt_rx,
@@ -952,6 +960,7 @@ mod tests {
             Ssu2Session::<MockRuntime>::new(
                 context,
                 socket.pkt_tx.clone(),
+                udp_socket,
                 socket.transport_tx.clone(),
                 socket.router_ctx.metrics_handle().clone(),
             )
@@ -979,7 +988,8 @@ mod tests {
         .unwrap();
 
         // verify the message is received by `Ssu2Socket`
-        let _pkt = tokio::time::timeout(Duration::from_secs(5), socket.pkt_rx.recv())
+        let mut buffer = vec![0u8; 0xffff];
+        let _ = tokio::time::timeout(Duration::from_secs(5), recv_socket.recv_from(&mut buffer))
             .await
             .unwrap()
             .unwrap();
