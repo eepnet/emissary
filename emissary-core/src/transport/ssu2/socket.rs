@@ -46,9 +46,9 @@ use bytes::{Bytes, BytesMut};
 use futures::{Stream, StreamExt};
 use hashbrown::HashMap;
 use rand_core::RngCore;
-use thingbuf::mpsc::{channel, errors::TrySendError, Receiver, Sender};
+use thingbuf::mpsc::{channel, errors::TrySendError, Sender};
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{collections::VecDeque, vec, vec::Vec};
 use core::{
     fmt, mem,
     net::SocketAddr,
@@ -66,11 +66,6 @@ const PROTOCOL_NAME: &str = "Noise_XKchaobfse+hs1+hs2+hs3_25519_ChaChaPoly_SHA25
 ///
 /// This is the channel from [`Ssu2Socket`] to a pending/active SSU2 session.
 const CHANNEL_SIZE: usize = 256usize;
-
-/// SSU2 packet channel size.
-///
-/// Used to receive datagrams from active sessions.
-const PKT_CHANNEL_SIZE: usize = 8192usize;
 
 /// Maximum datagram size.
 const DATAGRAM_MAX_SIZE: usize = 0xfff;
@@ -166,7 +161,7 @@ pub struct Ssu2Socket<R: Runtime> {
     /// Active sessions.
     ///
     /// The session returns a `(RouterId, destination connection ID)` tuple when it exits.
-    active_sessions: R::JoinSet<TerminationContext>,
+    active_sessions: R::JoinSet<TerminationContext<R>>,
 
     /// Chaining key.
     chaining_key: Bytes,
@@ -190,12 +185,6 @@ pub struct Ssu2Socket<R: Runtime> {
 
     /// Pending SSU2 sessions.
     pending_sessions: R::JoinSet<PendingSsu2SessionStatus<R>>,
-
-    /// RX channel for receiving packets from active sessions.
-    pkt_rx: Receiver<Packet>,
-
-    /// TX channel given to active sessions.
-    pkt_tx: Sender<Packet>,
 
     /// Datagram read buffer.
     read_buffer: Vec<u8>,
@@ -246,12 +235,6 @@ impl<R: Runtime> Ssu2Socket<R> {
             .update(static_key.public().to_vec())
             .finalize();
 
-        // create channel pair which is used to exchange outbound packets
-        // with active sessions and `Ssu2Socket`
-        //
-        // TODO: implement `Clone` for `R::UdpSocket`
-        let (pkt_tx, pkt_rx) = channel(PKT_CHANNEL_SIZE);
-
         Self {
             active_sessions: R::join_set(),
             chaining_key: Bytes::from(chaining_key),
@@ -261,8 +244,6 @@ impl<R: Runtime> Ssu2Socket<R> {
             pending_outbound: HashMap::new(),
             pending_pkts: VecDeque::new(),
             pending_sessions: R::join_set(),
-            pkt_rx,
-            pkt_tx,
             read_buffer: vec![0u8; DATAGRAM_MAX_SIZE],
             router_ctx,
             sessions: HashMap::new(),
@@ -488,7 +469,6 @@ impl<R: Runtime> Ssu2Socket<R> {
         self.active_sessions.push(
             Ssu2Session::<R>::new(
                 context,
-                self.pkt_tx.clone(),
                 self.socket.clone(),
                 self.transport_tx.clone(),
                 self.router_ctx.metrics_handle().clone(),
@@ -542,14 +522,14 @@ impl<R: Runtime> Ssu2Socket<R> {
                         address,
                         dst_id,
                         intro_key,
+                        k_session_confirmed: Some(k_header_2),
                         next_pkt_num: 0,
                         reason: TerminationReason::ConnectionLimits,
                         recv_key_ctx,
                         router_id,
                         rx: pkt_rx,
                         send_key_ctx,
-                        tx: self.pkt_tx.clone(),
-                        k_session_confirmed: Some(k_header_2),
+                        socket: self.socket.clone(),
                     },
                 ))
             }
@@ -844,16 +824,6 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
         }
 
         loop {
-            match this.pkt_rx.poll_recv(cx) {
-                Poll::Pending => break,
-                Poll::Ready(None) => return Poll::Ready(None),
-                // TODO: useless conversion from vec to bytesmut
-                Poll::Ready(Some(Packet { pkt, address })) =>
-                    this.pending_pkts.push_back((BytesMut::from(&pkt[..]), address)),
-            }
-        }
-
-        loop {
             match mem::replace(&mut this.write_state, WriteState::Poisoned) {
                 WriteState::GetPacket => match this.pending_pkts.pop_front() {
                     None => {
@@ -959,7 +929,6 @@ mod tests {
         socket.active_sessions.push(
             Ssu2Session::<MockRuntime>::new(
                 context,
-                socket.pkt_tx.clone(),
                 udp_socket,
                 socket.transport_tx.clone(),
                 socket.router_ctx.metrics_handle().clone(),

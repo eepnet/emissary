@@ -51,6 +51,7 @@ pub struct Packet {
     pub pkt: Vec<u8>,
 
     /// Socket address of the remote router.
+    #[allow(unused)]
     pub address: SocketAddr,
 }
 

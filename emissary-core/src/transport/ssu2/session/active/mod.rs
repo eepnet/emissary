@@ -242,14 +242,12 @@ pub struct Ssu2Session<R: Runtime> {
 
     /// Write buffer
     write_buffer: VecDeque<BytesMut>,
-    pkt_tx: Sender<Packet>,
 }
 
 impl<R: Runtime> Ssu2Session<R> {
     /// Create new [`Ssu2Session`].
     pub fn new(
         context: Ssu2SessionContext,
-        pkt_tx: Sender<Packet>,
         socket: R::UdpSocket,
         transport_tx: Sender<SubsystemEvent>,
         metrics: R::MetricsHandle,
@@ -270,7 +268,6 @@ impl<R: Runtime> Ssu2Session<R> {
             dst_id: context.dst_id,
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(metrics.clone()),
-            pkt_tx,
             intro_key: context.intro_key,
             last_immediate_ack: 0u32,
             metrics: metrics.clone(),
@@ -581,7 +578,7 @@ impl<R: Runtime> Ssu2Session<R> {
     }
 
     /// Run the event loop of an active SSU2 session.
-    pub async fn run(mut self) -> TerminationContext {
+    pub async fn run(mut self) -> TerminationContext<R> {
         // subsystem manager doesn't exit
         self.transport_tx
             .send(SubsystemEvent::ConnectionEstablished {
@@ -609,14 +606,14 @@ impl<R: Runtime> Ssu2Session<R> {
             address: self.address,
             dst_id: self.dst_id,
             intro_key: self.intro_key,
+            k_session_confirmed: None,
             next_pkt_num: self.transmission.next_pkt_num(),
             reason,
             recv_key_ctx: self.recv_key_ctx,
             router_id: self.router_id,
             rx: self.pkt_rx,
             send_key_ctx: self.send_key_ctx,
-            tx: self.pkt_tx,
-            k_session_confirmed: None,
+            socket: self.socket,
         }
     }
 }
@@ -780,7 +777,6 @@ mod tests {
     #[tokio::test]
     async fn backpressure_works() {
         let (from_socket_tx, from_socket_rx) = channel(128);
-        let (to_socket_tx, _to_socket_rx) = channel(128);
         let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
@@ -811,7 +807,6 @@ mod tests {
             tokio::spawn(
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
-                    to_socket_tx,
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),
@@ -927,7 +922,6 @@ mod tests {
     #[tokio::test]
     async fn session_terminated_after_too_many_resends() {
         let (_from_socket_tx, from_socket_rx) = channel(128);
-        let (to_socket_tx, _to_socket_rx) = channel(128);
         let (transport_tx, transport_rx) = channel(16);
         let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
             .await
@@ -957,7 +951,6 @@ mod tests {
             let handle = tokio::spawn(
                 Ssu2Session::<MockRuntime>::new(
                     ctx,
-                    to_socket_tx,
                     socket,
                     transport_tx,
                     MockRuntime::register_metrics(vec![], None),

@@ -20,7 +20,7 @@ use crate::{
     crypto::chachapoly::ChaChaPoly,
     error::Ssu2Error,
     primitives::RouterId,
-    runtime::Runtime,
+    runtime::{Runtime, UdpSocket},
     transport::{
         ssu2::{
             message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
@@ -31,10 +31,11 @@ use crate::{
     },
 };
 
+use bytes::Bytes;
 use futures::FutureExt;
-use thingbuf::mpsc::{Receiver, Sender};
+use thingbuf::mpsc::Receiver;
 
-use alloc::vec::Vec;
+use alloc::{collections::VecDeque, vec::Vec};
 use core::{
     future::Future,
     net::SocketAddr,
@@ -52,7 +53,7 @@ const LOG_TARGET: &str = "emissary::ssu2::terminating";
 const TERMINATION_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Termination context.
-pub struct TerminationContext {
+pub struct TerminationContext<R: Runtime> {
     /// Socket address of the remote router.
     pub address: SocketAddr,
 
@@ -61,6 +62,12 @@ pub struct TerminationContext {
 
     /// Intro key.
     pub intro_key: [u8; 32],
+
+    /// Key for decryting the header of `SessionConfirmed` message.
+    ///
+    /// Only used by inbound connections which have been rejected
+    /// by `TransportManager`.
+    pub k_session_confirmed: Option<[u8; 32]>,
 
     /// Next packet number.
     pub next_pkt_num: u32,
@@ -80,14 +87,8 @@ pub struct TerminationContext {
     /// Send key context.
     pub send_key_ctx: KeyContext,
 
-    /// TX channel for sending packets to [`Ssu2Socket`].
-    pub tx: Sender<Packet>,
-
-    /// Key for decryting the header of `SessionConfirmed` message.
-    ///
-    /// Only used by inbound connections which have been rejected
-    /// by `TransportManager`.
-    pub k_session_confirmed: Option<[u8; 32]>,
+    /// UDP socket.
+    pub socket: R::UdpSocket,
 }
 
 /// Terminating SSU2 session.
@@ -110,7 +111,7 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     k_session_confirmed: Option<[u8; 32]>,
 
     /// Termination packet.
-    pkt: Vec<u8>,
+    pkt: Bytes,
 
     /// Receive key context.
     recv_key_ctx: KeyContext,
@@ -121,41 +122,33 @@ pub struct TerminatingSsu2Session<R: Runtime> {
     /// RX channel for receiving packets from [`Ssu2Socket`].
     rx: Receiver<Packet>,
 
+    /// UDP socket
+    socket: R::UdpSocket,
+
     /// Expiration timer.
     timer: R::Timer,
 
-    /// TX channel for sending packets to [`Ssu2Socket`].
-    //
-    // TODO: implement clonable udp socket
-    tx: Sender<Packet>,
+    /// Write buffer.
+    write_buffer: VecDeque<Bytes>,
 }
 
 impl<R: Runtime> TerminatingSsu2Session<R> {
     /// Create new [`TerminatingSsu2Session`].
-    pub fn new(ctx: TerminationContext) -> Self {
+    pub fn new(ctx: TerminationContext<R>) -> Self {
         let pkt = DataMessageBuilder::default()
             .with_dst_id(ctx.dst_id)
             .with_pkt_num(ctx.next_pkt_num)
             .with_key_context(ctx.intro_key, &ctx.send_key_ctx)
             .with_termination(ctx.reason)
             .build::<R>()
-            .to_vec();
+            .freeze();
 
         // send `TerminationReceived` if the reason was anything but `TerminationReceived`
-        if !core::matches!(ctx.reason, TerminationReason::TerminationReceived) {
-            if let Err(error) = ctx.tx.try_send(Packet {
-                pkt: pkt.clone(),
-                address: ctx.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %ctx.router_id,
-                    dst_id = ?ctx.dst_id,
-                    ?error,
-                    "failed to send termination packet",
-                );
-            }
-        }
+        let write_buffer = if !core::matches!(ctx.reason, TerminationReason::TerminationReceived) {
+            VecDeque::from([pkt.clone()])
+        } else {
+            VecDeque::new()
+        };
 
         Self {
             address: ctx.address,
@@ -166,8 +159,9 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             recv_key_ctx: ctx.recv_key_ctx,
             router_id: ctx.router_id,
             rx: ctx.rx,
+            socket: ctx.socket,
             timer: R::timer(TERMINATION_TIMEOUT),
-            tx: ctx.tx,
+            write_buffer,
         }
     }
 
@@ -208,18 +202,7 @@ impl<R: Runtime> TerminatingSsu2Session<R> {
             .iter()
             .any(|message| core::matches!(message, Block::Termination { .. }))
         {
-            if let Err(error) = self.tx.try_send(Packet {
-                pkt: self.pkt.clone(),
-                address: self.address,
-            }) {
-                tracing::warn!(
-                    target: LOG_TARGET,
-                    router_id = %self.router_id,
-                    dst_id = ?self.dst_id,
-                    ?error,
-                    "failed to send termination packet",
-                );
-            }
+            self.write_buffer.push_back(self.pkt.clone());
         }
 
         Ok(())
@@ -239,18 +222,8 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
                         if let Ok(mut reader) = HeaderReader::new(self.intro_key, &mut pkt) {
                             match reader.parse(key) {
                                 Ok(HeaderKind::SessionConfirmed { .. }) => {
-                                    if let Err(error) = self.tx.try_send(Packet {
-                                        pkt: self.pkt.clone(),
-                                        address: self.address,
-                                    }) {
-                                        tracing::warn!(
-                                            target: LOG_TARGET,
-                                            router_id = %self.router_id,
-                                            dst_id = ?self.dst_id,
-                                            ?error,
-                                            "failed to send termination packet",
-                                        );
-                                    }
+                                    let pkt = self.pkt.clone();
+                                    self.write_buffer.push_back(pkt);
                                 }
                                 Ok(pkt) => tracing::debug!(
                                     target: LOG_TARGET,
@@ -279,6 +252,20 @@ impl<R: Runtime> Future for TerminatingSsu2Session<R> {
                             );
                         },
                 },
+            }
+        }
+
+        // send all pending termination packets to remote
+        let address = self.address;
+
+        while let Some(pkt) = self.write_buffer.pop_back() {
+            match Pin::new(&mut self.socket).poll_send_to(cx, &pkt, address) {
+                Poll::Pending => {
+                    self.write_buffer.push_front(pkt);
+                    break;
+                }
+                Poll::Ready(None) => return Poll::Ready((self.router_id.clone(), self.dst_id)),
+                Poll::Ready(Some(_)) => {}
             }
         }
 
