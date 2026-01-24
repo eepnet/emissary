@@ -182,7 +182,9 @@ pub fn shuffle<T>(array: &mut [T], rng: &mut impl RngCore) {
 #[allow(unused)]
 pub fn init_logger() {
     if std::env::var("RUST_LOG").is_err() {
-        std::env::set_var("RUST_LOG", "trace");
+        unsafe {
+            std::env::set_var("RUST_LOG", "trace");
+        }
     }
 
     let _ = tracing_subscriber::fmt()
@@ -202,4 +204,15 @@ pub fn is_global(address: Ipv4Addr) -> bool {
         || address.is_documentation()
         || (address >= Ipv4Addr::new(198, 18, 0, 0) && address <= Ipv4Addr::new(198, 19, 255, 255))
         || address.is_broadcast())
+}
+
+#[cfg(test)]
+#[macro_export]
+macro_rules! timeout {
+    ($future:expr) => {
+        tokio::time::timeout(std::time::Duration::from_secs(5), $future)
+    };
+    ($future:expr, $timeout:ident) => {
+        tokio::time::timeout(std::time::Duration::from_secs($timeout), $future)
+    };
 }

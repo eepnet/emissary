@@ -316,13 +316,18 @@ pub enum PeerTestCommand {
         router_info: Vec<u8>,
     },
 
-    /// Accept peer test request from Alice as Charlie.
-    AcceptAlice {
-        /// Router ID of Alice.
-        router_id: RouterId,
-
+    /// Respond to Alice's request as Charlie.
+    SendCharlieResponse {
         /// Test nonce.
         nonce: u32,
+
+        /// Rejection reason.
+        ///
+        /// `None` if Charlie accepted the peer test request.
+        rejection: Option<RejectionReason>,
+
+        /// Router ID of Alice.
+        router_id: RouterId,
     },
 
     /// Relay Charlie's response to Alice.

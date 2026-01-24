@@ -106,8 +106,8 @@ pub enum PeerTestBlock {
         message: Vec<u8>,
     },
 
-    /// Accept peer test request from Bob for Alice as Charlie.
-    AcceptAlice {
+    /// Send Charlie's response to Alice's peer test request.
+    CharlieResponse {
         /// Message sent by Alice + signature from Charlie.
         message: Vec<u8>,
 
@@ -142,7 +142,7 @@ impl PeerTestBlock {
         match self {
             Self::BobReject { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
             Self::RequestCharlie { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
-            Self::AcceptAlice { message, .. } => overhead + message.len(),
+            Self::CharlieResponse { message, .. } => overhead + message.len(),
             Self::RelayCharlieResponse { message, .. } =>
                 overhead + message.len() + ROUTER_HASH_LEN,
         }
@@ -351,7 +351,7 @@ impl<'a> DataMessageBuilder<'a> {
                     out.put_slice(&router_id.to_vec());
                     out.put_slice(&message);
                 }
-                Some(PeerTestBlock::AcceptAlice { message, rejection }) => {
+                Some(PeerTestBlock::CharlieResponse { message, rejection }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
                     out.put_u16((3 + message.len()) as u16);
                     out.put_u8(3); // message 3 (charlie -> bob)

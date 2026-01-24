@@ -501,8 +501,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         let handle = self.peer_test_manager.handle();
 
         // register session to `PeerTestManager`
-        self.peer_test_manager
-            .add_session(&context.router_id, context.dst_id, handle.cmd_tx());
+        self.peer_test_manager.add_session(&context.router_id, handle.cmd_tx());
 
         self.active_sessions.push(
             Ssu2Session::<R>::new(
@@ -656,6 +655,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                     "terminate active ssu2 session",
                 );
 
+                this.peer_test_manager.remove_session(&router_id);
                 this.terminating_session.push(TerminatingSsu2Session::<R>::new(termination_ctx));
                 this.router_ctx.metrics_handle().gauge(NUM_CONNECTIONS).decrement(1);
 

@@ -224,8 +224,20 @@ pub enum PeerTestMessage {
         signature: Vec<u8>,
     },
 
+    /// Message 5, from Charlie to Alice (out-of-session).
+    Message5 {
+        /// Test nonce.
+        nonce: u32,
+    },
+
     /// Message 6, from Alice to Charlie (out-of-session).
     Message6 {
+        /// Test nonce.
+        nonce: u32,
+    },
+
+    /// Message 7, from Charlie to Alice (out-of-session).
+    Message7 {
         /// Test nonce.
         nonce: u32,
     },
@@ -829,7 +841,9 @@ impl Block {
                     .saturating_sub(1) // address size
                     .saturating_sub(address_size as usize);
 
-                if bytes_left == ED25519_SIGNATURE_LEN {
+                if bytes_left == 0 {
+                    (rest, None)
+                } else if bytes_left == ED25519_SIGNATURE_LEN {
                     let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
 
                     (rest, Some(signature))
@@ -902,15 +916,25 @@ impl Block {
                     },
                 },
             )),
-            4 => todo!("alice support not implemented"),
-            5 => todo!("alice support not implemented"),
+            4 => todo!("4: alice support not implemented"),
+            5 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message5 { nonce },
+                },
+            )),
             6 => Ok((
                 rest,
                 Block::PeerTest {
                     message: PeerTestMessage::Message6 { nonce },
                 },
             )),
-            7 => todo!("alice support not implemented"),
+            7 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message7 { nonce },
+                },
+            )),
             msg => return Err(Err::Error(Ssu2ParseError::UnknownPeerTestMessage(msg))),
         }
     }
@@ -1620,8 +1644,8 @@ impl<'a> PeerTestBuilder<'a> {
             payload.push(BlockType::PeerTest.as_u8());
             payload.extend_from_slice(&size.to_be_bytes());
             payload.push(self.msg_code);
-            payload.push(0);
-            payload.push(0);
+            payload.push(0); // code
+            payload.push(0); // flag
             payload.extend_from_slice(&self.message);
         }
         payload.extend_from_slice(&Block::Padding { padding }.serialize());

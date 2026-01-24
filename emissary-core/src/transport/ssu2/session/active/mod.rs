@@ -490,16 +490,15 @@ impl<R: Runtime> Ssu2Session<R> {
 
                 self.peer_test_handle.handle_charlie_response(nonce, rejection, message);
             }
-            PeerTestMessage::Message6 { nonce } => {
+            message => {
                 tracing::warn!(
                     target: LOG_TARGET,
                     router_id = %self.router_id,
-                    ?nonce,
-                    "received peer test message 6 to an active session",
+                    ?message,
+                    "received an unexpected peer test message to an active session",
                 );
                 debug_assert!(false);
             }
-            PeerTestMessage::Dummy => unreachable!(),
         }
     }
 
@@ -582,7 +581,11 @@ impl<R: Runtime> Ssu2Session<R> {
                         .build::<R>(),
                 );
             }
-            PeerTestCommand::AcceptAlice { router_id, nonce } => {
+            PeerTestCommand::SendCharlieResponse {
+                nonce,
+                rejection,
+                router_id,
+            } => {
                 tracing::trace!(
                     target: "emissary::ssu2::peer-test",
                     router_id = %self.router_id,
@@ -623,10 +626,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     DataMessageBuilder::default()
                         .with_dst_id(self.dst_id)
                         .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_peer_test_block(PeerTestBlock::AcceptAlice {
-                            message,
-                            rejection: None,
-                        })
+                        .with_peer_test_block(PeerTestBlock::CharlieResponse { message, rejection })
                         .with_key_context(self.intro_key, &self.send_key_ctx)
                         .build::<R>(),
                 );
