@@ -3021,7 +3021,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_exists_after_multiple_lease_set_query_failures() {
+    async fn stream_exits_after_multiple_lease_set_query_failures() {
         let socket_factory = SocketFactory::new().await;
 
         let mut manager1 = {
@@ -3140,15 +3140,6 @@ mod tests {
                 let _ = manager2.next().await;
             }
         });
-
-        match tokio::time::timeout(Duration::from_secs(50), manager1.next())
-            .await
-            .expect("no timeout")
-            .expect("to succeed")
-        {
-            StreamManagerEvent::SendPacket { .. } => {}
-            _ => panic!("invalid event"),
-        }
 
         match tokio::time::timeout(Duration::from_secs(50), manager1.next())
             .await

@@ -276,6 +276,7 @@ pub struct StreamContext {
 }
 
 /// Pending outbound packet.
+#[derive(Debug)]
 pub struct PendingPacket<R: Runtime> {
     /// When was the packet sent.
     sent: R::Instant,
@@ -583,20 +584,19 @@ impl<R: Runtime> Stream<R> {
             destination,
         } = context;
 
-        let (send_stream_id, initial_message, highest_ack, src_port, dst_port) = match state {
-            StreamKind::Inbound { payload } => {
-                let send_stream_id = R::rng().next_u32();
-                let packet = PacketBuilder::new(send_stream_id)
-                    .with_send_stream_id(recv_stream_id)
-                    .with_from_included(&destination)
-                    .with_seq_nro(0)
-                    .with_synchronize()
-                    .with_signature()
-                    .build_and_sign(&signing_key);
+        let (send_stream_id, initial_message, highest_ack, src_port, dst_port, unacked, rto_timer) =
+            match state {
+                StreamKind::Inbound { payload } => {
+                    let send_stream_id = R::rng().next_u32();
+                    let packet = PacketBuilder::new(send_stream_id)
+                        .with_send_stream_id(recv_stream_id)
+                        .with_from_included(&destination)
+                        .with_seq_nro(0)
+                        .with_synchronize()
+                        .with_signature()
+                        .build_and_sign(&signing_key);
 
-                // TODO: correct?
-                event_tx
-                    .try_send((
+                    if let Err(error) = event_tx.try_send((
                         match routing_path_handle.routing_path() {
                             None => DeliveryStyle::Unspecified {
                                 destination_id: remote.clone(),
@@ -606,10 +606,87 @@ impl<R: Runtime> Stream<R> {
                         packet.to_vec(),
                         0u16,
                         0u16,
-                    ))
-                    .unwrap();
+                    )) {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            %local,
+                            %remote,
+                            ?send_stream_id,
+                            ?recv_stream_id,
+                            ?error,
+                            "failed to send initial SYN reply",
+                        );
+                    }
 
-                (
+                    (
+                        send_stream_id,
+                        match (initial_message, payload.is_empty()) {
+                            (Some(mut initial), false) => {
+                                initial.extend_from_slice(&payload);
+                                Some(initial)
+                            }
+                            (Some(initial), true) => Some(initial),
+                            (None, false) => Some(payload),
+                            (None, true) => None,
+                        },
+                        0u32,
+                        0u16, // TODO: correct?
+                        0u16, // TODO: correct?
+                        BTreeMap::from([(
+                            0,
+                            PendingPacket {
+                                sent: R::now(),
+                                seq_nro: 0,
+                                packet: packet.to_vec(),
+                            },
+                        )]),
+                        Some(R::timer(INITIAL_RTO)),
+                    )
+                }
+                StreamKind::InboundPending {
+                    send_stream_id,
+                    seq_nro,
+                    packets,
+                } => {
+                    let combined = packets.into_iter().fold(Vec::new(), |mut message, packet| {
+                        message.extend_from_slice(&packet);
+                        message
+                    });
+
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        %local,
+                        %remote,
+                        ?send_stream_id,
+                        ?recv_stream_id,
+                        pending_payload_len = ?combined.len(),
+                        "initialize state from pending connection",
+                    );
+
+                    (
+                        send_stream_id,
+                        match (initial_message, combined.is_empty()) {
+                            (None, true) => None,
+                            (None, false) => Some(combined),
+                            (Some(message), true) => Some(message),
+                            (Some(mut message), false) => {
+                                message.extend_from_slice(&combined);
+                                Some(message)
+                            }
+                        },
+                        seq_nro,
+                        0u16, // TODO: correct?
+                        0u16, // TODO: correct?
+                        BTreeMap::new(),
+                        None,
+                    )
+                }
+                StreamKind::Outbound {
+                    dst_port,
+                    payload,
+                    send_stream_id,
+                    src_port,
+                } => (
                     send_stream_id,
                     match (initial_message, payload.is_empty()) {
                         (Some(mut initial), false) => {
@@ -621,67 +698,12 @@ impl<R: Runtime> Stream<R> {
                         (None, true) => None,
                     },
                     0u32,
-                    0u16, // TODO: correct?
-                    0u16, // TODO: correct?
-                )
-            }
-            StreamKind::InboundPending {
-                send_stream_id,
-                seq_nro,
-                packets,
-            } => {
-                let combined = packets.into_iter().fold(Vec::new(), |mut message, packet| {
-                    message.extend_from_slice(&packet);
-                    message
-                });
-
-                tracing::trace!(
-                    target: LOG_TARGET,
-                    %local,
-                    %remote,
-                    ?send_stream_id,
-                    ?recv_stream_id,
-                    pending_payload_len = ?combined.len(),
-                    "initialize state from pending connection",
-                );
-
-                (
-                    send_stream_id,
-                    match (initial_message, combined.is_empty()) {
-                        (None, true) => None,
-                        (None, false) => Some(combined),
-                        (Some(message), true) => Some(message),
-                        (Some(mut message), false) => {
-                            message.extend_from_slice(&combined);
-                            Some(message)
-                        }
-                    },
-                    seq_nro,
-                    0u16, // TODO: correct?
-                    0u16, // TODO: correct?
-                )
-            }
-            StreamKind::Outbound {
-                dst_port,
-                payload,
-                send_stream_id,
-                src_port,
-            } => (
-                send_stream_id,
-                match (initial_message, payload.is_empty()) {
-                    (Some(mut initial), false) => {
-                        initial.extend_from_slice(&payload);
-                        Some(initial)
-                    }
-                    (Some(initial), true) => Some(initial),
-                    (None, false) => Some(payload),
-                    (None, true) => None,
-                },
-                0u32,
-                src_port,
-                dst_port,
-            ),
-        };
+                    src_port,
+                    dst_port,
+                    BTreeMap::new(),
+                    None,
+                ),
+            };
 
         Self {
             close_requested: false,
@@ -699,13 +721,13 @@ impl<R: Runtime> Stream<R> {
             remote,
             routing_path_handle,
             rto: Rto::new(),
-            rto_timer: None,
+            rto_timer,
             rtt: Rtt::new(),
             send_stream_id,
             signing_key,
             src_port,
             stream,
-            unacked: BTreeMap::new(),
+            unacked,
             window_size: INITIAL_WINDOW_SIZE,
             write_state: match initial_message {
                 None => WriteState::GetMessage,
@@ -792,16 +814,16 @@ impl<R: Runtime> Stream<R> {
                 remote = %self.remote,
                 recv_id = ?self.recv_stream_id,
                 send_id = ?self.send_stream_id,
-                "received `SYN` to an active session",
+                %seq_nro,
+                payload_len = ?payload.len(),
+                "received SYN to an active session",
             );
 
             let packet = PacketBuilder::new(self.send_stream_id)
                 .with_send_stream_id(self.recv_stream_id)
-                .with_seq_nro(0)
-                .with_synchronize()
-                .with_from_included(&self.destination)
-                .with_signature()
-                .build_and_sign(&self.signing_key);
+                .with_ack_through(seq_nro)
+                .with_seq_nro(PLAIN_ACK)
+                .build();
 
             self.event_tx
                 .try_send((
@@ -841,7 +863,7 @@ impl<R: Runtime> Stream<R> {
                 ?seq_nro,
                 highest_seen = ?self.inbound_context.seq_nro,
                 payload_len = ?payload.len(),
-                "remote sent `CLOSE`",
+                "remote sent CLOSE",
             );
 
             // stop reading any  more data from the client socket
@@ -1102,7 +1124,7 @@ impl<R: Runtime> Stream<R> {
                 recv_id = ?self.recv_stream_id,
                 send_id = ?self.send_stream_id,
                 wnd = ?self.window_size,
-                "postponing `CLOSE`, send window is full",
+                "postponing CLOSE, send window is full",
             );
 
             self.pending.insert(
@@ -2386,8 +2408,21 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let _ = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client.write_all(b"hello, world\n").await.unwrap();
         client.write_all(b"testing 123\n").await.unwrap();
@@ -2429,7 +2464,7 @@ mod tests {
         // poll stream and handle ack
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        assert_eq!(stream.window_size, 2);
+        assert_eq!(stream.window_size, 4);
         assert_ne!(*stream.rtt, INITIAL_RTT);
         assert_ne!(*stream.rto, INITIAL_RTO);
     }
@@ -2441,7 +2476,7 @@ mod tests {
             StreamBuilder {
                 stream: mut client,
                 event_rx,
-                cmd_tx: _cmd_tx,
+                cmd_tx,
                 ..
             },
         ) = StreamBuilder::build_stream().await;
@@ -2453,8 +2488,21 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client.write_all(b"hello, world\n").await.unwrap();
         client.write_all(b"testing 123\n").await.unwrap();
@@ -2523,8 +2571,21 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client.write_all(b"hello, world\n").await.unwrap();
         client.write_all(b"testing 123\n").await.unwrap();
@@ -2560,7 +2621,7 @@ mod tests {
         // poll stream and handle ack
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        assert_eq!(stream.window_size, 2);
+        assert_eq!(stream.window_size, 4);
         assert_ne!(*stream.rtt, INITIAL_RTT);
         assert_ne!(*stream.rto, INITIAL_RTO);
 
@@ -2580,7 +2641,7 @@ mod tests {
         // verify there's one pending packet and that the rto timer is active
         assert_eq!(stream.unacked.len(), 1);
         assert_eq!(stream.next_seq_nro, 3);
-        assert_eq!(stream.window_size, 2);
+        assert_eq!(stream.window_size, 4);
         assert!(stream.pending.is_empty());
         assert!(stream.rto_timer.is_some());
 
@@ -2603,7 +2664,7 @@ mod tests {
         // verify state is unchanged
         assert_eq!(stream.unacked.len(), 1);
         assert_eq!(stream.next_seq_nro, 3);
-        assert_eq!(stream.window_size, 1);
+        assert_eq!(stream.window_size, 3);
         assert!(stream.pending.is_empty());
         assert!(stream.rto_timer.is_some());
     }
@@ -2627,8 +2688,21 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client
             .write_all(&{
@@ -2652,9 +2726,9 @@ mod tests {
 
         let packet = Packet::parse::<MockRuntime>(&first_packet).unwrap();
         assert_eq!(packet.payload, vec![1u8; MTU_SIZE]);
-        assert_eq!(stream.window_size, 1);
-        assert_eq!(stream.unacked.len(), INITIAL_WINDOW_SIZE);
-        assert_eq!(stream.pending.len(), 2);
+        assert_eq!(stream.window_size, 2);
+        assert_eq!(stream.unacked.len(), 2);
+        assert_eq!(stream.pending.len(), 1);
 
         // send ack for the packet
         cmd_tx
@@ -2672,7 +2746,7 @@ mod tests {
         // poll stream and handle ack
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        assert_eq!(stream.window_size, 2);
+        assert_eq!(stream.window_size, 4);
         assert_ne!(*stream.rtt, INITIAL_RTT);
         assert_ne!(*stream.rto, INITIAL_RTO);
 
@@ -2756,8 +2830,21 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let _ = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         // send five packets
         client
@@ -2775,7 +2862,7 @@ mod tests {
             .unwrap();
 
         // poll stream and send outbound packets
-        tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
+        tokio::time::timeout(Duration::from_secs(5), &mut stream).await.unwrap_err();
 
         // ack first packet
         {
@@ -2867,7 +2954,7 @@ mod tests {
 
             tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-            assert_eq!(stream.window_size, 32);
+            assert_eq!(stream.window_size, 64);
             assert!(stream.unacked.is_empty());
             assert!(stream.pending.is_empty());
         }
@@ -2921,7 +3008,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
 
-        assert_eq!(stream.window_size, 67);
+        assert_eq!(stream.window_size, 68);
         assert_eq!(stream.unacked.len(), 2);
         assert!(stream.pending.is_empty());
 
@@ -2946,7 +3033,7 @@ mod tests {
 
         assert_eq!(first_missing.payload, vec![8u8; MTU_SIZE]);
         assert_eq!(second_missing.payload, vec![0xau8; MTU_SIZE]);
-        assert_eq!(stream.window_size, 66);
+        assert_eq!(stream.window_size, 67);
     }
 
     #[tokio::test]
@@ -2970,8 +3057,23 @@ mod tests {
             }
         });
 
-        // ignore syn
-        let (_, _, _, _) = event_rx.recv().await.unwrap();
+        // acknowledge syn with a 100ms delay
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         // send 11 packets, each with 100ms delay
         for i in 1..=11 {
@@ -3015,8 +3117,21 @@ mod tests {
             },
         ) = StreamBuilder::build_stream().await;
 
-        // ignore syn
-        let (_, _, _, _) = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         assert_eq!(stream.window_size, INITIAL_WINDOW_SIZE);
 
@@ -3056,7 +3171,7 @@ mod tests {
 
             // verify that window size is doubled
             tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
-            assert_eq!(stream.window_size, 2);
+            assert_eq!(stream.window_size, 4);
 
             // send another packet but this time allow rto to expire
             client.write_all(&vec![1 as u8; 256]).await.unwrap();
@@ -3093,7 +3208,7 @@ mod tests {
             assert_eq!(ignored, packet);
 
             // verify that window size is decreased back to 1
-            assert_eq!(stream.window_size, INITIAL_WINDOW_SIZE);
+            assert_eq!(stream.window_size, 3);
 
             let packet = Packet::parse::<MockRuntime>(&packet).unwrap();
             cmd_tx
@@ -3145,7 +3260,7 @@ mod tests {
 
             tokio::time::timeout(Duration::from_secs(1), &mut stream).await.unwrap_err();
         }
-        assert_eq!(stream.window_size, EXP_GROWTH_STOP_THRESHOLD);
+        assert_eq!(stream.window_size, 97);
 
         let handle = tokio::spawn(async move {
             loop {
@@ -3230,8 +3345,21 @@ mod tests {
             let _ = stream.await;
         });
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         // send 20 packets
         client
@@ -3318,8 +3446,21 @@ mod tests {
             let _ = stream.await;
         });
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let (_, _, _, _) = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client
             .write_all(&{
@@ -3414,8 +3555,21 @@ mod tests {
             let _ = stream.await;
         });
 
-        // ignore syn
-        let _ = event_rx.recv().await.unwrap();
+        // acknowledge syn
+        {
+            let _ = event_rx.recv().await.unwrap();
+            cmd_tx
+                .send(StreamEvent::Packet {
+                    packet: PacketBuilder::new(1338u32)
+                        .with_ack_through(0)
+                        .with_send_stream_id(1337u32)
+                        .with_seq_nro(PLAIN_ACK)
+                        .build()
+                        .to_vec(),
+                })
+                .await
+                .unwrap();
+        }
 
         client
             .write_all(&{
@@ -3755,5 +3909,65 @@ mod tests {
             assert_eq!("test1test2\n", response);
             response.clear();
         }
+    }
+
+    #[tokio::test]
+    async fn syn_reply_resent() {
+        let (
+            mut stream,
+            StreamBuilder {
+                event_rx,
+                stream: _client,
+                cmd_tx,
+                ..
+            },
+        ) = StreamBuilder::build_stream().await;
+
+        // ignore syn packet
+        let (_, packet, _src_port, _dst_port) = event_rx.recv().await.unwrap();
+        let Packet { flags, seq_nro, .. } = Packet::parse::<MockRuntime>(&packet).unwrap();
+        assert!(flags.synchronize());
+        assert_eq!(seq_nro, 0);
+
+        // verify that the synchronize packet is pending acknowledgement
+        assert_eq!(stream.unacked.len(), 1);
+
+        // poll stream manager until the syn packet is resent
+        let future = async {
+            tokio::select! {
+                res = &mut stream => panic!("stream manager returned: {res:?}"),
+                event = event_rx.recv() => event.unwrap(),
+            }
+        };
+
+        // poll the future with timeout, syn should be resent within 9 seconds
+        let (_, packet, _src_port, _dst_port) =
+            tokio::time::timeout(Duration::from_secs(15), future).await.unwrap();
+
+        // verify the packet is the syn packet
+        let Packet { flags, seq_nro, .. } = Packet::parse::<MockRuntime>(&packet).unwrap();
+        assert!(flags.synchronize());
+        assert_eq!(seq_nro, 0);
+
+        // verify that the synchronize packet is pending acknowledgement
+        assert_eq!(stream.unacked.len(), 1);
+
+        // send acknowledgement for syn
+        cmd_tx
+            .send(StreamEvent::Packet {
+                packet: PacketBuilder::new(1338u32)
+                    .with_send_stream_id(1337u32)
+                    .with_seq_nro(1)
+                    .with_ack_through(0)
+                    .with_payload(&[1, 2, 3, 4])
+                    .build()
+                    .to_vec(),
+            })
+            .await
+            .unwrap();
+
+        // poll stream manager and verify the syn reply has been acked
+        assert!(tokio::time::timeout(Duration::from_millis(500), &mut stream).await.is_err());
+        assert!(stream.unacked.is_empty());
     }
 }

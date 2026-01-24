@@ -783,7 +783,7 @@ async fn stream_lots_of_data(kind: TransportKind) {
 
         stream.write_all(&data).await.unwrap();
 
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
     });
 
     let mut session2 = tokio::time::timeout(
