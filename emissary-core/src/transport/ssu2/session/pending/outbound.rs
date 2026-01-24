@@ -94,8 +94,8 @@ pub struct OutboundSsu2Context<R: Runtime> {
     /// RX channel for receiving datagrams from `Ssu2Socket`.
     pub rx: Receiver<Packet>,
 
-    /// Signing key of remote router.
-    pub signing_key: SigningPublicKey,
+    /// Verifying key of remote router.
+    pub verifying_key: SigningPublicKey,
 
     /// UDP socket.
     pub socket: R::UdpSocket,
@@ -191,8 +191,8 @@ pub struct OutboundSsu2Session<R: Runtime> {
     /// RX channel for receiving datagrams from `Ssu2Socket`.
     rx: Option<Receiver<Packet>>,
 
-    /// Signing key of remote router.
-    signing_key: SigningPublicKey,
+    /// Verifying key of remote router.
+    verifying_key: SigningPublicKey,
 
     /// UDP socket.
     socket: R::UdpSocket,
@@ -227,7 +227,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             router_id,
             router_info,
             rx,
-            signing_key,
+            verifying_key,
             socket,
             src_id,
             state,
@@ -263,7 +263,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
             remote_intro_key,
             router_id,
             rx: Some(rx),
-            signing_key,
+            verifying_key,
             socket,
             src_id,
             started: R::now(),
@@ -643,7 +643,7 @@ impl<R: Runtime> OutboundSsu2Session<R> {
                 send_key_ctx: KeyContext::new(k_data_ab, k_header_2_ab),
                 router_id: self.router_id.clone(),
                 pkt_rx: self.rx.take().expect("to exist"),
-                signing_key: self.signing_key.clone(),
+                verifying_key: self.verifying_key.clone(),
             },
             src_id: self.src_id,
             started: self.started,
@@ -913,7 +913,7 @@ mod tests {
             router_id: router_info.identity.id(),
             router_info: Bytes::from(router_info.serialize(&signing_key)),
             rx: outbound_session_rx,
-            signing_key: signing_key.public(),
+            verifying_key: signing_key.public(),
             socket: outbound_socket.clone(),
             src_id,
             state: inbound_state.clone(),

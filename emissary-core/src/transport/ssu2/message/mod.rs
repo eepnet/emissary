@@ -178,17 +178,17 @@ impl BlockType {
 pub enum PeerTestMessage {
     /// Message 1, sent from Alice to Bob.
     Message1 {
-        /// Test nonce.
-        nonce: u32,
-
         /// Alice's address.
         address: SocketAddr,
 
-        /// Signature.
-        signature: Vec<u8>,
-
         /// Portion of the message that is covered by `signature`.
         message: Vec<u8>,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Signature.
+        signature: Vec<u8>,
     },
 
     /// Message 2, sent from Bob to Charlie.
@@ -218,7 +218,30 @@ pub enum PeerTestMessage {
         nonce: u32,
 
         /// Rejection reason from Charlie, if request was not accepted.
+        ///
+        /// `None` if requested was accepted.
         rejection: Option<RejectionReason>,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
+    /// Message 4, sent from Bob to Alice, either directly or relayed from Charlie.
+    Message4 {
+        message: Vec<u8>,
+
+        /// Test nonce,
+        nonce: u32,
+
+        /// Rejection reason from Bob/Charlie, if request was not accepted.
+        ///
+        /// `None` if requested was accepted.
+        rejection: Option<RejectionReason>,
+
+        /// Router hash.
+        ///
+        /// All zeros if Bob rejected the request.
+        router_hash: Vec<u8>,
 
         /// Signature.
         signature: Vec<u8>,
@@ -916,7 +939,29 @@ impl Block {
                     },
                 },
             )),
-            4 => todo!("4: alice support not implemented"),
+            4 => Ok((
+                rest,
+                Block::PeerTest {
+                    message: PeerTestMessage::Message4 {
+                        // router hash must exist since it was extracted for message 4
+                        router_hash: router_hash.expect("to exist").to_vec(),
+                        nonce,
+                        rejection: (code != 0).then(|| RejectionReason::from(code)),
+                        // signature must exist since it was extracted for message 4
+                        signature: maybe_signature.expect("to exist").to_vec(),
+                        message: {
+                            let message_end = 1usize // version
+                                    .saturating_add(4) // nonce
+                                    .saturating_add(4) // timestamp
+                                    .saturating_add(1) // address size
+                                    .saturating_add(address_size as usize)
+                                    .saturating_add(ED25519_SIGNATURE_LEN);
+
+                            message_start[..message_end].to_vec()
+                        },
+                    },
+                },
+            )),
             5 => Ok((
                 rest,
                 Block::PeerTest {

@@ -36,6 +36,12 @@ pub enum PeerTestError {
 
     /// Unexpected peer test message.
     UnexpectedMessage(u8),
+
+    /// Invalid signature.
+    InvalidSignature,
+
+    /// Invali address.
+    InvalidAddress,
 }
 
 impl fmt::Display for PeerTestError {
@@ -45,6 +51,8 @@ impl fmt::Display for PeerTestError {
                 write!(f, "remote peer test session doesn't exist: {id}"),
             Self::UnexpectedMessage(expected) =>
                 write!(f, "unexpected message, expected {expected}"),
+            Self::InvalidSignature => write!(f, "invalid signature"),
+            Self::InvalidAddress => write!(f, "invalid address"),
         }
     }
 }

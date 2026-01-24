@@ -85,6 +85,15 @@ pub enum MessageKind<'a> {
 
 /// Peer test block.
 pub enum PeerTestBlock {
+    /// Send request to Bob as Alice.
+    AliceRequest {
+        /// Message.
+        message: Vec<u8>,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
     /// Bob rejected Alice's peer test request.
     BobReject {
         /// Rejection reason.
@@ -140,6 +149,7 @@ impl PeerTestBlock {
         let overhead = 1 + 2 + 1 + 1 + 1;
 
         match self {
+            Self::AliceRequest { message, signature } => overhead + message.len() + signature.len(),
             Self::BobReject { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
             Self::RequestCharlie { message, .. } => overhead + ROUTER_HASH_LEN + message.len(),
             Self::CharlieResponse { message, .. } => overhead + message.len(),
@@ -175,6 +185,9 @@ pub struct DataMessageBuilder<'a> {
     /// Set only if `message` is `None`.
     pkt_num: Option<u32>,
 
+    /// Router info.
+    router_info: Option<&'a [u8]>,
+
     /// Termination reason.
     termination_reason: Option<TerminationReason>,
 }
@@ -199,7 +212,7 @@ impl<'a> DataMessageBuilder<'a> {
     }
 
     /// Specify `PeerTestBlock`.
-    pub fn with_peer_test_block(mut self, block: PeerTestBlock) -> Self {
+    pub fn with_peer_test(mut self, block: PeerTestBlock) -> Self {
         self.peer_test_block = Some(block);
         self
     }
@@ -215,6 +228,12 @@ impl<'a> DataMessageBuilder<'a> {
     /// Specify packet number and [`MessageKind`].
     pub fn with_message(mut self, pkt_num: u32, message_kind: MessageKind<'a>) -> Self {
         self.message = Some((pkt_num, message_kind));
+        self
+    }
+
+    /// Specify router info.
+    pub fn with_router_info(mut self, router_info: &'a [u8]) -> Self {
+        self.router_info = Some(router_info);
         self
     }
 
@@ -331,8 +350,25 @@ impl<'a> DataMessageBuilder<'a> {
                     },
             }
 
+            if let Some(router_info) = self.router_info.take() {
+                out.put_u8(BlockType::RouterInfo.as_u8());
+                out.put_u16((2 + router_info.len()) as u16);
+                out.put_u8(0u8);
+                out.put_u8(1u8);
+                out.put_slice(&router_info);
+            }
+
             match self.peer_test_block.take() {
                 None => {}
+                Some(PeerTestBlock::AliceRequest { message, signature }) => {
+                    out.put_u8(BlockType::PeerTest.as_u8());
+                    out.put_u16((3 + message.len()) as u16);
+                    out.put_u8(1); // message 1 (alice -> bob)
+                    out.put_u8(0); // code
+                    out.put_u8(0u8); // flag
+                    out.put_slice(&message);
+                    out.put_slice(&signature);
+                }
                 Some(PeerTestBlock::BobReject { reason, message }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
                     out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);

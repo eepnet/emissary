@@ -212,7 +212,7 @@ macro_rules! timeout {
     ($future:expr) => {
         tokio::time::timeout(std::time::Duration::from_secs(5), $future)
     };
-    ($future:expr, $timeout:ident) => {
-        tokio::time::timeout(std::time::Duration::from_secs($timeout), $future)
+    ($future:expr, $timeout:expr) => {
+        tokio::time::timeout($timeout, $future)
     };
 }

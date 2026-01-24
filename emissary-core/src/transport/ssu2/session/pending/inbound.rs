@@ -577,7 +577,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
             debug_assert!(false);
             return Err(Ssu2Error::Malformed);
         };
-        let signing_key = router_info.identity.signing_key().clone();
+        let verifying_key = router_info.identity.signing_key().clone();
         let temp_key = Hmac::new(self.noise_ctx.chaining_key()).update([]).finalize();
         let k_ab = Hmac::new(&temp_key).update([0x01]).finalize();
         let k_ba = Hmac::new(&temp_key).update(&k_ab).update([0x02]).finalize();
@@ -622,7 +622,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 recv_key_ctx: KeyContext::new(k_data_ab, k_header_2_ab),
                 router_id: router_info.identity.id(),
                 send_key_ctx: KeyContext::new(k_data_ba, k_header_2_ba),
-                signing_key,
+                verifying_key,
             },
             dst_id: self.dst_id,
             pkt,
@@ -931,7 +931,7 @@ mod tests {
             router_id: router_info.identity.id(),
             router_info: Bytes::from(router_info.serialize(&signing_key)),
             rx: outbound_session_rx,
-            signing_key: signing_key.public(),
+            verifying_key: signing_key.public(),
             socket: outbound_socket.clone(),
             src_id,
             state: inbound_state.clone(),
