@@ -418,9 +418,12 @@ impl Message {
     /// https://geti2p.net/spec/i2cp#getdatemessage
     fn parse_get_date(input: impl AsRef<[u8]>) -> Option<Self> {
         let (rest, version) = Str::parse_frame(input.as_ref()).ok()?;
-        let (rest, options) = Mapping::parse_frame(rest).ok()?;
-
-        debug_assert!(rest.is_empty());
+        let options = if rest.is_empty() {
+            Mapping::default()
+        } else {
+            let (_rest, options) = Mapping::parse_frame(rest).ok()?;
+            options
+        };
 
         Some(Message::GetDate { version, options })
     }
@@ -685,9 +688,9 @@ impl Message {
 
 #[cfg(test)]
 mod tests {
-    use crate::runtime::mock::MockRuntime;
-
     use super::*;
+    use crate::runtime::mock::MockRuntime;
+    use bytes::{BufMut, BytesMut};
 
     #[test]
     fn parse_create_leaseset2() {
@@ -727,5 +730,39 @@ mod tests {
         ];
 
         assert!(Message::parse::<MockRuntime>(MessageType::CreateLeaseSet2, &message).is_some());
+    }
+
+    #[test]
+    fn get_date_optional_mapping() {
+        let str = Str::from("v0.3.0");
+        let mut options = Mapping::default();
+        options.insert(Str::from("key"), Str::from("value"));
+        options.insert(Str::from("hello"), Str::from("world"));
+
+        let get_date_no_options = str.serialize();
+        let get_date_with_options = {
+            let mut out = BytesMut::with_capacity(128);
+            out.put_slice(&str.serialize());
+            out.put_slice(&options.serialize());
+
+            out
+        };
+
+        match Message::parse::<MockRuntime>(MessageType::GetDate, get_date_no_options) {
+            Some(Message::GetDate { version, options }) => {
+                assert_eq!(version, Str::from("v0.3.0"));
+                assert!(options.is_empty());
+            }
+            _ => panic!("invalid message"),
+        }
+
+        match Message::parse::<MockRuntime>(MessageType::GetDate, get_date_with_options) {
+            Some(Message::GetDate { version, options }) => {
+                assert_eq!(version, Str::from("v0.3.0"));
+                assert_eq!(options.get(&Str::from("key")), Some(&Str::from("value")));
+                assert_eq!(options.get(&Str::from("hello")), Some(&Str::from("world")));
+            }
+            _ => panic!("invalid message"),
+        }
     }
 }
