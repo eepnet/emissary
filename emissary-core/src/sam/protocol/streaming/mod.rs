@@ -75,13 +75,13 @@ const STREAM_CHANNEL_SIZE: usize = 512;
 const PENDING_STREAM_PRUNE_THRESHOLD: Duration = Duration::from_secs(30);
 
 /// How long should a pending outbound stream wait before sending another `SYN`.
-const SYN_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
+const SYN_RETRY_TIMEOUT: Duration = Duration::from_millis(2500);
 
 /// Timeout for graceful shutdown.
 const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Maximum `SYN` retries before the remote destination is considered unreachable.
-const MAX_SYN_RETRIES: usize = 3usize;
+const MAX_SYN_RETRIES: usize = 5usize;
 
 /// Direction of stream.
 pub enum Direction {
@@ -2022,8 +2022,8 @@ mod tests {
             HashMap::new(),
         );
 
-        // verify the syn packet is sent twice more
-        for _ in 0..2 {
+        // verify the syn packet is sent 4 more times
+        for _ in 0..4 {
             match tokio::time::timeout(Duration::from_secs(15), manager2.next())
                 .await
                 .expect("no timeout")
