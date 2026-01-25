@@ -89,14 +89,16 @@ impl PeerTestHandle {
         nonce: u32,
         address: SocketAddr,
         message: Vec<u8>,
+        router_info: Option<Box<RouterInfo>>,
     ) {
         self.pending_tests.insert(nonce, message.clone());
 
         let _ = self.event_tx.try_send(PeerTestEvent::BobRequest {
             address,
+            message,
             nonce,
             router_id,
-            message,
+            router_info,
             tx: self.cmd_tx.clone(),
         });
     }
@@ -112,6 +114,22 @@ impl PeerTestHandle {
             nonce,
             rejection,
             message,
+        });
+    }
+
+    /// Relay peer test response from either Bob or Charlie to `PeerTestManager`.
+    pub fn handle_peer_test_response(
+        &self,
+        nonce: u32,
+        rejection: Option<RejectionReason>,
+        router_hash: Vec<u8>,
+        router_info: Option<Box<RouterInfo>>,
+    ) {
+        let _ = self.event_tx.try_send(PeerTestEvent::PeerTestResponse {
+            nonce,
+            rejection,
+            router_hash,
+            router_info,
         });
     }
 
@@ -168,14 +186,19 @@ pub enum PeerTestEvent {
         /// Socket address of Alice.
         address: SocketAddr,
 
-        /// Test nonce.
-        nonce: u32,
-
         /// Message received from Alice.
         message: Vec<u8>,
 
+        /// Test nonce.
+        nonce: u32,
+
         /// Router ID of Alice.
         router_id: RouterId,
+
+        /// Router info of Alice.
+        ///
+        /// `Some(_)` if the router info was received in a `RouterInfo` block.
+        router_info: Option<Box<RouterInfo>>,
 
         /// TX channel for sending commands back to active session.
         tx: Sender<PeerTestCommand>,
@@ -193,6 +216,25 @@ pub enum PeerTestEvent {
 
         /// Message + signature sent by Charlie.
         message: Vec<u8>,
+    },
+
+    /// Response to a peer test request, either from Bob or Charlie.
+    PeerTestResponse {
+        /// Test nonce,
+        nonce: u32,
+
+        /// Rejection reason from Bob/Charlie, if request was not accepted.
+        ///
+        /// `None` if requested was accepted.
+        rejection: Option<RejectionReason>,
+
+        /// Router hash.
+        ///
+        /// All zeros if Bob rejected the request.
+        router_hash: Vec<u8>,
+
+        /// Router info of Charlie, if it was sent in a `RouterInfo` block
+        router_info: Option<Box<RouterInfo>>,
     },
 
     #[default]
@@ -289,6 +331,18 @@ impl RejectionReason {
 /// Sent by `PeerTestManager` to active connections.
 #[derive(Debug, Default, Clone)]
 pub enum PeerTestCommand {
+    /// Request Bob to participate in a peer test.
+    RequestBob {
+        /// Test nonce.
+        nonce: u32,
+
+        /// Message.
+        message: Vec<u8>,
+
+        /// Signature.
+        signature: Vec<u8>,
+    },
+
     /// Peer test request was rejected by `PeerTestManager`.
     Reject {
         /// Test nonce.
@@ -345,6 +399,9 @@ pub enum PeerTestCommand {
 
         /// Message + signature received from Charlie.
         message: Vec<u8>,
+
+        /// Charlie's router info.
+        router_info: Vec<u8>,
     },
 
     #[default]

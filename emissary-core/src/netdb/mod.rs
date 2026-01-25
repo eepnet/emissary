@@ -320,7 +320,19 @@ impl<R: Runtime> NetDb<R> {
         // store both the new router info and its serialized form to profile storage
         //
         // the latter is used when a backup of profile storage is made to disk
-        let raw_router_info = DatabaseStore::<R>::extract_raw_router_info(message);
+        let raw_router_info =
+            match R::gzip_decompress(DatabaseStore::<R>::extract_raw_router_info(message)) {
+                None => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        %router_id,
+                        "failed to decompress router info",
+                    );
+                    return;
+                }
+                Some(router_info) => Bytes::from(router_info),
+            };
+
         self.router_ctx
             .profile_storage()
             .discover_router(router_info, raw_router_info.clone());

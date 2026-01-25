@@ -512,6 +512,9 @@ pub enum Ssu2ParseError {
 
     /// Unknown peer test message code
     UnknownPeerTestMessage(u8),
+
+    /// Invalid size for an address block.
+    InvalidAddressBlock(u16),
 }
 
 impl From<I2npParseError> for Ssu2ParseError {

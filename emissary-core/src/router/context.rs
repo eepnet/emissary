@@ -153,3 +153,94 @@ impl<R: Runtime> RouterContext<R> {
         &self.event_handle
     }
 }
+
+#[cfg(test)]
+pub(crate) mod builder {
+    use crate::{
+        crypto::{SigningPrivateKey, StaticPrivateKey},
+        events::EventHandle,
+        primitives::{RouterId, RouterInfo, RouterInfoBuilder},
+        profile::ProfileStorage,
+        router::context::RouterContext,
+        runtime::{
+            mock::{MockMetricsHandle, MockRuntime},
+            Runtime,
+        },
+    };
+    use bytes::Bytes;
+
+    #[derive(Default)]
+    #[allow(unused)]
+    pub struct RouterContextBuilder {
+        metrics_handle: Option<MockMetricsHandle>,
+        net_id: u8,
+        router_info: Option<(RouterInfo, StaticPrivateKey, SigningPrivateKey)>,
+        profile_storage: Option<ProfileStorage<MockRuntime>>,
+        event_handle: Option<EventHandle<MockRuntime>>,
+    }
+
+    impl RouterContextBuilder {
+        /// Provid metrics handle.
+        pub fn with_metrics_handle(mut self, metrics_handle: MockMetricsHandle) -> Self {
+            self.metrics_handle = Some(metrics_handle);
+            self
+        }
+
+        /// Specify network ID.
+        pub fn with_net_id(mut self, net_id: u8) -> Self {
+            self.net_id = net_id;
+            self
+        }
+
+        /// Provide router information.
+        pub fn with_router_info(
+            mut self,
+            router_info: RouterInfo,
+            static_key: StaticPrivateKey,
+            signing_key: SigningPrivateKey,
+        ) -> Self {
+            self.router_info = Some((router_info, static_key, signing_key));
+            self
+        }
+
+        /// Provide profile
+        pub fn with_profile_storage(
+            mut self,
+            profile_storage: ProfileStorage<MockRuntime>,
+        ) -> Self {
+            self.profile_storage = Some(profile_storage);
+            self
+        }
+
+        /// Provide
+        pub fn with_event_handle(mut self, event_handle: EventHandle<MockRuntime>) -> Self {
+            self.event_handle = Some(event_handle);
+            self
+        }
+
+        /// Build `RouterContextBuilder` into `RouterContext`.
+        pub fn build(self) -> RouterContext<MockRuntime> {
+            let metrics_handle = self
+                .metrics_handle
+                .unwrap_or_else(|| <MockRuntime as Runtime>::register_metrics(vec![], None));
+            let profile_storage =
+                self.profile_storage.unwrap_or_else(|| ProfileStorage::new(&[], &[]));
+            let (router_info, static_key, signing_key) =
+                self.router_info.unwrap_or_else(|| RouterInfoBuilder::default().build());
+            let event_handle = self.event_handle.unwrap_or_else(EventHandle::new_for_tests);
+            let serialized = Bytes::from(router_info.serialize(&signing_key));
+            let router_id = router_info.identity.id();
+
+            RouterContext::new(
+                metrics_handle,
+                profile_storage,
+                router_id,
+                serialized,
+                static_key,
+                signing_key,
+                self.net_id,
+                event_handle,
+            )
+        }
+    }
+}

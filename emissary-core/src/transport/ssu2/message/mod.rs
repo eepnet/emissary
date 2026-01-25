@@ -43,7 +43,7 @@ use rand_core::RngCore;
 use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt,
-    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
     ops::{Deref, Range},
 };
 
@@ -808,13 +808,13 @@ impl Block {
 
     /// Parse [`MessageBlock::PeerTest`].
     fn parse_peer_test(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
-        let (rest, size) = be_u16(input)?;
-        let (rest, msg) = be_u8(rest)?;
-        let (rest, code) = be_u8(rest)?;
-        let (rest, _flag) = be_u8(rest)?;
+        let (rest, size) = be_u16::<_, ()>(input).unwrap();
+        let (rest, msg) = be_u8::<_, ()>(rest).unwrap();
+        let (rest, code) = be_u8::<_, ()>(rest).unwrap();
+        let (rest, _flag) = be_u8::<_, ()>(rest).unwrap();
         let (rest, router_hash) = match msg {
             2 | 4 => {
-                let (rest, hash) = take(ROUTER_HASH_LEN)(rest)?;
+                let (rest, hash) = take::<_, _, ()>(ROUTER_HASH_LEN)(rest).unwrap();
                 (rest, Some(hash))
             }
             _ => (rest, None),
@@ -825,14 +825,14 @@ impl Block {
         // https://geti2p.net/spec/ssu2#peertest
         let message_start = rest;
 
-        let (rest, _version) = be_u8(rest)?;
-        let (rest, nonce) = be_u32(rest)?;
-        let (rest, _timestamp) = be_u32(rest)?;
-        let (rest, address_size) = be_u8(rest)?;
+        let (rest, _version) = be_u8::<_, ()>(rest).unwrap();
+        let (rest, nonce) = be_u32::<_, ()>(rest).unwrap();
+        let (rest, _timestamp) = be_u32::<_, ()>(rest).unwrap();
+        let (rest, address_size) = be_u8::<_, ()>(rest).unwrap();
         let (rest, address) = match address_size {
             6 => {
-                let (rest, port) = be_u16(rest)?;
-                let (rest, address) = be_u32(rest)?;
+                let (rest, port) = be_u16::<_, ()>(rest).unwrap();
+                let (rest, address) = be_u32::<_, ()>(rest).unwrap();
 
                 (
                     rest,
@@ -844,13 +844,16 @@ impl Block {
                     target: LOG_TARGET,
                     "ipv6 not supported"
                 );
+                panic!("zzzzz");
                 return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
             }
-            _ => return Err(Err::Error(Ssu2ParseError::InvalidBitstream)),
+            _ => panic!("kkkk"),
+            // _ => return Err(Err::Error(Ssu2ParseError::InvalidBitstream)),
         };
         let (rest, maybe_signature) = match msg {
             1..=4 => {
-                let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
+                println!("parse signature");
+                let (rest, signature) = take::<_, _, ()>(ED25519_SIGNATURE_LEN)(rest).unwrap();
 
                 (rest, Some(signature))
             }
@@ -867,11 +870,12 @@ impl Block {
                 if bytes_left == 0 {
                     (rest, None)
                 } else if bytes_left == ED25519_SIGNATURE_LEN {
-                    let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
+                    let (rest, signature) = take::<_, _, ()>(ED25519_SIGNATURE_LEN)(rest).unwrap();
 
                     (rest, Some(signature))
                 } else {
-                    return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
+                    panic!("sig issue");
+                    // return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
                 }
             }
         };
@@ -984,6 +988,44 @@ impl Block {
         }
     }
 
+    /// Parse [`MessageBlock::Address`].
+    fn parse_address(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
+        let (rest, size) = be_u16(input)?;
+        let (rest, port) = be_u16(rest)?;
+        let (rest, address) = match size {
+            6 => {
+                let (rest, address) = take(4usize)(rest)?;
+
+                // must succeed since `take(4)` took 4 bytes
+                (
+                    rest,
+                    IpAddr::V4(Ipv4Addr::from_octets(
+                        TryInto::<[u8; 4]>::try_into(address).expect("to succeed"),
+                    )),
+                )
+            }
+            18 => {
+                let (rest, address) = take(16usize)(rest)?;
+
+                // must succeed since `take(16)` took 16 bytes
+                (
+                    rest,
+                    IpAddr::V6(Ipv6Addr::from_octets(
+                        TryInto::<[u8; 16]>::try_into(address).expect("to succeed"),
+                    )),
+                )
+            }
+            size => return Err(Err::Error(Ssu2ParseError::InvalidAddressBlock(size))),
+        };
+
+        Ok((
+            rest,
+            Block::Address {
+                address: SocketAddr::new(address, port),
+            },
+        ))
+    }
+
     /// Attempt to parse unsupported block from `input`
     fn parse_unsupported_block(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
         let (rest, size) = be_u16(input)?;
@@ -1013,6 +1055,7 @@ impl Block {
             Some(BlockType::Congestion) => Self::parse_congestion(rest),
             Some(BlockType::Padding) => Self::parse_padding(rest),
             Some(BlockType::PeerTest) => Self::parse_peer_test(rest),
+            Some(BlockType::Address) => Self::parse_address(rest),
             Some(block_type) => {
                 tracing::warn!(
                     target: LOG_TARGET,

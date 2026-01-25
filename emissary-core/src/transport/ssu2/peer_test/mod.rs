@@ -21,9 +21,10 @@
 use crate::{
     crypto::chachapoly::ChaChaPoly,
     error::{PeerTestError, Ssu2Error},
-    primitives::{RouterId, TransportKind},
+    primitives::{RouterId, RouterInfo, TransportKind},
     profile::ProfileStorage,
-    runtime::{Runtime, UdpSocket},
+    router::context::RouterContext,
+    runtime::{Instant, Runtime, UdpSocket},
     transport::ssu2::{
         message::{Block, PeerTestBuilder, PeerTestMessage},
         peer_test::types::{
@@ -32,22 +33,31 @@ use crate::{
     },
 };
 
-use bytes::BytesMut;
+use bytes::{BufMut, BytesMut};
+use futures::FutureExt;
 use hashbrown::{HashMap, HashSet};
+use rand_core::RngCore;
 use thingbuf::mpsc::{with_recycle, Receiver, Sender};
 
 use alloc::collections::VecDeque;
 use core::{
     future::Future,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 pub mod types;
 
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::ssu2::peer-test";
+
+/// Maintenance interval for `PeerTestManager`.
+const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(5000);
+
+/// After how long is peer test considered stale.
+const PEER_TEST_EXPIRATION: Duration = Duration::from_secs(30);
 
 /// Peer test candidate.
 ///
@@ -63,9 +73,9 @@ struct PeerTestCandiate {
     tx: Sender<PeerTestCommand>,
 }
 
-/// Context for pending peer test.
+/// Context for pending peer test initiated by a remote router.
 #[derive(Debug)]
-struct PendingTest {
+struct PendingRemoteTest {
     /// Socket address of Alice.
     address: SocketAddr,
 
@@ -79,9 +89,9 @@ struct PendingTest {
     charlie_router_id: RouterId,
 }
 
-/// Context for active peer test.
+/// Context for active peer test initiated by a remote router.
 #[derive(Debug)]
-struct ActiveTest {
+struct ActiveRemoteTest {
     /// Socket address that Alice requested be used.
     address: SocketAddr,
 
@@ -98,6 +108,66 @@ struct ActiveTest {
     src_id: u64,
 }
 
+/// Context for an active peer test initiated by a local router.
+#[derive(Debug)]
+enum ActiveTest<R: Runtime> {
+    Pending {
+        /// Router ID of Bob.
+        bob_router_id: RouterId,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Message + signature from message 1.
+        message: Vec<u8>,
+
+        /// Source connection ID.
+        src_id: u64,
+
+        /// When was the test started.
+        started: R::Instant,
+
+        /// Has message 5 been received.
+        message_5_received: bool,
+
+        /// Charlie's address.
+        charlie_address: Option<SocketAddr>,
+    },
+
+    /// Active peer test
+    Active {
+        /// Router ID of Bob.
+        bob_router_id: RouterId,
+
+        /// Message + signature received from Charlie.
+        message: Vec<u8>,
+
+        /// Router ID of Charlie.
+        charlie_router_id: RouterId,
+
+        /// Test nonce.
+        nonce: u32,
+
+        /// Source connection ID.
+        src_id: u64,
+
+        /// When was the test started.
+        started: R::Instant,
+    },
+}
+
+impl<R: Runtime> ActiveTest<R> {
+    /// Is the test still considered active.
+    ///
+    /// The test is considered stale if it's pending or active after 20 seconds of getting started.
+    fn is_active(&self) -> bool {
+        match self {
+            Self::Pending { started, .. } | Self::Active { started, .. } =>
+                started.elapsed() < PEER_TEST_EXPIRATION,
+        }
+    }
+}
+
 /// Peer test manager.
 ///
 /// Manager both inbound and outbound peer tests.
@@ -107,20 +177,32 @@ pub struct PeerTestManager<R: Runtime> {
     /// These are the routers that could partake in peer tests, not all connected routers.
     active: HashMap<RouterId, PeerTestCandiate>,
 
+    /// Active, outbound peer test.
+    active_outbound: Option<ActiveTest<R>>,
+
     /// Active peer test, out-of-session peer tests.
-    active_tests: HashMap<u64, ActiveTest>,
+    active_tests: HashMap<u64, ActiveRemoteTest>,
+
+    /// Port where the socket was bound to
+    bind_port: u16,
 
     /// All connected routers.
     connected: HashSet<RouterId>,
 
+    /// External address.
+    external_address: Option<SocketAddr>,
+
     /// Our intro key.
     intro_key: [u8; 32],
 
-    /// Pending, remote-initiated peer tests.
-    pending_tests: HashMap<u32, PendingTest>,
+    /// Timer for maintaining local peer tests.
+    maintenance_timer: R::Timer,
 
-    /// Profile storage.
-    profile_storage: ProfileStorage<R>,
+    /// Pending, remote-initiated peer tests.
+    pending_tests: HashMap<u32, PendingRemoteTest>,
+
+    /// Router context.
+    router_ctx: RouterContext<R>,
 
     /// RX channel for receiving peer test-related messages from active sessions.
     rx: Receiver<PeerTestEvent, PeerTestEventRecycle>,
@@ -133,24 +215,26 @@ pub struct PeerTestManager<R: Runtime> {
 
     /// Write buffer.
     write_buffer: VecDeque<(BytesMut, SocketAddr)>,
+    enabled: bool,
 }
 
 impl<R: Runtime> PeerTestManager<R> {
     /// Create new `PeerTestManager`.
-    pub fn new(
-        intro_key: [u8; 32],
-        socket: R::UdpSocket,
-        profile_storage: ProfileStorage<R>,
-    ) -> Self {
+    pub fn new(intro_key: [u8; 32], socket: R::UdpSocket, router_ctx: RouterContext<R>) -> Self {
         let (tx, rx) = with_recycle(256, PeerTestEventRecycle::default());
 
         Self {
+            enabled: format!("{}", router_ctx.router_id()).starts_with("1Cpm"),
             active: HashMap::new(),
+            active_outbound: None,
             active_tests: HashMap::new(),
+            bind_port: socket.local_address().expect("to exist").port(),
             connected: HashSet::new(),
+            external_address: None,
             intro_key,
+            maintenance_timer: R::timer(MAINTENANCE_INTERVAL),
             pending_tests: HashMap::new(),
-            profile_storage,
+            router_ctx,
             rx,
             socket,
             tx,
@@ -163,6 +247,19 @@ impl<R: Runtime> PeerTestManager<R> {
         PeerTestHandle::new(self.tx.clone())
     }
 
+    /// Add an external address discovered during an outbound handshake.
+    pub fn add_external_address(&mut self, address: SocketAddr) {
+        if self.external_address.is_none() {
+            tracing::info!(
+                target: LOG_TARGET,
+                ?address,
+                "discovered external address",
+            );
+        }
+
+        self.external_address = Some(address);
+    }
+
     /// Add new active session to `PeerTestManager`.
     ///
     /// The session is added only if the router supports both peer testing and IPv4 or IPv6.
@@ -172,11 +269,11 @@ impl<R: Runtime> PeerTestManager<R> {
         self.connected.insert(router_id.clone());
 
         // inbound connection from an unknown router
-        let Some(router_info) = self.profile_storage.get(router_id) else {
+        let Some(router_info) = self.router_ctx.profile_storage().get(router_id) else {
             tracing::debug!(
                 target: LOG_TARGET,
                 %router_id,
-                "router doesn't exist in profile storage",
+                "cannot add candidate, router doesn't exist in profile storage",
             );
             return;
         };
@@ -236,6 +333,46 @@ impl<R: Runtime> PeerTestManager<R> {
         self.active.remove(router_id);
     }
 
+    /// Attempt to select a peer test candidate, ignoring all routers in `ignore` and either
+    /// selecting a candidate that supports IPv4 if `ipv4` is true and IPv6 if `ipv4` is false.
+    ///
+    /// Returns `None` if there are no candidates.
+    fn select_router(
+        &self,
+        ipv4: bool,
+        ignore: &HashSet<RouterId>,
+    ) -> Option<(&RouterId, &PeerTestCandiate)> {
+        if self.active.is_empty() {
+            return None;
+        }
+
+        let start = (R::rng().next_u32() as usize) % self.active.len();
+
+        let mut router = self.active.iter().skip(start).find(
+            |(
+                router_id,
+                PeerTestCandiate {
+                    supports_ipv4,
+                    supports_ipv6,
+                    tx,
+                },
+            )| { (ipv4 == *supports_ipv4 && !ignore.contains(*router_id)) },
+        );
+
+        router.or_else(|| {
+            self.active.iter().find(
+                |(
+                    router_id,
+                    PeerTestCandiate {
+                        supports_ipv4,
+                        supports_ipv6,
+                        tx,
+                    },
+                )| { (ipv4 == *supports_ipv4 && !ignore.contains(*router_id)) },
+            )
+        })
+    }
+
     /// Handle peer test message 1, i.e., a peer test request from Alice to Bob.
     ///
     /// First attempt to find an active session with compatible transport (IPv4/IPv6) and if none is
@@ -262,21 +399,8 @@ impl<R: Runtime> PeerTestManager<R> {
             "inbound peer test request (alice -> bob)",
         );
 
-        // TODO: more random
         let Some((charlie_router_id, PeerTestCandiate { tx: charlie_tx, .. })) =
-            self.active.iter().find(
-                |(
-                    charlie_router_id,
-                    PeerTestCandiate {
-                        supports_ipv4,
-                        supports_ipv6,
-                        ..
-                    },
-                )| {
-                    ((address.is_ipv4() == *supports_ipv4 || address.is_ipv6() == *supports_ipv6)
-                        && charlie_router_id != &&alice_router_id)
-                },
-            )
+            self.select_router(address.is_ipv4(), &HashSet::from([alice_router_id.clone()]))
         else {
             tracing::debug!(
                 target: LOG_TARGET,
@@ -301,7 +425,7 @@ impl<R: Runtime> PeerTestManager<R> {
         };
 
         // router info for alice should exist since we just received a peer test request from them
-        let Some(router_info) = self.profile_storage.get_raw(&alice_router_id) else {
+        let Some(router_info) = self.router_ctx.profile_storage().get_raw(&alice_router_id) else {
             tracing::error!(
                 target: LOG_TARGET,
                 %alice_router_id,
@@ -311,6 +435,19 @@ impl<R: Runtime> PeerTestManager<R> {
             debug_assert!(false);
             return;
         };
+
+        match crate::primitives::RouterInfo::parse(&router_info) {
+            Err(error) => {
+                tracing::error!(
+                    target: LOG_TARGET,
+                    %alice_router_id,
+                    ?error,
+                    "failed to parse alice's router info??",
+                );
+                debug_assert!(false);
+            }
+            Ok(_) => {}
+        }
 
         // attempt to send peer test request to charlie with alice's information
         //
@@ -360,7 +497,7 @@ impl<R: Runtime> PeerTestManager<R> {
 
         if let Some(context) = self.pending_tests.insert(
             nonce,
-            PendingTest {
+            PendingRemoteTest {
                 address,
                 alice_router_id: alice_router_id.clone(),
                 alice_tx,
@@ -392,6 +529,7 @@ impl<R: Runtime> PeerTestManager<R> {
         nonce: u32,
         address: SocketAddr,
         message: Vec<u8>,
+        router_info: Option<Box<RouterInfo>>,
     ) -> Option<PeerTestCommand> {
         tracing::trace!(
             target: LOG_TARGET,
@@ -401,18 +539,25 @@ impl<R: Runtime> PeerTestManager<R> {
             "inbound peer test request (bob -> charlie)",
         );
 
-        let Some(router_info) = self.profile_storage.get(&alice_router_id) else {
-            tracing::debug!(
-                target: LOG_TARGET,
-                %alice_router_id,
-                ?nonce,
-                "alice not found from local storage, unable to perform peer test",
-            );
+        let router_info = match router_info {
+            Some(router_info) => *router_info,
+            None => match self.router_ctx.profile_storage().get(&alice_router_id) {
+                Some(router_info) => router_info,
+                None => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        %alice_router_id,
+                        ?nonce,
+                        "alice not found from local storage, unable to perform peer test",
+                    );
 
-            return Some(PeerTestCommand::Reject {
-                nonce,
-                reason: RejectionReason::RouterUnknown,
-            });
+                    return Some(PeerTestCommand::SendCharlieResponse {
+                        nonce,
+                        router_id: alice_router_id,
+                        rejection: Some(RejectionReason::RouterUnknown),
+                    });
+                }
+            },
         };
 
         // TODO: this doesn't make any sense
@@ -480,7 +625,7 @@ impl<R: Runtime> PeerTestManager<R> {
         self.write_buffer.push_back((pkt, address));
         self.active_tests.insert(
             dst_id,
-            ActiveTest {
+            ActiveRemoteTest {
                 address,
                 alice_intro_key: intro_key,
                 dst_id,
@@ -513,7 +658,7 @@ impl<R: Runtime> PeerTestManager<R> {
             "handle peer test response from charlie",
         );
 
-        let Some(PendingTest {
+        let Some(PendingRemoteTest {
             address,
             alice_router_id,
             alice_tx,
@@ -528,11 +673,24 @@ impl<R: Runtime> PeerTestManager<R> {
             return;
         };
 
+        let Some(router_info) = self.router_ctx.profile_storage().get_raw(&charlie_router_id)
+        else {
+            tracing::error!(
+                target: LOG_TARGET,
+                %alice_router_id,
+                ?nonce,
+                "router info for charlie not found",
+            );
+            debug_assert!(false);
+            return;
+        };
+
         if let Err(error) = alice_tx.try_send(PeerTestCommand::RelayCharlieResponse {
+            message,
             nonce,
             rejection,
             router_id: charlie_router_id.clone(),
-            message,
+            router_info,
         }) {
             tracing::debug!(
                 target: LOG_TARGET,
@@ -572,45 +730,450 @@ impl<R: Runtime> PeerTestManager<R> {
             return Err(Ssu2Error::NotEnoughBytes);
         }
 
-        let ActiveTest {
-            alice_intro_key,
-            dst_id,
-            src_id,
-            message,
-            address: requested_address,
-        } = self
-            .active_tests
-            .get(&src_id)
-            .ok_or(PeerTestError::NonExistentPeerTestSession(src_id))?;
+        match self.active_tests.get(&src_id) {
+            Some(ActiveRemoteTest {
+                alice_intro_key,
+                dst_id,
+                src_id,
+                message,
+                address: requested_address,
+            }) => {
+                // decrypt peer test message with our intro key
+                let ad = datagram[..32].to_vec();
+                let mut datagram = datagram[32..].to_vec();
 
-        // decrypt peer test message with our intro key
-        let ad = datagram[..32].to_vec();
-        let mut datagram = datagram[32..].to_vec();
+                ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
+                    .decrypt_with_ad(&ad, &mut datagram)?;
 
-        ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
-            .decrypt_with_ad(&ad, &mut datagram)?;
+                let Some(Block::PeerTest {
+                    message: PeerTestMessage::Message6 { .. },
+                }) = Block::parse(&datagram)
+                    .map_err(|_| Ssu2Error::Malformed)?
+                    .iter()
+                    .find(|block| core::matches!(block, Block::PeerTest { .. }))
+                else {
+                    return Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(6)));
+                };
 
-        let Some(Block::PeerTest {
-            message: PeerTestMessage::Message6 { .. },
-        }) = Block::parse(&datagram)
-            .map_err(|_| Ssu2Error::Malformed)?
-            .iter()
-            .find(|block| core::matches!(block, Block::PeerTest { .. }))
-        else {
-            return Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(5)));
-        };
+                // create peer test message 7 which is the final message in the peer test sequence
+                let pkt = PeerTestBuilder::new(7, message)
+                    .with_src_id(*src_id)
+                    .with_dst_id(*dst_id)
+                    .with_intro_key(*alice_intro_key)
+                    .with_addres(address)
+                    .build::<R>();
 
-        // create peer test message 7 which is the final message in the peer test sequence
-        let pkt = PeerTestBuilder::new(7, message)
-            .with_src_id(*src_id)
-            .with_dst_id(*dst_id)
-            .with_intro_key(*alice_intro_key)
-            .with_addres(address)
-            .build::<R>();
+                tracing::error!(target: LOG_TARGET, "send response (msg 7)!");
 
-        self.write_buffer.push_back((pkt, *requested_address));
+                self.write_buffer.push_back((pkt, *requested_address));
+            }
+            None => match self.active_outbound.take() {
+                None =>
+                    return Err(Ssu2Error::PeerTest(
+                        PeerTestError::NonExistentPeerTestSession(src_id),
+                    )),
+                Some(test) => match test {
+                    ActiveTest::Pending {
+                        bob_router_id,
+                        nonce,
+                        src_id: expected_src_id,
+                        started,
+                        message,
+                        ..
+                    } => {
+                        if src_id != expected_src_id {
+                            panic!("uneexpcted src id pending");
+                            return Err(Ssu2Error::PeerTest(
+                                PeerTestError::NonExistentPeerTestSession(src_id),
+                            ));
+                        }
+
+                        let ad = datagram[..32].to_vec();
+                        let mut datagram = datagram[32..].to_vec();
+
+                        ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
+                            .decrypt_with_ad(&ad, &mut datagram)
+                            .unwrap();
+
+                        let Some(Block::PeerTest {
+                            message: PeerTestMessage::Message5 { .. },
+                        }) = Block::parse(&datagram)
+                            .map_err(|_| Ssu2Error::Malformed)?
+                            .iter()
+                            .find(|block| core::matches!(block, Block::PeerTest { .. }))
+                        else {
+                            return Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(5)));
+                        };
+
+                        tracing::trace!(
+                            target: LOG_TARGET,
+                            ?nonce,
+                            %bob_router_id,
+                            "received peer test message for a pending test",
+                        );
+
+                        // TODO: send peer test message 6
+
+                        self.active_outbound = Some(ActiveTest::Pending {
+                            bob_router_id,
+                            nonce,
+                            message,
+                            src_id,
+                            started,
+                            message_5_received: true,
+                            charlie_address: Some(address),
+                        });
+                    }
+                    ActiveTest::Active {
+                        bob_router_id,
+                        charlie_router_id,
+                        nonce,
+                        src_id: expected_src_id,
+                        started,
+                        ..
+                    } => {
+                        if src_id != expected_src_id {
+                            panic!("uneexpcted src id active");
+                            return Err(Ssu2Error::PeerTest(
+                                PeerTestError::NonExistentPeerTestSession(src_id),
+                            ));
+                        }
+
+                        let ad = datagram[..32].to_vec();
+                        let mut datagram = datagram[32..].to_vec();
+
+                        ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
+                            .decrypt_with_ad(&ad, &mut datagram)
+                            .unwrap();
+
+                        let Some(Block::PeerTest {
+                            message: PeerTestMessage::Message7 { .. },
+                        }) = Block::parse(&datagram)
+                            .map_err(|_| Ssu2Error::Malformed)?
+                            .iter()
+                            .find(|block| core::matches!(block, Block::PeerTest { .. }))
+                        else {
+                            return Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(7)));
+                        };
+
+                        tracing::info!(
+                            target: LOG_TARGET,
+                            ?nonce,
+                            %charlie_router_id,
+                            "PEER TEST SUCCESSFULLY EXECUTED",
+                        );
+                    }
+                },
+            },
+        }
 
         Ok(())
+    }
+
+    /// Maintain the state of `PeerTestManager`.
+    fn maintain(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        // skip peer test since we don't know what our external address is
+        if self.external_address.is_none() {
+            return;
+        }
+
+        match &self.active_outbound {
+            None => {}
+            Some(test) if test.is_active() => return,
+            Some(ActiveTest::Pending {
+                nonce,
+                started,
+                bob_router_id,
+                ..
+            }) => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    ?nonce,
+                    %bob_router_id,
+                    elapsed = ?started.elapsed(),
+                    "pending peer test has expired, starting a new test",
+                );
+            }
+            Some(ActiveTest::Active {
+                bob_router_id,
+                charlie_router_id,
+                nonce,
+                started,
+                ..
+            }) => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    ?nonce,
+                    %bob_router_id,
+                    %charlie_router_id,
+                    elapsed = ?started.elapsed(),
+                    "active peer test has expired, starting a new test",
+                )
+            }
+        }
+
+        // attempt to find peer test candidate and bail early if none is found
+        let Some((bob_router_id, PeerTestCandiate { tx, .. })) =
+            self.select_router(true, &HashSet::new())
+        else {
+            tracing::debug!(
+                target: LOG_TARGET,
+                num_active = ?self.active.len(),
+                "cannot perform peer test, no available candidates",
+            );
+            return;
+        };
+
+        let (message, nonce) = {
+            let mut out = BytesMut::with_capacity(128);
+            let nonce = R::rng().next_u32();
+
+            out.put_u8(2);
+            out.put_u32(nonce);
+            out.put_u32(R::time_since_epoch().as_secs() as u32);
+            out.put_u8(6u8);
+            out.put_u16(self.bind_port);
+
+            // address must exist since it was checked at the beginning of the function
+            match self.external_address.expect("to exist").ip() {
+                IpAddr::V4(address) => out.put_slice(&address.octets()),
+                IpAddr::V6(address) => out.put_slice(&address.octets()),
+            }
+
+            (out.to_vec(), nonce)
+        };
+        let signature = {
+            let mut payload = BytesMut::with_capacity(128);
+
+            payload.put_slice(b"PeerTestValidate");
+            payload.put_slice(&bob_router_id.to_vec());
+            payload.put_slice(&message);
+
+            self.router_ctx.signing_key().sign(&payload)
+        };
+        let src_id = (!(((nonce as u64) << 32) | (nonce as u64))).to_be();
+        let combined = {
+            let mut combined = message.clone();
+            combined.extend(&signature);
+            combined
+        };
+
+        tracing::debug!(
+            target: LOG_TARGET,
+            %bob_router_id,
+            ?nonce,
+            ?src_id,
+            "send peer test request to bob",
+        );
+
+        match tx.try_send(PeerTestCommand::RequestBob {
+            nonce,
+            message,
+            signature,
+        }) {
+            Ok(()) => {
+                self.active_outbound = Some(ActiveTest::Pending {
+                    bob_router_id: bob_router_id.clone(),
+                    charlie_address: None,
+                    message_5_received: false,
+                    message: combined,
+                    nonce,
+                    src_id,
+                    started: R::now(),
+                });
+            }
+            Err(error) => tracing::warn!(
+                target: LOG_TARGET,
+                %bob_router_id,
+                ?nonce,
+                ?error,
+                "failed to send peer test request to bob",
+            ),
+        }
+    }
+
+    /// Handle peer test response from either Bob or Charlie.
+    ///
+    /// If `rejection` is `None`, the request was accepted.
+    ///
+    /// If `router_hash` is `[0; 32]`, the request was rejected by Bob, otherwise it contains
+    /// Charlie's hash.
+    fn handle_peer_test_response(
+        &mut self,
+        received_nonce: u32,
+        rejection: Option<RejectionReason>,
+        router_hash: Vec<u8>,
+        charlie_router_info: Option<Box<RouterInfo>>,
+    ) {
+        let Some(active_test) = self.active_outbound.take() else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                nonce = ?received_nonce,
+                ?rejection,
+                ?router_hash,
+                "received peer test response for a non-existent test",
+            );
+            return;
+        };
+
+        if let Some(rejection) = rejection {
+            match &active_test {
+                ActiveTest::Pending {
+                    bob_router_id,
+                    nonce: test_nonce,
+                    started,
+                    ..
+                } => {
+                    tracing::trace!(
+                        target: LOG_TARGET,
+                        ?test_nonce,
+                        nonce = ?received_nonce,
+                        ?rejection,
+                        bob_rejected = (&router_hash == &[0u8; 32]),
+                        %bob_router_id,
+                        time_taken = ?started.elapsed(),
+                        "peer test was rejected, trying again later",
+                    );
+                }
+                ActiveTest::Active {
+                    nonce: active_nonce,
+                    ..
+                } => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        ?active_nonce,
+                        nonce = ?received_nonce,
+                        "peer test rejection received for an active test, ignoring",
+                    );
+                }
+            }
+
+            return;
+        }
+
+        // TODO: charlie intro key
+        let charlie_router_info = match charlie_router_info {
+            Some(router_info) => *router_info,
+            None => match self.router_ctx.profile_storage().get(&RouterId::from(&router_hash)) {
+                Some(router_info) => router_info,
+                None => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        nonce = ?received_nonce,
+                        "unable to perform peer test, charlie router info not available",
+                    );
+                    return;
+                }
+            },
+        };
+
+        let charlie_address = match charlie_router_info.addresses.get(&TransportKind::Ssu2) {
+            Some(address) => match address.socket_address {
+                Some(address) => address,
+                None => {
+                    tracing::warn!(
+                        target: LOG_TARGET,
+                        "charlie doesn't have a published ssu2 address",
+                    );
+                    debug_assert!(false);
+                    return;
+                }
+            },
+            None => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    "charlie doesn't support ssu2",
+                );
+                debug_assert!(false);
+                return;
+            }
+        };
+
+        let Some(charlie_intro_key) = charlie_router_info.ssu2_intro_key() else {
+            tracing::warn!(
+                target: LOG_TARGET,
+                nonce = ?received_nonce,
+                charlie_router_id = %RouterId::from(router_hash),
+                "no intro key for in charlie's router info, rejecting",
+            );
+            debug_assert!(false);
+            return;
+        };
+
+        match active_test {
+            ActiveTest::Pending {
+                bob_router_id,
+                nonce: test_nonce,
+                started,
+                src_id,
+                message_5_received,
+                message,
+                ..
+            } =>
+                if test_nonce != received_nonce {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        ?test_nonce,
+                        nonce = ?received_nonce,
+                        %bob_router_id,
+                        time_taken = ?started.elapsed(),
+                        "nonce mismatch for peer test response, ignoring",
+                    );
+                } else {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        ?test_nonce,
+                        nonce = ?received_nonce,
+                        %bob_router_id,
+                        time_taken = ?started.elapsed(),
+                        "peer test request accepted",
+                    );
+
+                    let pkt = PeerTestBuilder::new(6, &message)
+                        .with_dst_id(src_id)
+                        .with_src_id(!src_id)
+                        .with_intro_key(charlie_intro_key)
+                        .with_addres(charlie_address)
+                        .build::<R>();
+
+                    if message_5_received {
+                        // TODO: send message 6 to charlie
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            "MESSAGE 5 HAS ALREADY BEEN RECEIVED, NOT FIREWALLED",
+                        );
+
+                        self.write_buffer.push_back((pkt, charlie_address));
+                    } else {
+                        panic!("start timer");
+                        // TODO: start timer
+                    }
+
+                    self.active_outbound = Some(ActiveTest::Active {
+                        bob_router_id,
+                        charlie_router_id: RouterId::from(router_hash),
+                        nonce: test_nonce,
+                        message,
+                        src_id,
+                        started,
+                    });
+                },
+            ActiveTest::Active {
+                nonce: active_nonce,
+                ..
+            } => {
+                tracing::debug!(
+                    target: LOG_TARGET,
+                    ?active_nonce,
+                    nonce = ?received_nonce,
+                    "peer test already in progress, ignoring peer test response",
+                );
+            }
+        }
     }
 }
 
@@ -631,13 +1194,14 @@ impl<R: Runtime> Future for PeerTestManager<R> {
                 })) => self.handle_alice_request(router_id, nonce, message, address, tx),
                 Poll::Ready(Some(PeerTestEvent::BobRequest {
                     address,
+                    message,
                     nonce,
                     router_id,
-                    message,
+                    router_info,
                     tx,
                 })) =>
                     if let Some(command) =
-                        self.handle_bob_request(router_id, nonce, address, message)
+                        self.handle_bob_request(router_id, nonce, address, message, router_info)
                     {
                         if let Err(error) = tx.try_send(command) {
                             tracing::debug!(
@@ -653,8 +1217,24 @@ impl<R: Runtime> Future for PeerTestManager<R> {
                     rejection,
                     message,
                 })) => self.handle_charlie_response(nonce, rejection, message),
+                Poll::Ready(Some(PeerTestEvent::PeerTestResponse {
+                    nonce,
+                    rejection,
+                    router_hash,
+                    router_info,
+                })) => self.handle_peer_test_response(nonce, rejection, router_hash, router_info),
                 Poll::Ready(Some(PeerTestEvent::Dummy)) => unreachable!(),
             }
+        }
+
+        if self.maintenance_timer.poll_unpin(cx).is_ready() {
+            // create new timer and register it into the executor
+            {
+                self.maintenance_timer = R::timer(MAINTENANCE_INTERVAL);
+                let _ = self.maintenance_timer.poll_unpin(cx);
+            }
+
+            self.maintain();
         }
 
         while let Some((pkt, address)) = self.write_buffer.pop_front() {
@@ -683,6 +1263,7 @@ mod tests {
             Capabilities, Date, Mapping, RouterAddress, RouterIdentity, RouterInfo,
             RouterInfoBuilder, Str,
         },
+        router::context::builder::RouterContextBuilder,
         runtime::mock::MockRuntime,
         timeout,
         transport::ssu2::message::{
@@ -737,7 +1318,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
         let (tx, _rx) = channel(16);
         let router_id = RouterId::random();
@@ -758,7 +1339,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, _rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -775,7 +1356,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, _rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -794,7 +1375,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, _rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -813,7 +1394,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, _rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -838,7 +1419,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, _rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -864,7 +1445,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, rx) = channel(16);
         manager.add_session(&router_id, tx);
@@ -893,7 +1474,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, rx) = channel(16);
         manager.add_session(&router_id, tx.clone());
@@ -929,7 +1510,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, rx) = channel(16);
         manager.add_session(&router_id1, tx.clone());
@@ -965,7 +1546,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (tx, rx) = channel(16);
         manager.add_session(&router_id1, tx.clone());
@@ -1001,7 +1582,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let (charlie_tx, charlie_rx) = channel(16);
         manager.add_session(&router_id2, charlie_tx.clone());
@@ -1036,7 +1617,7 @@ mod tests {
         }
         assert!(alice_rx.try_recv().is_err());
 
-        let PendingTest {
+        let PendingRemoteTest {
             address,
             alice_router_id,
             charlie_router_id,
@@ -1063,7 +1644,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let manager_tx = manager.tx.clone();
         let (alice_tx, alice_rx) = channel(16);
@@ -1078,6 +1659,7 @@ mod tests {
                 nonce: 1337,
                 message: b"message".to_vec(),
                 router_id: alice_router_id,
+                router_info: None,
                 tx: bob_tx,
             })
             .unwrap();
@@ -1112,7 +1694,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let manager_tx = manager.tx.clone();
         let (bob_tx, bob_rx) = channel(16);
@@ -1123,6 +1705,7 @@ mod tests {
             .try_send(PeerTestEvent::BobRequest {
                 address: "[::]:8888".parse().unwrap(),
                 nonce: 1337,
+                router_info: None,
                 message: b"message".to_vec(),
                 router_id: alice_router_id,
                 tx: bob_tx,
@@ -1166,7 +1749,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let manager_tx = manager.tx.clone();
         let (bob_tx, bob_rx) = channel(16);
@@ -1190,6 +1773,7 @@ mod tests {
             .try_send(PeerTestEvent::BobRequest {
                 address,
                 nonce: 1337,
+                router_info: None,
                 message,
                 router_id: alice_router_id,
                 tx: bob_tx,
@@ -1237,8 +1821,6 @@ mod tests {
     #[tokio::test]
     async fn alice_request_charlie_no_longer_connected() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (alice_router_id, alice_router_info, alice_serialized) =
-            make_router_info(Str::from("BC"), Some(true));
         let (charlie_router_id, charlie_router_info, charlie_serialized) =
             make_router_info(Str::from("BC"), Some(true));
         let (alice_router_id, alice_router_info, alice_serialized) =
@@ -1251,7 +1833,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let manager_tx = manager.tx.clone();
         let (alice_tx, alice_rx) = channel(16);
@@ -1300,8 +1882,6 @@ mod tests {
     #[tokio::test]
     async fn charlie_response_relayed() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
-        let (alice_router_id, alice_router_info, alice_serialized) =
-            make_router_info(Str::from("BC"), Some(true));
         let (charlie_router_id, charlie_router_info, charlie_serialized) =
             make_router_info(Str::from("BC"), Some(true));
         let (alice_router_id, alice_router_info, alice_serialized) =
@@ -1314,7 +1894,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            storage,
+            RouterContextBuilder::default().with_profile_storage(storage).build(),
         );
         let manager_tx = manager.tx.clone();
         let (alice_tx, alice_rx) = channel(16);
@@ -1378,7 +1958,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
 
         match manager.handle_peer_test(
@@ -1399,7 +1979,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
 
         match manager.handle_peer_test(1337, 1338, vec![0u8; 40], "127.0.0.1:8888".parse().unwrap())
@@ -1416,7 +1996,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
         let mut socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
             .await
@@ -1427,7 +2007,7 @@ mod tests {
 
         manager.active_tests.insert(
             dst_id,
-            ActiveTest {
+            ActiveRemoteTest {
                 address: address,
                 alice_intro_key: [0xbb; 32],
                 dst_id,
@@ -1451,7 +2031,7 @@ mod tests {
         };
 
         match manager.handle_peer_test(dst_id, pkt_num, pkt, address) {
-            Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(5))) => {}
+            Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(6))) => {}
             _ => panic!("invalid error"),
         }
     }
@@ -1463,7 +2043,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
         let mut socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
             .await
@@ -1474,7 +2054,7 @@ mod tests {
 
         manager.active_tests.insert(
             dst_id,
-            ActiveTest {
+            ActiveRemoteTest {
                 address: address,
                 alice_intro_key: [0xbb; 32],
                 dst_id,
@@ -1511,7 +2091,7 @@ mod tests {
         };
 
         match manager.handle_peer_test(dst_id, pkt_num, pkt, address) {
-            Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(5))) => {}
+            Err(Ssu2Error::PeerTest(PeerTestError::UnexpectedMessage(6))) => {}
             error => panic!("invalid error: {error:?}"),
         }
     }
@@ -1523,7 +2103,7 @@ mod tests {
             <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
                 .await
                 .unwrap(),
-            ProfileStorage::<MockRuntime>::new(&[], &[]),
+            RouterContextBuilder::default().build(),
         );
         let mut socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
             .await
@@ -1546,7 +2126,7 @@ mod tests {
 
         manager.active_tests.insert(
             dst_id,
-            ActiveTest {
+            ActiveRemoteTest {
                 address: address,
                 alice_intro_key: [0xbb; 32],
                 dst_id,

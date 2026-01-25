@@ -556,7 +556,7 @@ impl RetryBuilder {
         self
     }
 
-    /// Build [`SessionConfirmedBuilder`] into a byte vector.
+    /// Build [`Retry`] into a byte vector.
     pub fn build<R: Runtime>(self) -> BytesMut {
         let (mut header, pkt_num) = {
             let mut out = BytesMut::with_capacity(LONG_HEADER_LEN);

@@ -403,6 +403,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 target: LOG_TARGET,
                 router_id = %self.router_id,
                 ?error,
+                ?payload,
                 "failed to parse message block",
             );
             Ssu2Error::Malformed
@@ -516,7 +517,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     self.handle_peer_test_message(message);
                 }
                 Block::RouterInfo { router_info } => {
-                    tracing::debug!(
+                    tracing::error!(
                         target: LOG_TARGET,
                         router_id = %self.router_id,
                         received_router_id = %router_info.identity.id(),

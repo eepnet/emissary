@@ -75,6 +75,9 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
         /// Context for the active session.
         context: Ssu2SessionContext,
 
+        /// Our external address, if discovere during the handshake.
+        external_address: Option<SocketAddr>,
+
         /// Source connection ID.
         src_id: u64,
 

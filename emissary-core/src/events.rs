@@ -241,6 +241,26 @@ impl<R: Runtime> EventHandle<R> {
         #[cfg(feature = "events")]
         let _ = self.event_tx.try_send(SubsystemEvent::ClientDestinationStarted { name: _name });
     }
+
+    /// Create new `EventHandle` for tests.
+    #[cfg(test)]
+    pub(crate) fn new_for_tests() -> Self {
+        let (event_tx, _event_rx) = channel(16);
+
+        Self {
+            event_tx,
+            inbound_bandwidth: Default::default(),
+            outbound_bandwidth: Default::default(),
+            num_connected_routers: Default::default(),
+            num_transit_tunnels: Default::default(),
+            num_tunnel_build_failures: Default::default(),
+            num_tunnels_built: Default::default(),
+            transit_inbound_bandwidth: Default::default(),
+            transit_outbound_bandwidth: Default::default(),
+            update_interval: UPDATE_INTERVAL,
+            timer: None,
+        }
+    }
 }
 
 impl<R: Runtime> Future for EventHandle<R> {

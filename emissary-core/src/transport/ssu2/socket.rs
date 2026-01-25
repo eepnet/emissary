@@ -240,11 +240,7 @@ impl<R: Runtime> Ssu2Socket<R> {
             .finalize();
 
         // TODO: pass intro key
-        let peer_test_manager = PeerTestManager::new(
-            intro_key,
-            socket.clone(),
-            router_ctx.profile_storage().clone(),
-        );
+        let peer_test_manager = PeerTestManager::new(intro_key, socket.clone(), router_ctx.clone());
 
         Self {
             active_sessions: R::join_set(),
@@ -355,7 +351,16 @@ impl<R: Runtime> Ssu2Socket<R> {
                     return Err(Ssu2Error::NetworkMismatch);
                 }
 
-                self.peer_test_manager.handle_peer_test(src_id, pkt_num, datagram, address)
+                self.peer_test_manager
+                    .handle_peer_test(src_id, pkt_num, datagram, address)
+                    .inspect_err(|error| {
+                        tracing::debug!(
+                            target: LOG_TARGET,
+                            ?src_id,
+                            ?error,
+                            "failed to handle out-of-session peer test message",
+                        );
+                    })
             }
             _ => match self.pending_outbound.get(&address) {
                 Some(intro_key) =>
@@ -756,6 +761,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             context,
                             src_id,
                             started: _,
+                            external_address,
                         } => {
                             let router_id = context.router_id.clone();
 
@@ -781,6 +787,12 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                                     "unvalidated session already exists",
                                 );
                                 debug_assert!(false);
+                            }
+
+                            // report external address to `PeerTestManager` so it can be used
+                            // for status detection and active peer tests
+                            if let Some(address) = external_address {
+                                this.peer_test_manager.add_external_address(address);
                             }
 
                             return Poll::Ready(Some(TransportEvent::ConnectionEstablished {

@@ -213,7 +213,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 // if the router info set by bob was in a router info block, `Ssu2Session` has kept
                 // it in a temporary storage and if the router info was sent in a database store
                 // message, attempt to fetch it from profile storage.
-                let verifying_key = match self.pending_router_info.take() {
+                let verifying_key = match self.pending_router_info.as_ref() {
                     Some(router_info) => Some(router_info.identity.signing_key().clone()),
                     None => self
                         .router_ctx
@@ -263,8 +263,13 @@ impl<R: Runtime> Ssu2Session<R> {
                             "received peer test message 2",
                         );
 
-                        self.peer_test_handle
-                            .handle_bob_request(router_id, nonce, address, message);
+                        self.peer_test_handle.handle_bob_request(
+                            router_id,
+                            nonce,
+                            address,
+                            message,
+                            self.pending_router_info.take(),
+                        );
                     }
                     Err(PeerTestError::InvalidSignature) => {
                         tracing::warn!(
@@ -327,7 +332,28 @@ impl<R: Runtime> Ssu2Session<R> {
 
                 self.peer_test_handle.handle_charlie_response(nonce, rejection, message);
             }
-            // TODO: add support for message 4 (alice receives a response from bob)
+            PeerTestMessage::Message4 {
+                message,
+                nonce,
+                rejection,
+                router_hash,
+                signature,
+            } => {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?nonce,
+                    ?rejection,
+                    "relay peer test message 4 to manager",
+                );
+
+                self.peer_test_handle.handle_peer_test_response(
+                    nonce,
+                    rejection,
+                    router_hash,
+                    self.pending_router_info.take(),
+                );
+            }
             message => {
                 tracing::warn!(
                     target: LOG_TARGET,
@@ -345,6 +371,29 @@ impl<R: Runtime> Ssu2Session<R> {
     // TODO: use `Transmission::segment()` for peer test blocks
     pub fn handle_peer_test_command(&mut self, command: PeerTestCommand) {
         match command {
+            // send peer test request to bob, asking them to partake in a peer test (we're alice and
+            // this is an active session with bob)
+            PeerTestCommand::RequestBob {
+                nonce,
+                message,
+                signature,
+            } => {
+                tracing::trace!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?nonce,
+                    "send peer test request to bob",
+                );
+
+                self.write_buffer.push_back(
+                    DataMessageBuilder::default()
+                        .with_dst_id(self.dst_id)
+                        .with_pkt_num(self.transmission.next_pkt_num())
+                        .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
+                        .with_key_context(self.intro_key, &self.send_key_ctx)
+                        .build::<R>(),
+                );
+            }
             // reject peer test request (message 1) received from alice (we're bob and this is an
             // active connection with alice)
             PeerTestCommand::Reject { nonce, reason } => {
@@ -390,7 +439,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     router_id = %self.router_id,
                     alice_router_id = %router_id,
                     ?nonce,
-                    "send peer test request for charlie",
+                    "send peer test request to charlie",
                 );
 
                 self.write_buffer.push_back(
@@ -413,7 +462,8 @@ impl<R: Runtime> Ssu2Session<R> {
                     router_id = %self.router_id,
                     alice_router_id = %router_id,
                     ?nonce,
-                    "send peer test accept for bob",
+                    ?rejection,
+                    "send peer test response to bob",
                 );
 
                 let Some(mut message) = self.peer_test_handle.take_message(&nonce) else {
@@ -458,6 +508,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 rejection,
                 router_id,
                 message,
+                router_info,
             } => {
                 tracing::trace!(
                     target: LOG_TARGET,
@@ -471,6 +522,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     DataMessageBuilder::default()
                         .with_dst_id(self.dst_id)
                         .with_pkt_num(self.transmission.next_pkt_num())
+                        .with_router_info(&router_info)
                         .with_peer_test(PeerTestBlock::RelayCharlieResponse {
                             message,
                             router_id,
@@ -496,7 +548,7 @@ mod tests {
     use crate::{
         crypto::{chachapoly::ChaChaPoly, SigningPrivateKey},
         events::EventManager,
-        i2np::{MessageType, I2NP_MESSAGE_EXPIRATION},
+        i2np::{database::store::DatabaseStore, MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::{MessageId, RouterId, RouterInfo, RouterInfoBuilder},
         profile::ProfileStorage,
         router::context::RouterContext,
@@ -1086,6 +1138,7 @@ mod tests {
         let intro_key = [0xaa; 32];
         let bob_intro_key = [1u8; 32];
         let charlie_verifying_key = session.router_ctx.signing_key().public();
+        let router_id = alice_router_info.identity.id().to_vec();
 
         // store alice's router info into storage
         session.router_ctx.profile_storage().add_router(alice_router_info);
@@ -1110,7 +1163,7 @@ mod tests {
             let mut payload = BytesMut::with_capacity(128);
 
             payload.put_slice(b"PeerTestValidate");
-            payload.put_slice(&bob_router_id);
+            payload.put_slice(&router_id);
             payload.put_slice(&message);
 
             signing_key.sign(&payload)
@@ -1463,6 +1516,7 @@ mod tests {
         };
         let intro_key = [0xaa; 32];
         let bob_intro_key = [1u8; 32];
+        let router_id = alice_router_info.identity.id().to_vec();
 
         // store alice's router info into storage
         session.router_ctx.profile_storage().add_router(alice_router_info);
@@ -1489,7 +1543,7 @@ mod tests {
             let mut payload = BytesMut::with_capacity(128);
 
             payload.put_slice(b"PeerTestValidate");
-            payload.put_slice(&bob_router_id);
+            payload.put_slice(&router_id);
             payload.put_slice(&message);
 
             signing_key.sign(&payload)
@@ -1582,6 +1636,7 @@ mod tests {
         };
         let intro_key = [0xaa; 32];
         let bob_intro_key = [1u8; 32];
+        let router_id = alice_router_info.identity.id().to_vec();
 
         // store alice's router info into storage
         session.router_ctx.profile_storage().add_router(alice_router_info);
@@ -1608,7 +1663,7 @@ mod tests {
             let mut payload = BytesMut::with_capacity(128);
 
             payload.put_slice(b"PeerTestValidate");
-            payload.put_slice(&bob_router_id);
+            payload.put_slice(&router_id);
             payload.put_slice(&message);
 
             signing_key.sign(&payload)
@@ -1701,6 +1756,7 @@ mod tests {
         };
         let intro_key = [0xaa; 32];
         let bob_intro_key = [1u8; 32];
+        let router_id = alice_router_info.identity.id().to_vec();
 
         // serialize alice's router info so it can be sent in an in-session router info block
         let serialized = alice_router_info.serialize(&signing_key);
@@ -1725,7 +1781,7 @@ mod tests {
             let mut payload = BytesMut::with_capacity(128);
 
             payload.put_slice(b"PeerTestValidate");
-            payload.put_slice(&bob_router_id);
+            payload.put_slice(&router_id);
             payload.put_slice(&message);
 
             signing_key.sign(&payload)
