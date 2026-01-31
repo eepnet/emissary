@@ -21,15 +21,11 @@
 use crate::{
     crypto::SigningPublicKey,
     error::PeerTestError,
-    i2np::{
-        database::store::{DatabaseStoreBuilder, DatabaseStoreKind},
-        Message, MessageType, I2NP_MESSAGE_EXPIRATION,
-    },
     primitives::RouterId,
     runtime::Runtime,
     transport::ssu2::{
         message::{
-            data::{DataMessageBuilder, MessageKind, PeerTestBlock},
+            data::{DataMessageBuilder, PeerTestBlock},
             PeerTestMessage,
         },
         peer_test::types::{PeerTestCommand, RejectionReason},
@@ -37,9 +33,7 @@ use crate::{
     },
 };
 
-use bytes::Bytes;
-use rand_core::RngCore;
-
+use alloc::vec::Vec;
 use core::net::SocketAddr;
 
 /// Logging target for the file.
@@ -64,7 +58,7 @@ impl<R: Runtime> Ssu2Session<R> {
             signed_data.extend(router_id.to_vec());
             signed_data.extend(message);
 
-            if verifying_key.verify(&signed_data, &signature).is_err() {
+            if verifying_key.verify(&signed_data, signature).is_err() {
                 return Err(PeerTestError::InvalidSignature);
             }
         }
@@ -111,10 +105,10 @@ impl<R: Runtime> Ssu2Session<R> {
             // if the request is accepted, the request is relayed to charlie and once a response is
             // received from charlie, it's relayed back to alice in `PeerTestMssage::Message1`
             PeerTestMessage::Message1 {
-                nonce,
                 address,
+                message,
+                nonce,
                 signature,
-                mut message,
             } => {
                 tracing::trace!(
                     target: LOG_TARGET,
@@ -133,16 +127,12 @@ impl<R: Runtime> Ssu2Session<R> {
                     &self.verifying_key,
                 ) {
                     Ok(()) => {
-                        // extend signature at the end of message so if the peer test request
-                        // is rejected, the latter portion of the peer test message 1 can be
-                        // sent as-is back to alice
-                        message.extend(&signature);
-
                         self.peer_test_handle.handle_alice_request(
                             self.router_id.clone(),
                             nonce,
                             address,
                             message,
+                            signature,
                         );
                     }
                     Err(PeerTestError::InvalidSignature) => {
@@ -152,7 +142,6 @@ impl<R: Runtime> Ssu2Session<R> {
                             ?nonce,
                             "failed to verify signature of peer test message 1",
                         );
-                        message.extend(&signature);
 
                         // TODO: use transmission
                         self.write_buffer.push_back(
@@ -162,14 +151,13 @@ impl<R: Runtime> Ssu2Session<R> {
                                 .with_peer_test(PeerTestBlock::BobReject {
                                     reason: RejectionReason::SignatureFailure,
                                     message,
+                                    signature,
                                 })
                                 .with_key_context(self.intro_key, &self.send_key_ctx)
                                 .build::<R>(),
                         );
                     }
                     Err(PeerTestError::InvalidAddress) => {
-                        message.extend(&signature);
-
                         // TODO: use transmission
                         self.write_buffer.push_back(
                             DataMessageBuilder::default()
@@ -178,6 +166,7 @@ impl<R: Runtime> Ssu2Session<R> {
                                 .with_peer_test(PeerTestBlock::BobReject {
                                     reason: RejectionReason::UnsupportedAddress,
                                     message,
+                                    signature,
                                 })
                                 .with_key_context(self.intro_key, &self.send_key_ctx)
                                 .build::<R>(),
@@ -333,10 +322,10 @@ impl<R: Runtime> Ssu2Session<R> {
                 self.peer_test_handle.handle_charlie_response(nonce, rejection, message);
             }
             PeerTestMessage::Message4 {
-                message,
                 nonce,
                 rejection,
                 router_hash,
+                message,
                 signature,
             } => {
                 tracing::trace!(
@@ -352,6 +341,8 @@ impl<R: Runtime> Ssu2Session<R> {
                     rejection,
                     router_hash,
                     self.pending_router_info.take(),
+                    message,
+                    signature,
                 );
             }
             message => {
@@ -405,7 +396,8 @@ impl<R: Runtime> Ssu2Session<R> {
                     "send peer test rejection for alice",
                 );
 
-                let Some(message) = self.peer_test_handle.take_message(&nonce) else {
+                let Some((message, signature)) = self.peer_test_handle.take_alice_request(&nonce)
+                else {
                     tracing::warn!(
                         target: LOG_TARGET,
                         router_id = %self.router_id,
@@ -420,7 +412,11 @@ impl<R: Runtime> Ssu2Session<R> {
                     DataMessageBuilder::default()
                         .with_dst_id(self.dst_id)
                         .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_peer_test(PeerTestBlock::BobReject { reason, message })
+                        .with_peer_test(PeerTestBlock::BobReject {
+                            reason,
+                            message,
+                            signature,
+                        })
                         .with_key_context(self.intro_key, &self.send_key_ctx)
                         .build::<R>(),
                 );
@@ -428,11 +424,11 @@ impl<R: Runtime> Ssu2Session<R> {
             // send request to charlie to participate in a peer test process for alice (we're bob
             // and this is an active connection with charlie)
             PeerTestCommand::RequestCharlie {
-                address: _,
                 message,
                 nonce,
                 router_id,
                 router_info,
+                signature,
             } => {
                 tracing::trace!(
                     target: LOG_TARGET,
@@ -447,7 +443,11 @@ impl<R: Runtime> Ssu2Session<R> {
                         .with_dst_id(self.dst_id)
                         .with_pkt_num(self.transmission.next_pkt_num())
                         .with_router_info(&router_info)
-                        .with_peer_test(PeerTestBlock::RequestCharlie { router_id, message })
+                        .with_peer_test(PeerTestBlock::RequestCharlie {
+                            router_id,
+                            message,
+                            signature,
+                        })
                         .with_key_context(self.intro_key, &self.send_key_ctx)
                         .build::<R>(),
                 );
@@ -539,17 +539,11 @@ impl<R: Runtime> Ssu2Session<R> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        net::{IpAddr, Ipv4Addr},
-        time::Duration,
-    };
-
     use super::*;
     use crate::{
         crypto::{chachapoly::ChaChaPoly, SigningPrivateKey},
         events::EventManager,
-        i2np::{database::store::DatabaseStore, MessageType, I2NP_MESSAGE_EXPIRATION},
-        primitives::{MessageId, RouterId, RouterInfo, RouterInfoBuilder},
+        primitives::{RouterId, RouterInfo, RouterInfoBuilder},
         profile::ProfileStorage,
         router::context::RouterContext,
         runtime::{
@@ -565,7 +559,12 @@ mod tests {
             Packet,
         },
     };
-    use bytes::{BufMut, BytesMut};
+    use bytes::{BufMut, Bytes, BytesMut};
+    use rand_core::RngCore;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Duration,
+    };
     use thingbuf::mpsc::{channel, with_recycle, Receiver, Sender};
 
     #[allow(unused)]
@@ -600,7 +599,8 @@ mod tests {
 
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let router_id = router_info.identity.id();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let router_ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new()),
@@ -678,7 +678,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -729,7 +729,7 @@ mod tests {
                 assert_eq!(received_nonce, nonce);
                 assert_eq!(address, ADDRESS);
             }
-            event => panic!("unexpected event"),
+            _ => panic!("unexpected event"),
         }
 
         // send rejection for alice from `PeerTestManager`
@@ -785,8 +785,6 @@ mod tests {
             event_rx,
             pkt_tx,
             signing_key,
-            alice_router_id,
-            router_id: bob_router_id,
             mut recv_socket,
             ..
         } = make_active_session().await;
@@ -805,7 +803,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -895,7 +893,6 @@ mod tests {
             event_rx,
             pkt_tx,
             signing_key,
-            alice_router_id,
             router_id: bob_router_id,
             mut recv_socket,
             ..
@@ -915,7 +912,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1007,7 +1004,6 @@ mod tests {
             event_rx,
             pkt_tx,
             signing_key,
-            alice_router_id,
             router_id: bob_router_id,
             mut recv_socket,
             ..
@@ -1027,7 +1023,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1120,7 +1116,6 @@ mod tests {
             pkt_tx,
             signing_key,
             alice_router_id,
-            router_id: bob_router_id,
             alice_router_info,
             mut recv_socket,
             cmd_tx,
@@ -1146,7 +1141,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1174,10 +1169,8 @@ mod tests {
             .with_pkt_num(1)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1270,7 +1263,6 @@ mod tests {
             signing_key,
             alice_router_id,
             router_id: bob_router_id,
-            alice_router_info,
             mut recv_socket,
             ..
         } = make_active_session().await;
@@ -1289,7 +1281,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1317,10 +1309,8 @@ mod tests {
             .with_pkt_num(1)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1383,7 +1373,6 @@ mod tests {
             pkt_tx,
             signing_key,
             alice_router_id,
-            router_id: bob_router_id,
             alice_router_info,
             mut recv_socket,
             ..
@@ -1406,7 +1395,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1434,10 +1423,8 @@ mod tests {
             .with_pkt_num(1)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1500,7 +1487,6 @@ mod tests {
             pkt_tx,
             signing_key,
             alice_router_id,
-            router_id: bob_router_id,
             alice_router_info,
             mut recv_socket,
             ..
@@ -1524,7 +1510,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1554,10 +1540,8 @@ mod tests {
             .with_pkt_num(1)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1620,7 +1604,6 @@ mod tests {
             pkt_tx,
             signing_key,
             alice_router_id,
-            router_id: bob_router_id,
             alice_router_info,
             mut recv_socket,
             ..
@@ -1644,7 +1627,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1674,10 +1657,8 @@ mod tests {
             .with_pkt_num(1)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1740,9 +1721,8 @@ mod tests {
             pkt_tx,
             signing_key,
             alice_router_id,
-            router_id: bob_router_id,
             alice_router_info,
-            mut recv_socket,
+            recv_socket,
             ..
         } = make_active_session().await;
         let dst_id = session.dst_id;
@@ -1750,12 +1730,7 @@ mod tests {
             k_data: session.recv_key_ctx.k_data,
             k_header_2: session.recv_key_ctx.k_header_2,
         };
-        let recv_key_ctx = KeyContext {
-            k_data: session.send_key_ctx.k_data,
-            k_header_2: session.send_key_ctx.k_header_2,
-        };
         let intro_key = [0xaa; 32];
-        let bob_intro_key = [1u8; 32];
         let router_id = alice_router_info.identity.id().to_vec();
 
         // serialize alice's router info so it can be sent in an in-session router info block
@@ -1764,7 +1739,7 @@ mod tests {
         tokio::spawn(session);
 
         // create message for alice
-        let (mut message, nonce) = {
+        let (message, nonce) = {
             let nonce = MockRuntime::rng().next_u32();
             let mut out = BytesMut::with_capacity(128);
 
@@ -1793,10 +1768,8 @@ mod tests {
             .with_router_info(&serialized)
             .with_peer_test(PeerTestBlock::RequestCharlie {
                 router_id: alice_router_id.clone(),
-                message: {
-                    message.extend(&signature);
-                    message
-                },
+                message,
+                signature,
             })
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
@@ -1831,9 +1804,8 @@ mod tests {
             event_rx,
             pkt_tx,
             signing_key,
-            alice_router_id,
             router_id: bob_router_id,
-            mut recv_socket,
+            recv_socket,
             ..
         } = make_active_session().await;
         let dst_id = session.dst_id;
@@ -1841,12 +1813,7 @@ mod tests {
             k_data: session.recv_key_ctx.k_data,
             k_header_2: session.recv_key_ctx.k_header_2,
         };
-        let recv_key_ctx = KeyContext {
-            k_data: session.send_key_ctx.k_data,
-            k_header_2: session.send_key_ctx.k_header_2,
-        };
         let intro_key = [0xaa; 32];
-        let bob_intro_key = [1u8; 32];
 
         tokio::spawn(session);
 

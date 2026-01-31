@@ -17,15 +17,15 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::{
-    primitives::RouterId,
+    primitives::{RouterId, RouterInfo},
     runtime::{Instant, Runtime},
     transport::ssu2::session::active::Ssu2SessionContext,
 };
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use futures::FutureExt;
 
-use alloc::{collections::VecDeque, vec::Vec};
+use alloc::{boxed::Box, collections::VecDeque, vec::Vec};
 use core::{
     fmt,
     future::Future,
@@ -54,20 +54,26 @@ pub enum PendingSsu2SessionStatus<R: Runtime> {
         /// Destination connection ID.
         dst_id: u64,
 
+        /// Key for decrypting the header of a `SessionConfirmed` message
+        ///
+        /// Only used by inbound connections which have been rejected by
+        /// `TransportManager` and are now trying to terminate the connection.
+        k_header_2: [u8; 32],
+
         /// ACK for `SessionConfirmed`.
         pkt: BytesMut,
+
+        /// Router info of remote router.
+        router_info: Box<RouterInfo>,
+
+        /// Serialized router info of remote router.
+        serialized: Bytes,
 
         /// When was the handshake started.
         started: R::Instant,
 
         /// Socket address of the remote router.
         target: SocketAddr,
-
-        /// Key for decrypting the header of a `SessionConfirmed` message
-        ///
-        /// Only used by inbound connections which have been rejected by
-        /// `TransportManager` and are now trying to terminate the connection.
-        k_header_2: [u8; 32],
     },
 
     /// New outbound session.

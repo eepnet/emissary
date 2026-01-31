@@ -37,7 +37,7 @@ use crate::{
     Error,
 };
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use rand_core::RngCore;
 use zeroize::Zeroize;
 
@@ -304,7 +304,7 @@ impl Responder {
     ///
     /// <https://geti2p.net/spec/ntcp2#key-derivation-function-kdf-for-handshake-message-3-part-2>
     /// <https://geti2p.net/spec/ntcp2#key-derivation-function-kdf-for-data-phase>
-    pub fn finalize(&mut self, message: Vec<u8>) -> crate::Result<(KeyContext, RouterInfo)> {
+    pub fn finalize(&mut self, message: Vec<u8>) -> crate::Result<(KeyContext, RouterInfo, Bytes)> {
         let ResponderState::SessionCreated {
             ephemeral_private,
             mut local_key,
@@ -348,7 +348,7 @@ impl Responder {
         let mut k = noise_ctx.mix_key(&ephemeral_private, &initiator_public);
 
         // decrypt remote's router info and parse it into `RouterInfo`
-        let router_info = {
+        let (router_info, serialized) = {
             let mut router_info = message[48..].to_vec();
             ChaChaPoly::with_nonce(&k, 0)
                 .decrypt_with_ad(noise_ctx.state(), &mut router_info)
@@ -366,6 +366,7 @@ impl Responder {
 
             match MessageBlock::parse(&router_info) {
                 Ok(MessageBlock::RouterInfo { router_info, .. }) => RouterInfo::parse(router_info)
+                    .map(|parsed| (parsed, Bytes::from(router_info.to_vec())))
                     .map_err(|error| {
                         tracing::warn!(
                             target: LOG_TARGET,
@@ -403,6 +404,10 @@ impl Responder {
         // siphash context for (de)obfuscating message sizes
         let sip = SipHash::new_responder(&temp_key, noise_ctx.state());
 
-        Ok((KeyContext::new(recv_key, send_key, sip), router_info))
+        Ok((
+            KeyContext::new(recv_key, send_key, sip),
+            router_info,
+            serialized,
+        ))
     }
 }

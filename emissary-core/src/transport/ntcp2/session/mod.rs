@@ -394,12 +394,12 @@ impl<R: Runtime> SessionManager<R> {
         stream.read_exact::<R>(&mut message).await?;
 
         match responder.finalize(message) {
-            Ok((key_context, router)) => {
-                if router.net_id() != net_id {
+            Ok((key_context, router_info, serialized)) => {
+                if router_info.net_id() != net_id {
                     tracing::warn!(
                         target: LOG_TARGET,
                         local_net_id = ?net_id,
-                        remote_net_id = ?router.net_id(),
+                        remote_net_id = ?router_info.net_id(),
                         "remote router is part of a different network",
                     );
 
@@ -407,9 +407,12 @@ impl<R: Runtime> SessionManager<R> {
                     return Err(Error::NetworkMismatch);
                 }
 
+                // add router to router storage so we can later on use it for outbound connections
+                profile_storage.discover_router(router_info.clone(), serialized);
+
                 Ok(Ntcp2Session::new(
                     Role::Responder,
-                    router,
+                    router_info,
                     stream,
                     key_context,
                     Direction::Inbound,

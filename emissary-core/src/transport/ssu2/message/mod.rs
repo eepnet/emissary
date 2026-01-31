@@ -32,7 +32,7 @@ use crate::{
     transport::ssu2::peer_test::types::RejectionReason,
 };
 
-use bytes::{BufMut, BytesMut};
+use bytes::{BufMut, Bytes, BytesMut};
 use nom::{
     bytes::complete::take,
     number::complete::{be_u16, be_u32, be_u64, be_u8},
@@ -40,7 +40,7 @@ use nom::{
 };
 use rand_core::RngCore;
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, vec, vec::Vec};
 use core::{
     fmt,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4},
@@ -248,22 +248,13 @@ pub enum PeerTestMessage {
     },
 
     /// Message 5, from Charlie to Alice (out-of-session).
-    Message5 {
-        /// Test nonce.
-        nonce: u32,
-    },
+    Message5,
 
     /// Message 6, from Alice to Charlie (out-of-session).
-    Message6 {
-        /// Test nonce.
-        nonce: u32,
-    },
+    Message6,
 
     /// Message 7, from Charlie to Alice (out-of-session).
-    Message7 {
-        /// Test nonce.
-        nonce: u32,
-    },
+    Message7,
 
     #[default]
     Dummy,
@@ -308,6 +299,9 @@ pub enum Block {
     RouterInfo {
         /// Router info.
         router_info: Box<RouterInfo>,
+
+        /// Serialized `RouterInfo`.
+        serialized: Bytes,
     },
 
     /// I2NP message.
@@ -606,13 +600,15 @@ impl Block {
             return Err(Err::Error(Ssu2ParseError::CompressedRouterInfo));
         }
 
-        let router_info = RouterInfo::parse(router_info)
+        let parsed = RouterInfo::parse(router_info)
             .map_err(|error| Err::Error(Ssu2ParseError::RouterInfo(error)))?;
+        let serialized = Bytes::from(router_info.to_vec());
 
         Ok((
             rest,
             Block::RouterInfo {
-                router_info: Box::new(router_info),
+                router_info: Box::new(parsed),
+                serialized,
             },
         ))
     }
@@ -808,13 +804,13 @@ impl Block {
 
     /// Parse [`MessageBlock::PeerTest`].
     fn parse_peer_test(input: &[u8]) -> IResult<&[u8], Block, Ssu2ParseError> {
-        let (rest, size) = be_u16::<_, ()>(input).unwrap();
-        let (rest, msg) = be_u8::<_, ()>(rest).unwrap();
-        let (rest, code) = be_u8::<_, ()>(rest).unwrap();
-        let (rest, _flag) = be_u8::<_, ()>(rest).unwrap();
+        let (rest, size) = be_u16(input)?;
+        let (rest, msg) = be_u8(rest)?;
+        let (rest, code) = be_u8(rest)?;
+        let (rest, _flag) = be_u8(rest)?;
         let (rest, router_hash) = match msg {
             2 | 4 => {
-                let (rest, hash) = take::<_, _, ()>(ROUTER_HASH_LEN)(rest).unwrap();
+                let (rest, hash) = take(ROUTER_HASH_LEN)(rest)?;
                 (rest, Some(hash))
             }
             _ => (rest, None),
@@ -825,14 +821,14 @@ impl Block {
         // https://geti2p.net/spec/ssu2#peertest
         let message_start = rest;
 
-        let (rest, _version) = be_u8::<_, ()>(rest).unwrap();
-        let (rest, nonce) = be_u32::<_, ()>(rest).unwrap();
-        let (rest, _timestamp) = be_u32::<_, ()>(rest).unwrap();
-        let (rest, address_size) = be_u8::<_, ()>(rest).unwrap();
+        let (rest, _version) = be_u8(rest)?;
+        let (rest, nonce) = be_u32(rest)?;
+        let (rest, _timestamp) = be_u32(rest)?;
+        let (rest, address_size) = be_u8(rest)?;
         let (rest, address) = match address_size {
             6 => {
-                let (rest, port) = be_u16::<_, ()>(rest).unwrap();
-                let (rest, address) = be_u32::<_, ()>(rest).unwrap();
+                let (rest, port) = be_u16(rest)?;
+                let (rest, address) = be_u32(rest)?;
 
                 (
                     rest,
@@ -844,16 +840,13 @@ impl Block {
                     target: LOG_TARGET,
                     "ipv6 not supported"
                 );
-                panic!("zzzzz");
                 return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
             }
-            _ => panic!("kkkk"),
-            // _ => return Err(Err::Error(Ssu2ParseError::InvalidBitstream)),
+            _ => return Err(Err::Error(Ssu2ParseError::InvalidBitstream)),
         };
         let (rest, maybe_signature) = match msg {
             1..=4 => {
-                println!("parse signature");
-                let (rest, signature) = take::<_, _, ()>(ED25519_SIGNATURE_LEN)(rest).unwrap();
+                let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
 
                 (rest, Some(signature))
             }
@@ -870,12 +863,11 @@ impl Block {
                 if bytes_left == 0 {
                     (rest, None)
                 } else if bytes_left == ED25519_SIGNATURE_LEN {
-                    let (rest, signature) = take::<_, _, ()>(ED25519_SIGNATURE_LEN)(rest).unwrap();
+                    let (rest, signature) = take(ED25519_SIGNATURE_LEN)(rest)?;
 
                     (rest, Some(signature))
                 } else {
-                    panic!("sig issue");
-                    // return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
+                    return Err(Err::Error(Ssu2ParseError::InvalidBitstream));
                 }
             }
         };
@@ -969,22 +961,22 @@ impl Block {
             5 => Ok((
                 rest,
                 Block::PeerTest {
-                    message: PeerTestMessage::Message5 { nonce },
+                    message: PeerTestMessage::Message5,
                 },
             )),
             6 => Ok((
                 rest,
                 Block::PeerTest {
-                    message: PeerTestMessage::Message6 { nonce },
+                    message: PeerTestMessage::Message6,
                 },
             )),
             7 => Ok((
                 rest,
                 Block::PeerTest {
-                    message: PeerTestMessage::Message7 { nonce },
+                    message: PeerTestMessage::Message7,
                 },
             )),
-            msg => return Err(Err::Error(Ssu2ParseError::UnknownPeerTestMessage(msg))),
+            msg => Err(Err::Error(Ssu2ParseError::UnknownPeerTestMessage(msg))),
         }
     }
 
@@ -1734,7 +1726,7 @@ impl<'a> PeerTestBuilder<'a> {
             payload.push(self.msg_code);
             payload.push(0); // code
             payload.push(0); // flag
-            payload.extend_from_slice(&self.message);
+            payload.extend_from_slice(self.message);
         }
         payload.extend_from_slice(&Block::Padding { padding }.serialize());
 

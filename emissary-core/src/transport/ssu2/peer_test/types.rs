@@ -22,6 +22,7 @@ use futures::Stream;
 use hashbrown::HashMap;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     net::SocketAddr,
     pin::Pin,
@@ -32,6 +33,9 @@ use core::{
 ///
 /// Given to active sessions, allowing them to interact with `PeerTestManager`.
 pub struct PeerTestHandle {
+    /// Message + signature for each peer test request received from Alice.
+    alice_requests: HashMap<u32, (Vec<u8>, Vec<u8>)>,
+
     /// TX channel given to `PeerTestManager`.
     cmd_tx: Sender<PeerTestCommand>,
 
@@ -51,6 +55,7 @@ impl PeerTestHandle {
         let (cmd_tx, cmd_rx) = channel(32);
 
         Self {
+            alice_requests: HashMap::new(),
             cmd_tx,
             cmd_rx,
             event_tx,
@@ -69,13 +74,15 @@ impl PeerTestHandle {
         router_id: RouterId,
         nonce: u32,
         address: SocketAddr,
-        signature_payload: Vec<u8>,
+        message: Vec<u8>,
+        signature: Vec<u8>,
     ) {
-        self.pending_tests.insert(nonce, signature_payload.clone());
+        self.alice_requests.insert(nonce, (message.clone(), signature.clone()));
 
         let _ = self.event_tx.try_send(PeerTestEvent::AliceRequest {
             address,
-            message: signature_payload,
+            message,
+            signature,
             nonce,
             router_id,
             tx: self.cmd_tx.clone(),
@@ -124,18 +131,27 @@ impl PeerTestHandle {
         rejection: Option<RejectionReason>,
         router_hash: Vec<u8>,
         router_info: Option<Box<RouterInfo>>,
+        message: Vec<u8>,
+        signature: Vec<u8>,
     ) {
         let _ = self.event_tx.try_send(PeerTestEvent::PeerTestResponse {
             nonce,
             rejection,
             router_hash,
             router_info,
+            message,
+            signature,
         });
     }
 
     /// Attempt to take the stored message of Alice/Bob request peer test message.
     pub fn take_message(&mut self, nonce: &u32) -> Option<Vec<u8>> {
         self.pending_tests.remove(nonce)
+    }
+
+    /// Take message and siganture that were part of the peer test request received from Alice.
+    pub fn take_alice_request(&mut self, nonce: &u32) -> Option<(Vec<u8>, Vec<u8>)> {
+        self.alice_requests.remove(nonce)
     }
 }
 
@@ -168,8 +184,11 @@ pub enum PeerTestEvent {
         /// Socket address of Alice.
         address: SocketAddr,
 
-        /// Message received from Alice + signature.
+        /// Message received from Alice.
         message: Vec<u8>,
+
+        /// Signature for `message`.
+        signature: Vec<u8>,
 
         /// Test nonce.
         nonce: u32,
@@ -235,6 +254,12 @@ pub enum PeerTestEvent {
 
         /// Router info of Charlie, if it was sent in a `RouterInfo` block
         router_info: Option<Box<RouterInfo>>,
+
+        /// Message sent by Charlie.
+        message: Vec<u8>,
+
+        /// Signature for `message`.
+        signature: Vec<u8>,
     },
 
     #[default]
@@ -354,11 +379,11 @@ pub enum PeerTestCommand {
 
     /// Send peer test request from Bob to Charlie.
     RequestCharlie {
-        /// Socket address of Alice.
-        address: SocketAddr,
-
         /// Message received from Alice.
         message: Vec<u8>,
+
+        /// Signature for `message`.
+        signature: Vec<u8>,
 
         /// Test nonce.
         nonce: u32,

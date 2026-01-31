@@ -17,7 +17,6 @@
 // DEALINGS IN THE SOFTWARE.
 
 use anyhow::anyhow;
-use flate2::write::GzDecoder;
 use home::home_dir;
 use rand::RngCore;
 use rand_core::OsRng;
@@ -25,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 use std::{
-    io::{Read, Write},
+    io::Read,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -481,14 +480,6 @@ impl Storage {
 
         Ok(())
     }
-
-    /// Decompress `bytes`.
-    fn decompress(bytes: Vec<u8>) -> Option<Vec<u8>> {
-        let mut e = GzDecoder::new(Vec::new());
-        e.write_all(bytes.as_ref()).ok()?;
-
-        e.finish().ok()
-    }
 }
 
 impl emissary_core::runtime::Storage for Storage {
@@ -498,24 +489,15 @@ impl emissary_core::runtime::Storage for Storage {
         tokio::spawn(async move {
             for (router_id, router_info, profile) in routers {
                 if let Some(router_info) = router_info {
-                    match Storage::decompress(router_info) {
-                        Some(router_info) =>
-                            if let Err(error) = storage_handle
-                                .store_router_info(router_id.clone(), router_info)
-                                .await
-                            {
-                                tracing::warn!(
-                                    target: LOG_TARGET,
-                                    ?router_id,
-                                    ?error,
-                                    "failed to store router info to disk",
-                                );
-                            },
-                        None => tracing::warn!(
+                    if let Err(error) =
+                        storage_handle.store_router_info(router_id.clone(), router_info).await
+                    {
+                        tracing::warn!(
                             target: LOG_TARGET,
                             ?router_id,
-                            "failed to decompress router info",
-                        ),
+                            ?error,
+                            "failed to store router info to disk",
+                        );
                     }
                 }
 

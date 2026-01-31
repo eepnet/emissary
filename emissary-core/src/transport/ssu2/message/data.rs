@@ -99,11 +99,14 @@ pub enum PeerTestBlock {
         /// Rejection reason.
         reason: RejectionReason,
 
-        /// Message + signature.
+        /// Message.
         ///
         /// Sent by Alice in peer test 1 message and covers all the fields
         /// the signature verifies and the signature itself.
         message: Vec<u8>,
+
+        /// Signature for `message`.
+        signature: Vec<u8>,
     },
 
     /// Request Charlie to participate in a peer test for Alice.
@@ -111,8 +114,11 @@ pub enum PeerTestBlock {
         /// Router ID of Alice.
         router_id: RouterId,
 
-        /// Message sent by Alice + signature.
+        /// Message sent by Alice.
         message: Vec<u8>,
+
+        /// Signature for `message`.
+        signature: Vec<u8>,
     },
 
     /// Send Charlie's response to Alice's peer test request.
@@ -355,37 +361,47 @@ impl<'a> DataMessageBuilder<'a> {
                 out.put_u16((2 + router_info.len()) as u16);
                 out.put_u8(0u8);
                 out.put_u8(1u8);
-                out.put_slice(&router_info);
+                out.put_slice(router_info);
             }
 
             match self.peer_test_block.take() {
                 None => {}
                 Some(PeerTestBlock::AliceRequest { message, signature }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len()) as u16);
+                    out.put_u16((3 + message.len() + signature.len()) as u16);
                     out.put_u8(1); // message 1 (alice -> bob)
                     out.put_u8(0); // code
                     out.put_u8(0u8); // flag
                     out.put_slice(&message);
                     out.put_slice(&signature);
                 }
-                Some(PeerTestBlock::BobReject { reason, message }) => {
+                Some(PeerTestBlock::BobReject {
+                    reason,
+                    message,
+                    signature,
+                }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u16((3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16);
                     out.put_u8(4); // message 4 (bob -> alice)
                     out.put_u8(reason.as_bob()); // code
                     out.put_u8(0u8); // flag
                     out.put_slice(&[0u8; 32]);
                     out.put_slice(&message);
+                    out.put_slice(&signature);
                 }
-                Some(PeerTestBlock::RequestCharlie { router_id, message }) => {
+                Some(PeerTestBlock::RequestCharlie {
+                    router_id,
+                    message,
+                    signature,
+                }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
+                    out.put_u16((3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16);
                     out.put_u8(2); // message 2 (bob -> charlie)
                     out.put_u8(0); // accept
                     out.put_u8(0u8); // flag
                     out.put_slice(&router_id.to_vec());
                     out.put_slice(&message);
+                    out.put_slice(&signature);
                 }
                 Some(PeerTestBlock::CharlieResponse { message, rejection }) => {
                     out.put_u8(BlockType::PeerTest.as_u8());

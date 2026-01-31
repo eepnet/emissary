@@ -558,8 +558,10 @@ impl<R: Runtime> InboundSsu2Session<R> {
             Ssu2Error::Malformed
         })?;
 
-        let Some(Block::RouterInfo { router_info }) =
-            blocks.iter().find(|block| core::matches!(block, Block::RouterInfo { .. }))
+        let Some(Block::RouterInfo {
+            router_info,
+            serialized,
+        }) = blocks.into_iter().find(|block| core::matches!(block, Block::RouterInfo { .. }))
         else {
             tracing::warn!(
                 target: LOG_TARGET,
@@ -625,10 +627,12 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 verifying_key,
             },
             dst_id: self.dst_id,
+            k_header_2,
             pkt,
+            router_info,
+            serialized,
             started: self.started,
             target: self.address,
-            k_header_2,
         }))
     }
 

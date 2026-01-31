@@ -27,7 +27,7 @@ use crate::{
         ssu2::{
             message::{HeaderKind, HeaderReader},
             metrics::*,
-            peer_test::PeerTestManager,
+            peer_test::{PeerTestManager, PeerTestManagerEvent},
             session::{
                 active::{Ssu2Session, Ssu2SessionContext},
                 pending::{
@@ -44,7 +44,7 @@ use crate::{
 };
 
 use bytes::{Bytes, BytesMut};
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{Stream, StreamExt};
 use hashbrown::HashMap;
 use rand_core::RngCore;
 use thingbuf::mpsc::{channel, errors::TrySendError, Sender};
@@ -717,9 +717,17 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             pkt,
                             target,
                             k_header_2,
+                            router_info,
+                            serialized,
                             ..
                         } => {
                             let router_id = context.router_id.clone();
+
+                            // add router to router storage so we can later on use it for outbound
+                            // connections
+                            this.router_ctx
+                                .profile_storage()
+                                .discover_router(*router_info, serialized);
 
                             match this.unvalidated_sessions.get(&router_id) {
                                 None => {
@@ -908,9 +916,12 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             }
         }
 
-        // poll peer test manager
-        if let Poll::Ready(()) = this.peer_test_manager.poll_unpin(cx) {
-            return Poll::Ready(None);
+        match this.peer_test_manager.poll_next_unpin(cx) {
+            Poll::Pending => {}
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Ready(Some(PeerTestManagerEvent::FirewallStatus { status })) =>
+                return Poll::Ready(Some(TransportEvent::FirewallStatus { status })),
+            Poll::Ready(Some(PeerTestManagerEvent::ExternalAddress { .. })) => {}
         }
 
         self.waker = Some(cx.waker().clone());

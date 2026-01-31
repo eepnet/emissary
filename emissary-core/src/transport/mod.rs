@@ -217,6 +217,19 @@ impl TerminationReason {
     }
 }
 
+/// Firewall status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirewallStatus {
+    /// Router's firewall status is unknown.
+    Unknown,
+
+    /// SSU2 has detected that the router is firewalled.
+    Firewall,
+
+    /// Firewall is open.
+    Ok,
+}
+
 /// Direction of the connection.
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
@@ -255,6 +268,12 @@ pub enum TransportEvent {
     ConnectionFailure {
         /// ID of the remote router.
         router_id: RouterId,
+    },
+
+    /// SSU2 has learned something about the router's firewall status.
+    FirewallStatus {
+        /// Firewall status.
+        status: FirewallStatus,
     },
 }
 
@@ -377,7 +396,7 @@ impl<R: Runtime> TransportManagerBuilder<R> {
             router_ctx: self.router_ctx,
             // publish the router info 10 seconds after booting, otherwise republish it periodically
             // in intervals of [`ROUTER_INFO_REPUBLISH_INTERVAL`]
-            router_info_republish_timer: R::timer(Duration::from_secs(2)),
+            router_info_republish_timer: R::timer(Duration::from_secs(10)),
             routers: HashSet::new(),
             shutting_down: false,
             ssu2_config: self.ssu2_config,
@@ -682,6 +701,15 @@ impl<R: Runtime> TransportManager<R> {
             }
         }
     }
+
+    /// Handle firewall status update received from SSU2.
+    fn on_firewall_status(&mut self, status: FirewallStatus) {
+        tracing::debug!(
+            target: LOG_TARGET,
+            ?status,
+            "firewall status update",
+        );
+    }
 }
 
 impl<R: Runtime> Future for TransportManager<R> {
@@ -789,6 +817,8 @@ impl<R: Runtime> Future for TransportManager<R> {
                         self.router_ctx.profile_storage().dial_failed(&router_id);
                         self.pending_connections.remove(&router_id);
                     }
+                    Poll::Ready(Some(TransportEvent::FirewallStatus { status })) =>
+                        self.on_firewall_status(status),
                 }
             }
 

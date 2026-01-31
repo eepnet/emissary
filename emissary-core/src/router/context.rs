@@ -155,11 +155,12 @@ impl<R: Runtime> RouterContext<R> {
 }
 
 #[cfg(test)]
+#[allow(unused)]
 pub(crate) mod builder {
     use crate::{
         crypto::{SigningPrivateKey, StaticPrivateKey},
         events::EventHandle,
-        primitives::{RouterId, RouterInfo, RouterInfoBuilder},
+        primitives::{RouterInfo, RouterInfoBuilder},
         profile::ProfileStorage,
         router::context::RouterContext,
         runtime::{

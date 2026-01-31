@@ -236,7 +236,7 @@ mod tests {
     use super::*;
     use crate::{
         crypto::SigningPrivateKey, events::EventManager, profile::ProfileStorage,
-        runtime::mock::MockRuntime,
+        runtime::mock::MockRuntime, transport::FirewallStatus,
     };
     use bytes::Bytes;
     use std::time::Duration;
@@ -443,6 +443,229 @@ mod tests {
             }
         };
 
+        match tokio::time::timeout(Duration::from_secs(20), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(()) => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_test_works() {
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
+        let (ctx1, address1) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
+            port: 0u16,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xaa; 32],
+            intro_key: [0xbb; 32],
+        }))
+        .await
+        .unwrap();
+        let (ctx2, address2) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
+            port: 0u16,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xcc; 32],
+            intro_key: [0xdd; 32],
+        }))
+        .await
+        .unwrap();
+        let (ctx3, address3) = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
+            port: 0u16,
+            host: Some("127.0.0.1".parse().unwrap()),
+            publish: true,
+            static_key: [0xee; 32],
+            intro_key: [0xff; 32],
+        }))
+        .await
+        .unwrap();
+
+        let (static1, signing1) = (
+            StaticPrivateKey::random(MockRuntime::rng()),
+            SigningPrivateKey::random(MockRuntime::rng()),
+        );
+        let (static2, signing2) = (
+            StaticPrivateKey::random(MockRuntime::rng()),
+            SigningPrivateKey::random(MockRuntime::rng()),
+        );
+        let (static3, signing3) = (
+            StaticPrivateKey::random(MockRuntime::rng()),
+            SigningPrivateKey::random(MockRuntime::rng()),
+        );
+        let router_info1 = RouterInfo::new::<MockRuntime>(
+            &Default::default(),
+            None,
+            address1.clone(),
+            &static1,
+            &signing1,
+            false,
+        );
+        let router_info2 = RouterInfo::new::<MockRuntime>(
+            &Default::default(),
+            None,
+            address2.clone(),
+            &static2,
+            &signing2,
+            false,
+        );
+        let router_info3 = RouterInfo::new::<MockRuntime>(
+            &Default::default(),
+            None,
+            address3.clone(),
+            &static3,
+            &signing3,
+            false,
+        );
+        let (event1_tx, _event1_rx) = channel(64);
+        let (event2_tx, _event2_rx) = channel(64);
+        let (event3_tx, _event3_rx) = channel(64);
+
+        let serialized1 = Bytes::from(router_info1.serialize(&signing1));
+        let serialized2 = Bytes::from(router_info2.serialize(&signing2));
+        let serialized3 = Bytes::from(router_info3.serialize(&signing3));
+
+        let storage1 = {
+            let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
+            storage.discover_router(router_info2.clone(), serialized2.clone());
+            storage.discover_router(router_info3.clone(), serialized3.clone());
+
+            storage
+        };
+        let storage2 = {
+            let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
+            storage.discover_router(router_info3.clone(), serialized3.clone());
+            storage.discover_router(router_info1.clone(), serialized1.clone());
+
+            storage
+        };
+        let storage3 = {
+            let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
+            storage.discover_router(router_info2.clone(), serialized2.clone());
+            storage.discover_router(router_info1.clone(), serialized1.clone());
+
+            storage
+        };
+
+        let mut transport1 = Ssu2Transport::<MockRuntime>::new(
+            ctx1.unwrap(),
+            true,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                storage1,
+                router_info1.identity.id(),
+                Bytes::from(router_info1.serialize(&signing1)),
+                static1,
+                signing1,
+                5u8,
+                event_handle.clone(),
+            ),
+            event1_tx,
+        );
+        let mut transport2 = Ssu2Transport::<MockRuntime>::new(
+            ctx2.unwrap(),
+            true,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                storage2,
+                router_info2.identity.id(),
+                Bytes::from(router_info2.serialize(&signing2)),
+                static2,
+                signing2,
+                5u8,
+                event_handle.clone(),
+            ),
+            event2_tx,
+        );
+        let mut transport3 = Ssu2Transport::<MockRuntime>::new(
+            ctx3.unwrap(),
+            true,
+            RouterContext::new(
+                MockRuntime::register_metrics(Vec::new(), None),
+                storage3,
+                router_info3.identity.id(),
+                Bytes::from(router_info3.serialize(&signing3)),
+                static3,
+                signing3,
+                5u8,
+                event_handle.clone(),
+            ),
+            event3_tx,
+        );
+
+        // spawn the first router in the background
+        tokio::spawn(async move {
+            while let Some(event) = transport2.next().await {
+                match event {
+                    TransportEvent::ConnectionEstablished { router_id, .. } => {
+                        transport2.accept(&router_id);
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // connect the routers together and ensure connection works
+        transport1.connect(router_info2.clone());
+        let future = async {
+            loop {
+                match transport1.next().await.unwrap() {
+                    TransportEvent::ConnectionEstablished { router_id, .. } => {
+                        transport1.accept(&router_id);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(20), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(()) => {}
+        }
+
+        // spawn the second router in the background
+        tokio::spawn(async move {
+            while let Some(event) = transport1.next().await {
+                match event {
+                    TransportEvent::ConnectionEstablished { router_id, .. } => {
+                        transport1.accept(&router_id);
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        // connect the third router to router2 which also starts a peer test process
+        transport3.connect(router_info2);
+        let future = async {
+            loop {
+                match transport3.next().await.unwrap() {
+                    TransportEvent::ConnectionEstablished { router_id, .. } => {
+                        transport3.accept(&router_id);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        match tokio::time::timeout(Duration::from_secs(20), future).await {
+            Err(_) => panic!("timeout"),
+            Ok(()) => {}
+        }
+
+        let future = async move {
+            loop {
+                match transport3.next().await.unwrap() {
+                    TransportEvent::FirewallStatus { status } => {
+                        assert_eq!(status, FirewallStatus::Ok);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        };
         match tokio::time::timeout(Duration::from_secs(20), future).await {
             Err(_) => panic!("timeout"),
             Ok(()) => {}

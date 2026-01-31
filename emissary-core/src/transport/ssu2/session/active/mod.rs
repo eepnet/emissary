@@ -19,22 +19,16 @@
 use crate::{
     crypto::{chachapoly::ChaChaPoly, SigningPublicKey},
     error::Ssu2Error,
-    i2np::{
-        database::store::{DatabaseStoreBuilder, DatabaseStoreKind},
-        Message, MessageType, I2NP_MESSAGE_EXPIRATION,
-    },
+    i2np::Message,
     primitives::{RouterId, RouterInfo},
     router::context::RouterContext,
     runtime::{Counter, MetricsHandle, Runtime, UdpSocket},
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
-            message::{
-                data::{DataMessageBuilder, MessageKind, PeerTestBlock},
-                Block, HeaderKind, HeaderReader, PeerTestMessage,
-            },
+            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
             metrics::*,
-            peer_test::types::{PeerTestCommand, PeerTestHandle},
+            peer_test::types::PeerTestHandle,
             session::{
                 active::{
                     ack::{AckInfo, RemoteAckManager},
@@ -51,12 +45,11 @@ use crate::{
     },
 };
 
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 use futures::{FutureExt, StreamExt};
-use rand_core::RngCore;
 use thingbuf::mpsc::{with_recycle, Receiver, Sender};
 
-use alloc::{collections::VecDeque, sync::Arc, vec};
+use alloc::{boxed::Box, collections::VecDeque, sync::Arc, vec};
 use core::{
     cmp::min,
     future::Future,
@@ -516,8 +509,8 @@ impl<R: Runtime> Ssu2Session<R> {
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
                     self.handle_peer_test_message(message);
                 }
-                Block::RouterInfo { router_info } => {
-                    tracing::error!(
+                Block::RouterInfo { router_info, .. } => {
+                    tracing::trace!(
                         target: LOG_TARGET,
                         router_id = %self.router_id,
                         received_router_id = %router_info.identity.id(),
@@ -834,9 +827,10 @@ mod tests {
         i2np::{MessageType, I2NP_MESSAGE_EXPIRATION},
         primitives::{MessageId, RouterInfoBuilder},
         profile::ProfileStorage,
-        runtime::mock::{MockRuntime, MockUdpSocket},
-        transport::ssu2::peer_test::types::{PeerTestEvent, PeerTestEventRecycle},
+        runtime::mock::MockRuntime,
+        transport::ssu2::peer_test::types::PeerTestEventRecycle,
     };
+    use bytes::Bytes;
     use thingbuf::mpsc::channel;
 
     #[tokio::test]
@@ -851,7 +845,8 @@ mod tests {
                 .unwrap();
         let remote_signing_key = SigningPrivateKey::random(&mut rand::thread_rng());
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let router_ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new()),
@@ -1008,7 +1003,8 @@ mod tests {
                 .unwrap();
         let remote_signing_key = SigningPrivateKey::random(&mut rand::thread_rng());
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
-        let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None);
+        let (_event_mgr, _event_subscriber, event_handle) =
+            EventManager::new(None, MockRuntime::register_metrics(vec![], None));
         let router_ctx = RouterContext::new(
             MockRuntime::register_metrics(vec![], None),
             ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new()),
