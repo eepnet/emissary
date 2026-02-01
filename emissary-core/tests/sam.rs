@@ -2503,3 +2503,74 @@ async fn primary_session_with_repliable_and_anonymous(kind: TransportKind) {
         Ok(Ok(_)) => panic!("duplicate session id should've been rejected"),
     }
 }
+
+#[tokio::test]
+async fn active_session_destroyed_and_recreated() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .try_init();
+
+    let mut router_infos = Vec::<Vec<u8>>::new();
+    let net_id = (thread_rng().next_u32() % 255) as u8;
+
+    for i in 0..4 {
+        let (router, _events, router_info) =
+            make_router(i < 2, net_id, router_infos.clone(), TransportKind::Ntcp2).await;
+
+        router_infos.push(router_info);
+        tokio::spawn(router);
+    }
+
+    // create the sam router and fetch the random sam tcp port from the router
+    let router = make_router(false, net_id, router_infos.clone(), TransportKind::Ntcp2).await.0;
+    let sam_tcp = router.protocol_address_info().sam_tcp.unwrap().port();
+
+    // spawn the router inte background and wait a moment for the network to boot
+    tokio::spawn(router);
+    tokio::time::sleep(Duration::from_secs(15)).await;
+
+    // generate new destination and create new session using the destination
+    let (_destination, private_key) = tokio::time::timeout(
+        Duration::from_secs(5),
+        RouterApi::new(sam_tcp).generate_destination(),
+    )
+    .await
+    .expect("no timeout")
+    .expect("to succeed");
+
+    let mut session = tokio::time::timeout(
+        Duration::from_secs(30),
+        Session::<Stream>::new(SessionOptions {
+            samv3_tcp_port: sam_tcp,
+            destination: DestinationKind::Persistent {
+                private_key: private_key.clone(),
+            },
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("no timeout")
+    .expect("to succeed");
+
+    // destroy session and verify it's closed
+    let _ = session.send_command("QUIT\n").await;
+    assert!(session
+        .connect("lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p")
+        .await
+        .is_err());
+
+    // verify that the session can be recreated with the same key
+    let _session = tokio::time::timeout(
+        Duration::from_secs(30),
+        Session::<Stream>::new(SessionOptions {
+            samv3_tcp_port: sam_tcp,
+            destination: DestinationKind::Persistent {
+                private_key: private_key.clone(),
+            },
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("no timeout")
+    .expect("to succeed");
+}

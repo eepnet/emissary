@@ -1401,6 +1401,14 @@ impl<R: Runtime> Future for SamSession<R> {
                         }
                     }
                 }
+                SamCommand::Quit => {
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        session_id = %self.session_id,
+                        "shutting down session",
+                    );
+                    return Poll::Ready(Arc::clone(&self.session_id));
+                }
                 command => tracing::warn!(
                     target: LOG_TARGET,
                     %command,

@@ -290,6 +290,9 @@ pub enum SamCommand {
     /// Generate destination.
     GenerateDestination,
 
+    /// Destroy the active session.
+    Quit,
+
     /// Dummy event
     #[default]
     Dummy,
@@ -309,6 +312,7 @@ impl fmt::Display for SamCommand {
             Self::Forward { session_id, .. } => write!(f, "SamCommand::Forward({session_id})"),
             Self::NamingLookup { name } => write!(f, "SamCommand::NamingLookup({name})"),
             Self::GenerateDestination => write!(f, "SamCommand::GenerateDestination"),
+            Self::Quit => write!(f, "SamCommand::Quit"),
             Self::Dummy => unreachable!(),
         }
     }
@@ -705,6 +709,7 @@ impl<'a, R: Runtime> TryFrom<ParsedCommand<'a, R>> for SamCommand {
                     Err(())
                 }
             },
+            ("QUIT" | "EXIT" | "STOP", _) => Ok(SamCommand::Quit),
             (command, subcommand) => {
                 tracing::warn!(
                     target: LOG_TARGET,
@@ -731,6 +736,9 @@ impl SamCommand {
                 tag("STREAM"),
                 tag("NAMING"),
                 tag("DEST"),
+                tag("QUIT"),
+                tag("EXIT"),
+                tag("STOP"),
             )),
             opt(char(' ')),
             opt(alt((
@@ -1832,5 +1840,23 @@ mod tests {
         let sk = SigningPrivateKey::from_bytes(signing_key).unwrap();
 
         assert_eq!(sk.public(), destination.verifying_key().clone());
+    }
+
+    #[test]
+    fn parse_quit_command() {
+        match SamCommand::parse::<MockRuntime>("QUIT") {
+            Some(SamCommand::Quit) => {}
+            _ => panic!("invalid command"),
+        }
+
+        match SamCommand::parse::<MockRuntime>("EXIT") {
+            Some(SamCommand::Quit) => {}
+            _ => panic!("invalid command"),
+        }
+
+        match SamCommand::parse::<MockRuntime>("STOP") {
+            Some(SamCommand::Quit) => {}
+            _ => panic!("invalid command"),
+        }
     }
 }
