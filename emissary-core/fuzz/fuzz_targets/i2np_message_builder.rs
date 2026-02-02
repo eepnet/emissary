@@ -95,8 +95,8 @@ fuzz_target!(|buffer: Vec<(GeneratedMessageType, u32, u64, Vec<u8>)>| {
         };
 
         if values.3.is_empty() {
-            assert!(standard.is_none());
-            assert!(short.is_none());
+            assert!(standard.is_err());
+            assert!(short.is_err());
         } else {
             let standard = standard.unwrap();
             let short = short.unwrap();
