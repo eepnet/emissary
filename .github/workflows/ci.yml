@@ -92,6 +92,10 @@ jobs:
     - name: Install cargo-fuzz
       run: cargo install cargo-fuzz
 
+    - name: cargo-fuzz build
+      working-directory: emissary-core
+      run: cargo +nightly fuzz build
+
     - name: cargo-fuzz primitives
       working-directory: emissary-core
       run: cargo +nightly fuzz run primitives -- -max_total_time=30
