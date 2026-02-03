@@ -80,6 +80,9 @@ pub struct ProtocolAddressInfo {
 
     /// SSU2 port.
     pub ssu2_port: Option<u16>,
+
+    /// Socket adddress of the I2CP listener.
+    pub i2cp: Option<SocketAddr>,
 }
 
 /// Router builder.
@@ -372,7 +375,7 @@ impl<R: Runtime> Router<R> {
                 profile_storage.clone(),
             )
             .await?;
-
+            address_info.i2cp = i2cp_server.local_address();
             R::spawn(i2cp_server);
         }
 

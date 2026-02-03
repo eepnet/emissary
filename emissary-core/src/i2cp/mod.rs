@@ -128,6 +128,11 @@ impl<R: Runtime> I2cpServer<R> {
 
         session_id
     }
+
+    /// Get address of the I2CP listener.
+    pub fn local_address(&self) -> Option<SocketAddr> {
+        self.listener.local_address()
+    }
 }
 
 impl<R: Runtime> Future for I2cpServer<R> {
