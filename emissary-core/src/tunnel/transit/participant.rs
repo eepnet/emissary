@@ -20,7 +20,7 @@ use crate::{
     events::EventHandle,
     i2np::{tunnel::data::EncryptedTunnelData, Message, MessageBuilder, MessageType},
     primitives::{RouterId, TunnelId},
-    runtime::Runtime,
+    runtime::{Instant, Runtime},
     tunnel::{
         noise::TunnelKeys,
         routing_table::RoutingTable,
@@ -58,9 +58,6 @@ pub struct Participant<R: Runtime> {
     /// Used inbound bandwidth.
     inbound_bandwidth: usize,
 
-    /// Used inbound bandwidth.
-    outbound_bandwidth: usize,
-
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
 
@@ -74,8 +71,17 @@ pub struct Participant<R: Runtime> {
     /// Next tunnel ID.
     next_tunnel_id: TunnelId,
 
+    /// Used inbound bandwidth.
+    outbound_bandwidth: usize,
+
     /// Routing table.
     routing_table: RoutingTable,
+
+    // When was the tunnel started.
+    started: Option<R::Instant>,
+
+    /// Total bandwidth.
+    total_bandwidth: usize,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -135,12 +141,14 @@ impl<R: Runtime> TransitTunnel<R> for Participant<R> {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             inbound_bandwidth: 0usize,
-            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
             next_router,
             next_tunnel_id,
+            outbound_bandwidth: 0usize,
             routing_table,
+            started: Some(R::now()),
+            total_bandwidth: 0usize,
             tunnel_id,
             tunnel_keys,
         }
@@ -163,6 +171,7 @@ impl<R: Runtime> Future for Participant<R> {
                 }
                 Some(message) => {
                     self.inbound_bandwidth += message.serialized_len_short();
+                    self.total_bandwidth += message.serialized_len_short();
 
                     match message.message_type {
                         MessageType::TunnelData => {
@@ -170,6 +179,7 @@ impl<R: Runtime> Future for Participant<R> {
                                 Some(message) => match self.handle_tunnel_data(&message) {
                                     Ok((router, message)) => {
                                         self.outbound_bandwidth += message.len();
+                                        self.total_bandwidth += message.len();
 
                                         if let Err(error) =
                                             self.routing_table.send_message(router, message)
@@ -202,6 +212,22 @@ impl<R: Runtime> Future for Participant<R> {
                             "unsupported message",
                         ),
                     }
+                }
+            }
+        }
+
+        // if the tunnel hasn't had any activity in the first two minutes, terminate it early
+        if let Some(ref started) = self.started {
+            if started.elapsed() > Duration::from_secs(2 * 60) {
+                if self.total_bandwidth == 0 {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        tunnel_id = %self.tunnel_id,
+                        "shutting down tunnel after 2 minutes of inactivity",
+                    );
+                    return Poll::Ready(self.tunnel_id);
+                } else {
+                    self.started = None;
                 }
             }
         }

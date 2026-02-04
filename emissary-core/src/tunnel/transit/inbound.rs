@@ -25,7 +25,7 @@ use crate::{
         Message, MessageBuilder, MessageType,
     },
     primitives::{RouterId, TunnelId},
-    runtime::Runtime,
+    runtime::{Instant, Runtime},
     tunnel::{
         noise::TunnelKeys,
         routing_table::RoutingTable,
@@ -66,9 +66,6 @@ pub struct InboundGateway<R: Runtime> {
     /// Used inbound bandwidth.
     inbound_bandwidth: usize,
 
-    /// Used outbound bandwidth.
-    outbound_bandwidth: usize,
-
     /// RX channel for receiving messages.
     message_rx: Receiver<Message>,
 
@@ -82,11 +79,20 @@ pub struct InboundGateway<R: Runtime> {
     /// Next tunnel ID.
     next_tunnel_id: TunnelId,
 
+    /// Used outbound bandwidth.
+    outbound_bandwidth: usize,
+
     /// Random bytes used for tunnel data padding.
     padding_bytes: [u8; 1028],
 
     /// Routing table.
     routing_table: RoutingTable,
+
+    // When was the tunnel started.
+    started: Option<R::Instant>,
+
+    /// Total bandwidth.
+    total_bandwidth: usize,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -188,13 +194,15 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             inbound_bandwidth: 0usize,
-            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
             next_router,
             next_tunnel_id,
+            outbound_bandwidth: 0usize,
             padding_bytes,
             routing_table,
+            started: Some(R::now()),
+            total_bandwidth: 0usize,
             tunnel_id,
             tunnel_keys,
         }
@@ -217,6 +225,7 @@ impl<R: Runtime> Future for InboundGateway<R> {
                 }
                 Some(message) => {
                     self.inbound_bandwidth += message.serialized_len_short();
+                    self.total_bandwidth += message.serialized_len_short();
 
                     let MessageType::TunnelGateway = message.message_type else {
                         tracing::warn!(
@@ -253,23 +262,39 @@ impl<R: Runtime> Future for InboundGateway<R> {
                         }
                     };
 
-                    self.outbound_bandwidth +=
-                        messages.into_iter().fold(0usize, |mut acc, message| {
-                            acc += message.len();
+                    let total_len = messages.into_iter().fold(0usize, |mut acc, message| {
+                        acc += message.len();
 
-                            if let Err(error) =
-                                self.routing_table.send_message(router.clone(), message)
-                            {
-                                tracing::error!(
-                                    target: LOG_TARGET,
-                                    tunnel_id = %self.tunnel_id,
-                                    ?error,
-                                    "failed to send message",
-                                )
-                            }
+                        if let Err(error) = self.routing_table.send_message(router.clone(), message)
+                        {
+                            tracing::error!(
+                                target: LOG_TARGET,
+                                tunnel_id = %self.tunnel_id,
+                                ?error,
+                                "failed to send message",
+                            )
+                        }
 
-                            acc
-                        });
+                        acc
+                    });
+
+                    self.outbound_bandwidth += total_len;
+                    self.total_bandwidth += total_len;
+                }
+            }
+        }
+
+        if let Some(ref started) = self.started {
+            if started.elapsed() > Duration::from_secs(2 * 60) {
+                if self.total_bandwidth == 0 {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        tunnel_id = %self.tunnel_id,
+                        "shutting down tunnel after 2 minutes of inactivity",
+                    );
+                    return Poll::Ready(self.tunnel_id);
+                } else {
+                    self.started = None;
                 }
             }
         }
