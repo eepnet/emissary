@@ -1,6 +1,6 @@
 [package]
 name = "emissary-util"
-version = "0.3.0"
+version = "0.3.1"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -11,7 +11,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-emissary-core = { path = "../emissary-core", version = "0.3.0", default-features = false, features = ["std"] }
+emissary-core = { path = "../emissary-core", version = "0.3.1", default-features = false, features = ["std"] }
 flate2 = { workspace = true }
 home = "=0.5.11"
 igd-next = { version = "0.16.1", default-features = false, features = ["aio_tokio"] }

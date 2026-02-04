@@ -507,7 +507,7 @@ dependencies = [
 
 [[package]]
 name = "emissary-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "aes",
  "bytes",
@@ -554,7 +554,7 @@ dependencies = [
 
 [[package]]
 name = "emissary-util"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "ed25519-dalek",
