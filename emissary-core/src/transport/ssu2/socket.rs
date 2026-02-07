@@ -294,7 +294,10 @@ impl<R: Runtime> Ssu2Socket<R> {
 
                     return Err(Ssu2Error::Channel(ChannelError::Closed));
                 }
-                Err(_) => return Err(Ssu2Error::Channel(ChannelError::Full)),
+                Err(_) => {
+                    self.router_ctx.metrics_handle().counter(NUM_DROPS_CHANNEL_FULL).increment(1);
+                    return Err(Ssu2Error::Channel(ChannelError::Full));
+                }
             }
         }
 

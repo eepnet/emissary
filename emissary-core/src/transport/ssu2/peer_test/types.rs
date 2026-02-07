@@ -16,9 +16,13 @@
 // FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-use crate::primitives::{RouterId, RouterInfo};
+use crate::{
+    primitives::{RouterId, RouterInfo},
+    runtime::Runtime,
+    transport::ssu2::duplicate::DuplicateFilter,
+};
 
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use hashbrown::HashMap;
 use thingbuf::mpsc::{channel, Receiver, Sender};
 
@@ -32,15 +36,18 @@ use core::{
 /// Peer test handle.
 ///
 /// Given to active sessions, allowing them to interact with `PeerTestManager`.
-pub struct PeerTestHandle {
+pub struct PeerTestHandle<R: Runtime> {
     /// Message + signature for each peer test request received from Alice.
     alice_requests: HashMap<u32, (Vec<u8>, Vec<u8>)>,
+
+    /// RX channel for receiving peer test commands from `PeerTestManager`.
+    cmd_rx: Receiver<PeerTestCommand>,
 
     /// TX channel given to `PeerTestManager`.
     cmd_tx: Sender<PeerTestCommand>,
 
-    /// RX channel for receiving peer test commands from `PeerTestManager`.
-    cmd_rx: Receiver<PeerTestCommand>,
+    /// Duplicate filter for inbound peer test messages.
+    duplicate_filter: DuplicateFilter<R>,
 
     /// TX channel for sending events to `PeerTestManager`.
     event_tx: Sender<PeerTestEvent, PeerTestEventRecycle>,
@@ -49,15 +56,16 @@ pub struct PeerTestHandle {
     pending_tests: HashMap<u32, Vec<u8>>,
 }
 
-impl PeerTestHandle {
+impl<R: Runtime> PeerTestHandle<R> {
     /// Create new `PeerTestHandle` from `event_tx`.
     pub fn new(event_tx: Sender<PeerTestEvent, PeerTestEventRecycle>) -> Self {
         let (cmd_tx, cmd_rx) = channel(32);
 
         Self {
             alice_requests: HashMap::new(),
-            cmd_tx,
             cmd_rx,
+            cmd_tx,
+            duplicate_filter: DuplicateFilter::new(),
             event_tx,
             pending_tests: HashMap::new(),
         }
@@ -155,11 +163,17 @@ impl PeerTestHandle {
     }
 }
 
-impl Stream for PeerTestHandle {
+impl<R: Runtime> Stream for PeerTestHandle<R> {
     type Item = PeerTestCommand;
 
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.cmd_rx.poll_recv(cx)
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if let Poll::Ready(event) = self.cmd_rx.poll_recv(cx) {
+            return Poll::Ready(event);
+        }
+
+        let _ = self.duplicate_filter.poll_unpin(cx);
+
+        Poll::Pending
     }
 }
 

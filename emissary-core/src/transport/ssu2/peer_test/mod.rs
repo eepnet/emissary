@@ -261,7 +261,7 @@ impl<R: Runtime> PeerTestManager<R> {
     }
 
     /// Get handle to `PeerTestManager`.
-    pub fn handle(&self) -> PeerTestHandle {
+    pub fn handle(&self) -> PeerTestHandle<R> {
         PeerTestHandle::new(self.tx.clone())
     }
 

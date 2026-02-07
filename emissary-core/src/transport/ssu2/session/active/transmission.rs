@@ -19,18 +19,26 @@
 use crate::{
     i2np::{Message, MessageType},
     primitives::RouterId,
-    runtime::{Histogram, Instant, MetricsHandle, Runtime},
-    transport::ssu2::{message::data::MessageKind, metrics::*},
+    runtime::{Counter, Histogram, Instant, MetricsHandle, Runtime},
+    transport::ssu2::{
+        message::data::{DataMessageBuilder, MessageKind, PeerTestBlock},
+        metrics::*,
+        session::{
+            active::{ack::AckInfo, RemoteAckManager},
+            KeyContext,
+        },
+    },
 };
 
 use alloc::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
-    vec,
     vec::Vec,
 };
+use bytes::BytesMut;
 use core::{
     cmp::{max, min},
+    fmt,
     ops::Deref,
     sync::atomic::{AtomicU32, Ordering},
     time::Duration,
@@ -43,6 +51,16 @@ const LOG_TARGET: &str = "emissary::ssu2::active::transmission";
 ///
 /// Short header + block type + Poly1305 authentication tag.
 const SSU2_OVERHEAD: usize = 16usize + 1usize + 16usize;
+
+/// Overhead of `RouterInfo` block.
+///
+/// Block type + size + flag + frag.
+const RI_BLOCK_OVERHEAD: usize = 1usize + 2usize + 1usize + 1usize;
+
+/// Immediate ACK interval.
+///
+/// How often should an immediate ACK be bundled in a message.
+const IMMEDIATE_ACK_INTERVAL: u32 = 10u32;
 
 /// Resend termination threshold.
 ///
@@ -182,18 +200,33 @@ enum SegmentKind {
         /// Message ID.
         message_id: u32,
     },
+
+    /// Peer test block.
+    PeerTest {
+        /// Peer test message block.
+        peer_test_block: PeerTestBlock,
+
+        /// Serialized `RouterInfo`, if sent.
+        router_info: Option<Vec<u8>>,
+    },
+
+    /// `RouterInfo` block.
+    RouterInfo {
+        /// Serialized `RouterInfo`.
+        router_info: Vec<u8>,
+    },
 }
 
 impl<'a> From<&'a SegmentKind> for MessageKind<'a> {
     fn from(value: &'a SegmentKind) -> Self {
         match value {
-            SegmentKind::UnFragmented { message } => MessageKind::UnFragmented { message },
+            SegmentKind::UnFragmented { message } => Self::UnFragmented { message },
             SegmentKind::FirstFragment {
                 fragment,
                 expiration,
                 message_type,
                 message_id,
-            } => MessageKind::FirstFragment {
+            } => Self::FirstFragment {
                 fragment,
                 expiration: *expiration,
                 message_type: *message_type,
@@ -204,12 +237,20 @@ impl<'a> From<&'a SegmentKind> for MessageKind<'a> {
                 fragment_num,
                 last,
                 message_id,
-            } => MessageKind::FollowOnFragment {
+            } => Self::FollowOnFragment {
                 fragment,
                 fragment_num: *fragment_num,
                 last: *last,
                 message_id: *message_id,
             },
+            SegmentKind::PeerTest {
+                peer_test_block,
+                router_info,
+            } => Self::PeerTest {
+                peer_test_block,
+                router_info: router_info.as_deref(),
+            },
+            SegmentKind::RouterInfo { router_info } => Self::RouterInfo { router_info },
         }
     }
 }
@@ -230,6 +271,17 @@ struct Segment<R: Runtime> {
 
 /// Transmission manager.
 pub struct TransmissionManager<R: Runtime> {
+    /// Destination connection ID.
+    dst_id: u64,
+
+    /// Intro key of remote router.
+    ///
+    /// Used for encrypting the first part of the header.
+    intro_key: [u8; 32],
+
+    /// Number of the packet that contained last immediate ACK.
+    last_immediate_ack: u32,
+
     /// Metrics handle.
     metrics: R::MetricsHandle,
 
@@ -238,6 +290,9 @@ pub struct TransmissionManager<R: Runtime> {
 
     /// Next packet number.
     pkt_num: Arc<AtomicU32>,
+
+    /// Remote ACK manager.
+    remote_ack_manager: RemoteAckManager,
 
     /// ID of the remote router.
     router_id: RouterId,
@@ -248,26 +303,90 @@ pub struct TransmissionManager<R: Runtime> {
     /// In-flight segments.
     segments: BTreeMap<u32, Segment<R>>,
 
+    /// Key context for outbound packets.
+    send_key_ctx: KeyContext,
+
     /// Window size.
     window_size: usize,
 }
 
+/// Transmission message.
+pub enum TransmissionMessage {
+    /// I2NP message.
+    Message(Message),
+
+    /// Peer test message.
+    PeerTest(PeerTestBlock),
+
+    /// Peer test message with `RouterInfo`.
+    ///
+    /// May be split into two datagrams.
+    PeerTestWithRouterInfo((PeerTestBlock, Vec<u8>)),
+}
+
+impl From<Message> for TransmissionMessage {
+    fn from(value: Message) -> Self {
+        Self::Message(value)
+    }
+}
+
+impl From<PeerTestBlock> for TransmissionMessage {
+    fn from(value: PeerTestBlock) -> Self {
+        Self::PeerTest(value)
+    }
+}
+
+impl From<(PeerTestBlock, Vec<u8>)> for TransmissionMessage {
+    fn from(value: (PeerTestBlock, Vec<u8>)) -> Self {
+        Self::PeerTestWithRouterInfo(value)
+    }
+}
+
+impl fmt::Debug for TransmissionMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Message(message) => f
+                .debug_struct("TransmissionMessage::Message")
+                .field("message", &message)
+                .finish(),
+            Self::PeerTest(block) =>
+                f.debug_struct("TransmissionMessage::PeerTest").field("block", &block).finish(),
+            Self::PeerTestWithRouterInfo((block, _)) => f
+                .debug_struct("TransmissionMessage::PeerTestWithRouterInfo")
+                .field("block", &block)
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 impl<R: Runtime> TransmissionManager<R> {
     /// Create new [`TransmissionManager`].
-    pub fn new(router_id: RouterId, pkt_num: Arc<AtomicU32>, metrics: R::MetricsHandle) -> Self {
+    pub fn new(
+        dst_id: u64,
+        router_id: RouterId,
+        intro_key: [u8; 32],
+        send_key_ctx: KeyContext,
+        pkt_num: Arc<AtomicU32>,
+        metrics: R::MetricsHandle,
+    ) -> Self {
         Self {
+            dst_id,
+            intro_key,
+            last_immediate_ack: 0u32,
             metrics,
-            pkt_num,
-            router_id,
             pending: VecDeque::new(),
+            pkt_num,
+            remote_ack_manager: RemoteAckManager::new(),
+            router_id,
             rto: RetransmissionTimeout::Unsampled,
             segments: BTreeMap::new(),
+            send_key_ctx,
             window_size: MIN_WINDOW_SIZE,
         }
     }
 
     /// Get next packet number.
-    pub fn next_pkt_num(&mut self) -> u32 {
+    pub fn next_pkt_num(&self) -> u32 {
         self.pkt_num.fetch_add(1u32, Ordering::Relaxed)
     }
 
@@ -275,7 +394,7 @@ impl<R: Runtime> TransmissionManager<R> {
     ///
     /// Compares the current window size to the number of in-flight packets.
     pub fn has_capacity(&self) -> bool {
-        self.segments.len() < self.window_size
+        self.segments.len() + self.pending.len() < self.window_size
     }
 
     /// Get reference to measured Round-trip time (RTT).
@@ -291,102 +410,84 @@ impl<R: Runtime> TransmissionManager<R> {
         size + SSU2_OVERHEAD <= 1200
     }
 
-    /// Split `message` into segments.
-    ///
-    /// The created segments are stored into [`TransmissionManager`] which keeps track of which of
-    /// the segments have been ACKed and which haven't.
-    ///
-    /// Returns an iterator of (packet number, `MessageKind`) tuples which must be made into `Data`
-    /// packets and sent to remote router.
-    ///
-    /// If `message` fits inside an MTU, the iterator yields one `MessageKind::Unfragmented` and if
-    /// `message` doesn't find inside an MTU, the iterator yields one `MessageKind::FirstFragment`
-    /// and one or more `MessageKind::FollowOnFragment`s.
-    pub fn segment(&mut self, message: Message) -> Option<Vec<(u32, MessageKind<'_>)>> {
-        if self.fits_in_datagram(message.serialized_len_short()) {
-            self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
+    /// Register packet number for a packet received from remote router.
+    pub fn register_remote_pkt(&mut self, pkt_num: u32) {
+        self.remote_ack_manager.register_pkt(pkt_num);
+    }
 
-            // no window size left to send more packets
-            if !self.has_capacity() {
-                self.pending.push_back(SegmentKind::UnFragmented {
-                    message: message.serialize_short(),
-                });
+    /// Schedule `messsage` for outbound delivery.
+    ///
+    /// The message is split into one or more segments, depending on `message`'s size.
+    ///
+    /// The segment(s) are only marked as pending and [`TransmissionManager::drain()`]
+    /// must be called to drain the pending queue and mark the message as "in-flight".
+    pub fn schedule(&mut self, message: impl Into<TransmissionMessage>) {
+        let message = message.into();
 
-                return None;
-            }
-            let pkt_num = self.next_pkt_num();
+        match message {
+            TransmissionMessage::Message(message) => {
+                if self.fits_in_datagram(message.serialized_len_short()) {
+                    self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(1f64);
 
-            self.segments.insert(
-                pkt_num,
-                Segment {
-                    num_sent: 1usize,
-                    sent: R::now(),
-                    segment: SegmentKind::UnFragmented {
+                    return self.pending.push_back(SegmentKind::UnFragmented {
                         message: message.serialize_short(),
-                    },
-                },
-            );
-
-            // segment must exist since it was just inserted into `segments`
-            return Some(vec![(
-                pkt_num,
-                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
-            )]);
-        }
-
-        let fragments = message.payload.chunks(1200).collect::<Vec<_>>();
-        let num_fragments = fragments.len();
-        self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(num_fragments as f64);
-
-        let fragments = fragments
-            .into_iter()
-            .enumerate()
-            .filter_map(|(fragment_num, fragment)| {
-                let pkt_num = self.next_pkt_num();
-                let segment = match fragment_num {
-                    0 => SegmentKind::FirstFragment {
-                        fragment: fragment.to_vec(),
-                        expiration: message.expiration.as_secs() as u32,
-                        message_type: message.message_type,
-                        message_id: message.message_id,
-                    },
-                    _ => SegmentKind::FollowOnFragment {
-                        fragment: fragment.to_vec(),
-                        fragment_num: fragment_num as u8,
-                        last: fragment_num == num_fragments - 1,
-                        message_id: message.message_id,
-                    },
-                };
-
-                if !self.has_capacity() {
-                    self.pending.push_back(segment);
-                    return None;
+                    });
                 }
 
-                self.segments.insert(
-                    pkt_num,
-                    Segment {
-                        num_sent: 1usize,
-                        sent: R::now(),
-                        segment,
-                    },
-                );
+                let fragments = message.payload.chunks(1200).collect::<Vec<_>>();
+                let num_fragments = fragments.len();
+                self.metrics.histogram(OUTBOUND_FRAGMENT_COUNT).record(num_fragments as f64);
 
-                Some(pkt_num)
-            })
-            .collect::<Vec<_>>();
+                for (fragment_num, fragment) in fragments.into_iter().enumerate() {
+                    let segment = match fragment_num {
+                        0 => SegmentKind::FirstFragment {
+                            fragment: fragment.to_vec(),
+                            expiration: message.expiration.as_secs() as u32,
+                            message_type: message.message_type,
+                            message_id: message.message_id,
+                        },
+                        _ => SegmentKind::FollowOnFragment {
+                            fragment: fragment.to_vec(),
+                            fragment_num: fragment_num as u8,
+                            last: fragment_num == num_fragments - 1,
+                            message_id: message.message_id,
+                        },
+                    };
 
-        // all segments must exist since they were inserted into `segments` above
-        let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
+                    self.pending.push_back(segment);
+                }
+            }
+            TransmissionMessage::PeerTest(peer_test_block) => {
+                debug_assert!(self.fits_in_datagram(peer_test_block.serialized_len()));
 
-        for pkt_num in fragments {
-            packets.push((
-                pkt_num,
-                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
-            ));
+                self.pending.push_back(SegmentKind::PeerTest {
+                    peer_test_block,
+                    router_info: None,
+                });
+            }
+            TransmissionMessage::PeerTestWithRouterInfo((peer_test_block, router_info)) => {
+                if self.fits_in_datagram(
+                    peer_test_block.serialized_len() + router_info.len() + RI_BLOCK_OVERHEAD,
+                ) {
+                    self.pending.push_back(SegmentKind::PeerTest {
+                        peer_test_block,
+                        router_info: Some(router_info),
+                    });
+                } else {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        "fragmenting peer test with router info into two packets",
+                    );
+
+                    self.pending.push_back(SegmentKind::RouterInfo { router_info });
+                    self.pending.push_back(SegmentKind::PeerTest {
+                        peer_test_block,
+                        router_info: None,
+                    });
+                }
+            }
         }
-
-        Some(packets)
     }
 
     /// Register ACK.
@@ -460,12 +561,20 @@ impl<R: Runtime> TransmissionManager<R> {
         }
     }
 
-    /// Get pending packets, if any.
-    pub fn pending_packets(&mut self) -> Option<Vec<(u32, MessageKind<'_>)>> {
+    /// Drain pending, unsent packets.
+    ///
+    /// Packets which have not yet been sent (from oldest to newest) are selected from pending
+    /// packets (respecting window size). Each packet is generated a packet number and `Data`
+    /// message is created for each packet.
+    ///
+    /// Packets are internally stored into `segments` which tracks when the packet expires and must
+    /// be resent.
+    pub fn drain(&mut self) -> Option<Vec<BytesMut>> {
         if self.pending.is_empty() {
             return None;
         }
 
+        // TODO: optimization: insert into `segments` only after creating data packet
         let pkts_to_send = (0..min(
             self.pending.len(),
             self.window_size.saturating_sub(self.segments.len()),
@@ -487,23 +596,52 @@ impl<R: Runtime> TransmissionManager<R> {
             })
             .collect::<Vec<_>>();
 
-        let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack_manager.ack_info();
+        let num_pkts = pkts_to_send.len();
 
-        for pkt_num in pkts_to_send {
-            packets.push((
-                pkt_num,
-                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
-            ));
-        }
+        Some(
+            pkts_to_send
+                .into_iter()
+                .enumerate()
+                .map(|(i, pkt_num)| {
+                    // segment must exist since it was just inserted into `segments`
+                    let segment = (&self.segments.get(&pkt_num).expect("to exist").segment).into();
 
-        Some(packets)
+                    // include immediate ack flag if:
+                    //  1) this is the last in a burst of messages
+                    //  2) immediate ack has not been sent in the last `IMMEDIATE_ACK_INTERVAL`
+                    //     packets
+                    let last_in_burst = num_pkts > 1 && i == num_pkts - 1;
+                    let immediate_ack_threshold =
+                        pkt_num.saturating_sub(self.last_immediate_ack) > IMMEDIATE_ACK_INTERVAL;
+
+                    if last_in_burst || immediate_ack_threshold {
+                        self.last_immediate_ack = pkt_num;
+
+                        DataMessageBuilder::default().with_immediate_ack()
+                    } else {
+                        DataMessageBuilder::default()
+                    }
+                    .with_dst_id(self.dst_id)
+                    .with_key_context(self.intro_key, &self.send_key_ctx)
+                    .with_message(pkt_num, segment)
+                    .with_ack(highest_seen, num_acks, ranges.as_deref())
+                    .build::<R>()
+                })
+                .collect(),
+        )
     }
 
-    /// Go through packets and check if any of them need to be resent.
+    /// Drain expired packets.
     ///
-    /// Returns an iterator of `(packet number, `MessageKind`)` tuples.
-    pub fn resend(&mut self) -> Result<Option<Vec<(u32, MessageKind<'_>)>>, ()> {
-        // TODO: `take_while()` + reverse order
+    /// Packets which have not been acknowledged within `times_sent * rto` are selected (respecting
+    /// window size), new packet numbers are generated and new `Data` messages are built and
+    /// returned.
+    pub fn drain_expired(&mut self) -> Result<Option<Vec<BytesMut>>, ()> {
         let expired = self
             .segments
             .iter()
@@ -594,41 +732,92 @@ impl<R: Runtime> TransmissionManager<R> {
             "resend packets",
         );
 
-        // all segments must exist since they were inserted into `self.segments` above
-        let mut packets = Vec::<(u32, MessageKind<'_>)>::new();
+        self.metrics.counter(RETRANSMISSION_COUNT).increment(pkts_to_resend.len());
 
-        for pkt_num in pkts_to_resend {
-            packets.push((
-                pkt_num,
-                (&self.segments.get(&pkt_num).expect("to exist").segment).into(),
-            ));
-        }
+        // update last immediate ack, used to calculate how often it should be sent
+        //
+        // packet number must exist since it was checked above
+        self.last_immediate_ack = *pkts_to_resend.last().expect("to exist");
 
-        Ok(Some(packets))
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack_manager.ack_info();
+
+        Ok(Some(
+            pkts_to_resend
+                .into_iter()
+                .map(|pkt_num| {
+                    // segment must exist since it was just inserted into `segments`
+                    let segment = (&self.segments.get(&pkt_num).expect("to exist").segment).into();
+
+                    DataMessageBuilder::default()
+                        .with_dst_id(self.dst_id)
+                        .with_key_context(self.intro_key, &self.send_key_ctx)
+                        .with_message(pkt_num, segment)
+                        .with_immediate_ack()
+                        .with_ack(highest_seen, num_acks, ranges.as_deref())
+                        .build::<R>()
+                })
+                .collect(),
+        ))
+    }
+
+    // Build explicit ACK.
+    pub fn build_explicit_ack(&mut self) -> BytesMut {
+        let AckInfo {
+            highest_seen,
+            num_acks,
+            ranges,
+        } = self.remote_ack_manager.ack_info();
+
+        tracing::trace!(
+            target: LOG_TARGET,
+            router_id = %self.router_id,
+            ?highest_seen,
+            ?num_acks,
+            ?ranges,
+            "send explicit ack",
+        );
+
+        DataMessageBuilder::default()
+            .with_dst_id(self.dst_id)
+            .with_key_context(self.intro_key, &self.send_key_ctx)
+            .with_pkt_num(self.next_pkt_num())
+            .with_ack(highest_seen, num_acks, ranges.as_deref())
+            .build::<R>()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::mock::MockRuntime;
+    use crate::{
+        runtime::mock::MockRuntime,
+        transport::ssu2::message::{HeaderKind, HeaderReader},
+    };
 
     #[tokio::test]
     async fn ack_one_packet() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![1, 2, 3],
-                ..Default::default()
-            })
-            .unwrap();
-
-        assert_eq!(pkts.len(), 1);
-        assert_eq!(mgr.segments.len(), 1);
+        mgr.schedule(Message {
+            payload: vec![1, 2, 3],
+            ..Default::default()
+        });
+        assert_eq!(mgr.pending.len(), 1);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 1);
 
         mgr.register_ack(1u32, 0u8, &[]);
 
@@ -638,18 +827,24 @@ mod tests {
     #[tokio::test]
     async fn ack_multiple_packets_last_packet_missing() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 3 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 3 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 4);
+        assert_eq!(mgr.pending.len(), 4);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 4);
         assert_eq!(mgr.segments.len(), 4);
 
         mgr.register_ack(4u32, 2u8, &[]);
@@ -661,19 +856,23 @@ mod tests {
     #[tokio::test]
     async fn ack_multiple_packets_first_packet_missing() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 3 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 3 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 4);
-        assert_eq!(mgr.segments.len(), 4);
+        assert_eq!(mgr.pending.len(), 4);
+        assert_eq!(mgr.drain().unwrap().len(), 4);
 
         mgr.register_ack(3u32, 2u8, &[]);
 
@@ -684,18 +883,24 @@ mod tests {
     #[tokio::test]
     async fn ack_multiple_packets_middle_packets_nacked() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 3 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 3 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 4);
+        assert_eq!(mgr.pending.len(), 4);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 4);
         assert_eq!(mgr.segments.len(), 4);
 
         mgr.register_ack(4u32, 0u8, &[(2, 1)]);
@@ -708,18 +913,24 @@ mod tests {
     #[tokio::test]
     async fn multiple_ranges() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 10 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 10 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 11);
+        assert_eq!(mgr.pending.len(), 11);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 11);
         assert_eq!(mgr.segments.len(), 11);
 
         mgr.register_ack(11u32, 2u8, &[(3, 2), (1, 2)]);
@@ -732,18 +943,24 @@ mod tests {
     #[tokio::test]
     async fn alternating() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[(1, 1), (1, 1), (1, 1), (1, 1), (1, 0)]);
@@ -759,18 +976,24 @@ mod tests {
     #[tokio::test]
     async fn no_ranges() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[]);
@@ -782,18 +1005,24 @@ mod tests {
     #[tokio::test]
     async fn highest_pkts_not_received() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(4u32, 0u8, &[(1, 2)]);
@@ -806,18 +1035,24 @@ mod tests {
     #[tokio::test]
     async fn invalid_nack_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[(2, 0), (2, 0), (2, 0), (2, 0), (1, 0)]);
@@ -830,18 +1065,24 @@ mod tests {
     #[tokio::test]
     async fn invalid_ack_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[(0, 2), (0, 2), (0, 2), (0, 2), (0, 1)]);
@@ -852,18 +1093,24 @@ mod tests {
     #[tokio::test]
     async fn num_acks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 128u8, &[]);
@@ -874,18 +1121,24 @@ mod tests {
     #[tokio::test]
     async fn nacks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[(128u8, 0)]);
@@ -897,18 +1150,24 @@ mod tests {
     #[tokio::test]
     async fn acks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(10u32, 0u8, &[(0, 128u8), (128u8, 0u8)]);
@@ -919,18 +1178,24 @@ mod tests {
     #[tokio::test]
     async fn highest_seen_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(1337u32, 10u8, &[]);
@@ -941,18 +1206,24 @@ mod tests {
     #[tokio::test]
     async fn num_ack_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
 
         mgr.register_ack(15u32, 255, &[]);
@@ -963,49 +1234,69 @@ mod tests {
     #[tokio::test]
     async fn nothing_to_resend() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
     }
 
     #[tokio::test]
     async fn packets_resent() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
 
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert!(pkt_nums
             .into_iter()
@@ -1015,30 +1306,44 @@ mod tests {
     #[tokio::test]
     async fn some_packets_resent() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 8],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 8],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 8);
+        assert_eq!(mgr.pending.len(), 8);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 8);
         assert_eq!(mgr.segments.len(), 8);
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
 
         tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert_eq!(pkt_nums.len(), 8);
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
@@ -1048,11 +1353,19 @@ mod tests {
         tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert_eq!(pkt_nums.len(), 6);
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
@@ -1061,13 +1374,22 @@ mod tests {
         tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 4));
+
         mgr.register_ack(26, 4, &[]);
         assert!(mgr.segments.is_empty());
     }
@@ -1075,18 +1397,24 @@ mod tests {
     #[tokio::test]
     async fn window_size_increases() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 9 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 9 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), 10);
+        assert_eq!(mgr.pending.len(), 10);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 10);
         assert_eq!(mgr.segments.len(), 10);
         assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
 
@@ -1104,21 +1432,26 @@ mod tests {
     #[tokio::test]
     async fn window_size_decreases() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 15 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 15 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.pending.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
-        assert!(mgr.pending.is_empty());
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
 
         mgr.register_ack(8, 7, &[]);
         assert_eq!(mgr.segments.len(), 8);
@@ -1129,11 +1462,19 @@ mod tests {
 
         // verify that all of the packets are sent the second time
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 2));
         assert_eq!(pkt_nums.len(), 8);
@@ -1145,11 +1486,19 @@ mod tests {
         tokio::time::sleep(2 * INITIAL_RTO + Duration::from_millis(10)).await;
 
         let pkt_nums = mgr
-            .resend()
+            .drain_expired()
             .unwrap()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
         assert!(pkt_nums.iter().all(|pkt_num| mgr.segments.get(&pkt_num).unwrap().num_sent == 3));
         assert_eq!(pkt_nums.len(), 8);
@@ -1157,23 +1506,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn excess_packets_marked_as_pending() {
+    async fn excess_packets_stay_in_pending() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 31 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 31 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.pending.len(), 2 * MIN_WINDOW_SIZE);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.pending.len(), MIN_WINDOW_SIZE);
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
         assert!(!mgr.has_capacity());
 
         mgr.register_ack(16, 15, &[]);
@@ -1183,10 +1538,18 @@ mod tests {
 
         // get pending packets after acking previous packets
         let pkt_nums = mgr
-            .pending_packets()
+            .drain()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(pkt_nums.len(), 16);
@@ -1198,34 +1561,51 @@ mod tests {
     #[tokio::test]
     async fn pending_packets_partially_sent() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let pkts = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 39 + 512],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 39 + 512],
+            ..Default::default()
+        });
 
-        assert_eq!(pkts.len(), MIN_WINDOW_SIZE);
+        assert_eq!(mgr.pending.len(), 40);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.segments.len(), MIN_WINDOW_SIZE);
         assert_eq!(mgr.pending.len(), 40 - MIN_WINDOW_SIZE);
-        assert!(mgr.resend().unwrap().is_none());
+        assert!(mgr.drain_expired().unwrap().is_none());
         assert!(!mgr.has_capacity());
 
         mgr.register_ack(16, 5, &[]);
         assert!(!mgr.segments.is_empty());
         assert_eq!(mgr.window_size, MIN_WINDOW_SIZE + 6);
-        assert!(mgr.has_capacity());
+
+        // no capacity since there are still pending packets
+        assert!(!mgr.pending.is_empty());
+        assert!(!mgr.has_capacity());
 
         // get pending packets after acking previous packets
         let pkt_nums = mgr
-            .pending_packets()
+            .drain()
             .unwrap()
             .into_iter()
-            .map(|(pkt_num, _)| pkt_num)
+            .map(|mut pkt| {
+                let mut reader = HeaderReader::new(mgr.intro_key, &mut pkt).unwrap();
+                let _dst_id = reader.dst_id();
+
+                match reader.parse(mgr.send_key_ctx.k_header_2).unwrap() {
+                    HeaderKind::Data { pkt_num, .. } => pkt_num,
+                    _ => panic!("invalid pkt"),
+                }
+            })
             .collect::<Vec<_>>();
 
         assert_eq!(pkt_nums.len(), 12);
@@ -1237,19 +1617,27 @@ mod tests {
     #[tokio::test]
     async fn packet_resent_too_many_times() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
             RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
             Arc::new(AtomicU32::new(1u32)),
             MockRuntime::register_metrics(Vec::new(), None),
         );
-        let _ = mgr
-            .segment(Message {
-                payload: vec![0u8; 1200 * 5],
-                ..Default::default()
-            })
-            .unwrap();
+        mgr.schedule(Message {
+            payload: vec![0u8; 1200 * 5],
+            ..Default::default()
+        });
+        assert_eq!(mgr.pending.len(), 5);
+        assert_eq!(mgr.segments.len(), 0);
+        assert_eq!(mgr.drain().unwrap().len(), 5);
+        assert_eq!(mgr.segments.len(), 5);
 
         let future = async move {
-            while let Ok(_) = mgr.resend() {
+            while let Ok(_) = mgr.drain_expired() {
                 tokio::time::sleep(INITIAL_RTO + Duration::from_millis(10)).await;
             }
         };
@@ -1258,5 +1646,46 @@ mod tests {
             Err(_) => panic!("timeout"),
             Ok(_) => {}
         }
+    }
+
+    #[tokio::test]
+    async fn peer_test_with_router_info() {
+        let mut mgr = TransmissionManager::<MockRuntime>::new(
+            1337u64,
+            RouterId::random(),
+            [0xaa; 32],
+            KeyContext {
+                k_data: [0xbb; 32],
+                k_header_2: [0xcc; 32],
+            },
+            Arc::new(AtomicU32::new(1u32)),
+            MockRuntime::register_metrics(Vec::new(), None),
+        );
+
+        let block = PeerTestBlock::AliceRequest {
+            message: vec![0xaa; 20],
+            signature: vec![0xbb; 64],
+        };
+        let max_size = 1200 - SSU2_OVERHEAD - RI_BLOCK_OVERHEAD - block.serialized_len();
+
+        // maximum size for router info is 1200 - ssu2 overhead - peer test block len
+        mgr.schedule((block, vec![0xaa; max_size]));
+
+        // verify that peer test block and router info are sent in a single packet
+        assert_eq!(mgr.pending.len(), 1);
+        assert_eq!(mgr.drain().unwrap().len(), 1);
+
+        let block = PeerTestBlock::AliceRequest {
+            message: vec![0xaa; 20],
+            signature: vec![0xbb; 64],
+        };
+        let max_size = 1200 - SSU2_OVERHEAD - RI_BLOCK_OVERHEAD - block.serialized_len();
+
+        // router info is over the limit
+        mgr.schedule((block, vec![0xaa; max_size + 1]));
+
+        // verify that peer test block and router info are sent in a single packet
+        assert_eq!(mgr.pending.len(), 2);
+        assert_eq!(mgr.drain().unwrap().len(), 2);
     }
 }

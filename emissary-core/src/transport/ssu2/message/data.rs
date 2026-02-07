@@ -30,7 +30,7 @@ use crate::{
 use bytes::{BufMut, BytesMut};
 use rand_core::RngCore;
 
-use alloc::{vec, vec::Vec};
+use alloc::{format, vec, vec::Vec};
 
 /// Minimum size for an ACK block.
 const ACK_BLOCK_MIN_SIZE: usize = 8usize;
@@ -80,6 +80,21 @@ pub enum MessageKind<'a> {
 
         /// Message ID.
         message_id: u32,
+    },
+
+    /// Peer test block.
+    PeerTest {
+        /// Peer test block.
+        peer_test_block: &'a PeerTestBlock,
+
+        /// Serialized `RouterInfo`.
+        router_info: Option<&'a [u8]>,
+    },
+
+    /// Router info block.
+    RouterInfo {
+        /// Serialized `RouterInfo`.
+        router_info: &'a [u8],
     },
 }
 
@@ -147,6 +162,36 @@ pub enum PeerTestBlock {
     },
 }
 
+impl fmt::Debug for PeerTestBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AliceRequest { .. } =>
+                f.debug_struct("PeerTestBlock::AliceRequest").finish_non_exhaustive(),
+            Self::BobReject { reason, .. } => f
+                .debug_struct("PeerTestBlock::BobReject")
+                .field("reason", &reason)
+                .finish_non_exhaustive(),
+            Self::RequestCharlie { router_id, .. } => f
+                .debug_struct("PeerTestBlock::RequestCharlie")
+                .field("router_id", &format!("{router_id}"))
+                .finish_non_exhaustive(),
+            Self::CharlieResponse { rejection, .. } => f
+                .debug_struct("PeerTestBlock::CharlieResponse")
+                .field("rejection", &rejection)
+                .finish_non_exhaustive(),
+            Self::RelayCharlieResponse {
+                rejection,
+                router_id,
+                ..
+            } => f
+                .debug_struct("PeerTestBlock::RelayCharlieResponse")
+                .field("rejection", &rejection)
+                .field("router_id", &format!("{router_id}"))
+                .finish_non_exhaustive(),
+        }
+    }
+}
+
 #[allow(unused)]
 impl PeerTestBlock {
     /// Get serialized length of the block.
@@ -169,7 +214,7 @@ impl PeerTestBlock {
 #[derive(Default)]
 pub struct DataMessageBuilder<'a> {
     /// ACK information.
-    acks: Option<(u32, u8, Option<Vec<(u8, u8)>>)>,
+    acks: Option<(u32, u8, Option<&'a [(u8, u8)]>)>,
 
     // Destination connection ID.
     dst_id: Option<u64>,
@@ -183,16 +228,10 @@ pub struct DataMessageBuilder<'a> {
     /// Packet number and [`MessageKind`].
     message: Option<(u32, MessageKind<'a>)>,
 
-    /// Peer test block.
-    peer_test_block: Option<PeerTestBlock>,
-
     /// Packet number.
     ///
     /// Set only if `message` is `None`.
     pkt_num: Option<u32>,
-
-    /// Router info.
-    router_info: Option<&'a [u8]>,
 
     /// Termination reason.
     termination_reason: Option<TerminationReason>,
@@ -217,12 +256,6 @@ impl<'a> DataMessageBuilder<'a> {
         self
     }
 
-    /// Specify `PeerTestBlock`.
-    pub fn with_peer_test(mut self, block: PeerTestBlock) -> Self {
-        self.peer_test_block = Some(block);
-        self
-    }
-
     /// Specify packet number.
     ///
     /// Set only if `DataMessageBuilder::with_message()` is not used.
@@ -237,18 +270,12 @@ impl<'a> DataMessageBuilder<'a> {
         self
     }
 
-    /// Specify router info.
-    pub fn with_router_info(mut self, router_info: &'a [u8]) -> Self {
-        self.router_info = Some(router_info);
-        self
-    }
-
     /// Specify ACK information.
     pub fn with_ack(
         mut self,
         ack_through: u32,
         num_acks: u8,
-        ranges: Option<Vec<(u8, u8)>>,
+        ranges: Option<&'a [(u8, u8)]>,
     ) -> Self {
         self.acks = Some((ack_through, num_acks, ranges));
         self
@@ -327,6 +354,90 @@ impl<'a> DataMessageBuilder<'a> {
                     out.put_u32(message_id);
                     out.put_slice(fragment);
                 }
+                Some(MessageKind::PeerTest {
+                    peer_test_block,
+                    router_info,
+                }) => {
+                    if let Some(router_info) = router_info {
+                        out.put_u8(BlockType::RouterInfo.as_u8());
+                        out.put_u16((2 + router_info.len()) as u16);
+                        out.put_u8(0u8);
+                        out.put_u8(1u8);
+                        out.put_slice(router_info);
+                    }
+
+                    match peer_test_block {
+                        PeerTestBlock::AliceRequest { message, signature } => {
+                            out.put_u8(BlockType::PeerTest.as_u8());
+                            out.put_u16((3 + message.len() + signature.len()) as u16);
+                            out.put_u8(1); // message 1 (alice -> bob)
+                            out.put_u8(0); // code
+                            out.put_u8(0u8); // flag
+                            out.put_slice(message);
+                            out.put_slice(signature);
+                        }
+                        PeerTestBlock::BobReject {
+                            reason,
+                            message,
+                            signature,
+                        } => {
+                            out.put_u8(BlockType::PeerTest.as_u8());
+                            out.put_u16(
+                                (3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16,
+                            );
+                            out.put_u8(4); // message 4 (bob -> alice)
+                            out.put_u8(reason.as_bob()); // code
+                            out.put_u8(0u8); // flag
+                            out.put_slice(&[0u8; 32]);
+                            out.put_slice(message);
+                            out.put_slice(signature);
+                        }
+                        PeerTestBlock::RequestCharlie {
+                            router_id,
+                            message,
+                            signature,
+                        } => {
+                            out.put_u8(BlockType::PeerTest.as_u8());
+                            out.put_u16(
+                                (3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16,
+                            );
+                            out.put_u8(2); // message 2 (bob -> charlie)
+                            out.put_u8(0); // accept
+                            out.put_u8(0u8); // flag
+                            out.put_slice(&router_id.to_vec());
+                            out.put_slice(message);
+                            out.put_slice(signature);
+                        }
+                        PeerTestBlock::CharlieResponse { message, rejection } => {
+                            out.put_u8(BlockType::PeerTest.as_u8());
+                            out.put_u16((3 + message.len()) as u16);
+                            out.put_u8(3); // message 3 (charlie -> bob)
+                            out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
+                            out.put_u8(0u8); // flag
+                            out.put_slice(message);
+                        }
+                        PeerTestBlock::RelayCharlieResponse {
+                            message,
+                            rejection,
+                            router_id,
+                        } => {
+                            out.put_u8(BlockType::PeerTest.as_u8());
+                            out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
+                            out.put_u8(4); // message 4 (bob -> alice)
+                            out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
+                            out.put_u8(0u8); // flag
+                            out.put_slice(&router_id.to_vec());
+                            out.put_slice(message);
+                        }
+                    }
+                }
+                Some(MessageKind::RouterInfo { router_info }) => {
+                    out.put_u8(BlockType::RouterInfo.as_u8());
+                    out.put_u16((2 + router_info.len()) as u16);
+                    out.put_u8(0u8);
+                    out.put_u8(1u8);
+                    out.put_slice(router_info);
+                }
             }
             bytes_left = bytes_left.saturating_sub(out.len());
 
@@ -347,83 +458,13 @@ impl<'a> DataMessageBuilder<'a> {
                         out.put_u8(num_acks);
 
                         ranges
-                            .into_iter()
+                            .iter()
                             .take(bytes_left.saturating_sub(ACK_BLOCK_MIN_SIZE) / 2)
                             .for_each(|(nack, ack)| {
-                                out.put_u8(nack);
-                                out.put_u8(ack);
+                                out.put_u8(*nack);
+                                out.put_u8(*ack);
                             });
                     },
-            }
-
-            if let Some(router_info) = self.router_info.take() {
-                out.put_u8(BlockType::RouterInfo.as_u8());
-                out.put_u16((2 + router_info.len()) as u16);
-                out.put_u8(0u8);
-                out.put_u8(1u8);
-                out.put_slice(router_info);
-            }
-
-            match self.peer_test_block.take() {
-                None => {}
-                Some(PeerTestBlock::AliceRequest { message, signature }) => {
-                    out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + signature.len()) as u16);
-                    out.put_u8(1); // message 1 (alice -> bob)
-                    out.put_u8(0); // code
-                    out.put_u8(0u8); // flag
-                    out.put_slice(&message);
-                    out.put_slice(&signature);
-                }
-                Some(PeerTestBlock::BobReject {
-                    reason,
-                    message,
-                    signature,
-                }) => {
-                    out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16);
-                    out.put_u8(4); // message 4 (bob -> alice)
-                    out.put_u8(reason.as_bob()); // code
-                    out.put_u8(0u8); // flag
-                    out.put_slice(&[0u8; 32]);
-                    out.put_slice(&message);
-                    out.put_slice(&signature);
-                }
-                Some(PeerTestBlock::RequestCharlie {
-                    router_id,
-                    message,
-                    signature,
-                }) => {
-                    out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + signature.len() + ROUTER_HASH_LEN) as u16);
-                    out.put_u8(2); // message 2 (bob -> charlie)
-                    out.put_u8(0); // accept
-                    out.put_u8(0u8); // flag
-                    out.put_slice(&router_id.to_vec());
-                    out.put_slice(&message);
-                    out.put_slice(&signature);
-                }
-                Some(PeerTestBlock::CharlieResponse { message, rejection }) => {
-                    out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len()) as u16);
-                    out.put_u8(3); // message 3 (charlie -> bob)
-                    out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
-                    out.put_u8(0u8); // flag
-                    out.put_slice(&message);
-                }
-                Some(PeerTestBlock::RelayCharlieResponse {
-                    message,
-                    rejection,
-                    router_id,
-                }) => {
-                    out.put_u8(BlockType::PeerTest.as_u8());
-                    out.put_u16((3 + message.len() + ROUTER_HASH_LEN) as u16);
-                    out.put_u8(4); // message 4 (bob -> alice)
-                    out.put_u8(rejection.map_or(0, |reason| reason.as_charlie()));
-                    out.put_u8(0u8); // flag
-                    out.put_slice(&router_id.to_vec());
-                    out.put_slice(&message);
-                }
             }
 
             if let Some(reason) = self.termination_reason {

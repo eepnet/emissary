@@ -136,23 +136,6 @@ impl RemoteAckManager {
         }
     }
 
-    /// Register non-ACK-eliciting packet.
-    pub fn register_non_ack_eliciting_pkt(&mut self, pkt_num: u32) {
-        self.register_pkt(pkt_num);
-    }
-
-    /// Register ACK.
-    ///
-    /// - `ack_through` marks the highest packet that was ACKed.
-    /// - `num_acks` marks the number of ACKs below `ack_through`
-    /// - `range` contains a `(# of NACK, # of ACK)` tuples
-    ///
-    /// [`RemoteAckManager`] checks if any of the received ACKs are related to sent ACK packets,
-    /// allowing it to stop tracking those packets.
-    pub fn register_ack(&mut self, _ack_through: u32, _num_acks: u8, _ranges: &[(u8, u8)]) {
-        // TODO: print something if this acked our ack
-    }
-
     /// Get ACK information added to an outbound message.
     pub fn ack_info(&mut self) -> AckInfo {
         // the first packet in `packets` is always `Packet::Received`

@@ -22,12 +22,10 @@ use crate::{
     crypto::SigningPublicKey,
     error::PeerTestError,
     primitives::RouterId,
-    runtime::Runtime,
+    runtime::{Counter, MetricsHandle, Runtime},
     transport::ssu2::{
-        message::{
-            data::{DataMessageBuilder, PeerTestBlock},
-            PeerTestMessage,
-        },
+        message::{data::PeerTestBlock, PeerTestMessage},
+        metrics::DUPLICATE_PKT_COUNT,
         peer_test::types::{PeerTestCommand, RejectionReason},
         session::active::Ssu2Session,
     },
@@ -94,6 +92,33 @@ impl<R: Runtime> Ssu2Session<R> {
 
     /// Handle peer test message.
     pub fn handle_peer_test_message(&mut self, message: PeerTestMessage) {
+        // ignore duplicate messages
+        //
+        // duplicate messages may be received due to retransmissions
+        match message.nonce() {
+            Some(nonce) =>
+                if !self.duplicate_filter.insert(nonce) {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        router_id = %self.router_id,
+                        ?nonce,
+                        "ignoring duplicate message",
+                    );
+                    self.router_ctx.metrics_handle().counter(DUPLICATE_PKT_COUNT).increment(1);
+                    return;
+                },
+            None => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    router_id = %self.router_id,
+                    ?message,
+                    "received an unexpected peer test message to an active session",
+                );
+                debug_assert!(false);
+                return;
+            }
+        }
+
         match message {
             // handle peer test message 1, i.e., peer test request from alice to bob (we're bob and
             // this is an active session with alice)
@@ -143,34 +168,18 @@ impl<R: Runtime> Ssu2Session<R> {
                             "failed to verify signature of peer test message 1",
                         );
 
-                        // TODO: use transmission
-                        self.write_buffer.push_back(
-                            DataMessageBuilder::default()
-                                .with_dst_id(self.dst_id)
-                                .with_pkt_num(self.transmission.next_pkt_num())
-                                .with_peer_test(PeerTestBlock::BobReject {
-                                    reason: RejectionReason::SignatureFailure,
-                                    message,
-                                    signature,
-                                })
-                                .with_key_context(self.intro_key, &self.send_key_ctx)
-                                .build::<R>(),
-                        );
+                        self.transmission.schedule(PeerTestBlock::BobReject {
+                            reason: RejectionReason::SignatureFailure,
+                            message,
+                            signature,
+                        });
                     }
                     Err(PeerTestError::InvalidAddress) => {
-                        // TODO: use transmission
-                        self.write_buffer.push_back(
-                            DataMessageBuilder::default()
-                                .with_dst_id(self.dst_id)
-                                .with_pkt_num(self.transmission.next_pkt_num())
-                                .with_peer_test(PeerTestBlock::BobReject {
-                                    reason: RejectionReason::UnsupportedAddress,
-                                    message,
-                                    signature,
-                                })
-                                .with_key_context(self.intro_key, &self.send_key_ctx)
-                                .build::<R>(),
-                        );
+                        self.transmission.schedule(PeerTestBlock::BobReject {
+                            reason: RejectionReason::UnsupportedAddress,
+                            message,
+                            signature,
+                        });
                     }
                     Err(_) => {}
                 }
@@ -221,18 +230,10 @@ impl<R: Runtime> Ssu2Session<R> {
                     );
                     message.extend(&signature);
 
-                    self.write_buffer.push_back(
-                        DataMessageBuilder::default()
-                            .with_dst_id(self.dst_id)
-                            .with_pkt_num(self.transmission.next_pkt_num())
-                            .with_peer_test(PeerTestBlock::CharlieResponse {
-                                message,
-                                rejection: Some(RejectionReason::RouterUnknown),
-                            })
-                            .with_key_context(self.intro_key, &self.send_key_ctx)
-                            .build::<R>(),
-                    );
-                    return;
+                    return self.transmission.schedule(PeerTestBlock::CharlieResponse {
+                        message,
+                        rejection: Some(RejectionReason::RouterUnknown),
+                    });
                 };
 
                 match self.validate_peer_test_request(
@@ -269,32 +270,18 @@ impl<R: Runtime> Ssu2Session<R> {
                         );
                         message.extend(&signature);
 
-                        self.write_buffer.push_back(
-                            DataMessageBuilder::default()
-                                .with_dst_id(self.dst_id)
-                                .with_pkt_num(self.transmission.next_pkt_num())
-                                .with_peer_test(PeerTestBlock::CharlieResponse {
-                                    message,
-                                    rejection: Some(RejectionReason::SignatureFailure),
-                                })
-                                .with_key_context(self.intro_key, &self.send_key_ctx)
-                                .build::<R>(),
-                        );
+                        self.transmission.schedule(PeerTestBlock::CharlieResponse {
+                            message,
+                            rejection: Some(RejectionReason::SignatureFailure),
+                        });
                     }
                     Err(PeerTestError::InvalidAddress) => {
                         message.extend(&signature);
 
-                        self.write_buffer.push_back(
-                            DataMessageBuilder::default()
-                                .with_dst_id(self.dst_id)
-                                .with_pkt_num(self.transmission.next_pkt_num())
-                                .with_peer_test(PeerTestBlock::CharlieResponse {
-                                    message,
-                                    rejection: Some(RejectionReason::UnsupportedAddress),
-                                })
-                                .with_key_context(self.intro_key, &self.send_key_ctx)
-                                .build::<R>(),
-                        );
+                        self.transmission.schedule(PeerTestBlock::CharlieResponse {
+                            message,
+                            rejection: Some(RejectionReason::UnsupportedAddress),
+                        });
                     }
                     Err(_) => {}
                 }
@@ -358,8 +345,6 @@ impl<R: Runtime> Ssu2Session<R> {
     }
 
     /// Handle peer test command received from `PeerTestManager`.
-    //
-    // TODO: use `Transmission::segment()` for peer test blocks
     pub fn handle_peer_test_command(&mut self, command: PeerTestCommand) {
         match command {
             // send peer test request to bob, asking them to partake in a peer test (we're alice and
@@ -376,14 +361,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     "send peer test request to bob",
                 );
 
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .build::<R>(),
-                );
+                self.transmission.schedule(PeerTestBlock::AliceRequest { message, signature });
             }
             // reject peer test request (message 1) received from alice (we're bob and this is an
             // active connection with alice)
@@ -408,18 +386,11 @@ impl<R: Runtime> Ssu2Session<R> {
                     return;
                 };
 
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_peer_test(PeerTestBlock::BobReject {
-                            reason,
-                            message,
-                            signature,
-                        })
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .build::<R>(),
-                );
+                self.transmission.schedule(PeerTestBlock::BobReject {
+                    reason,
+                    message,
+                    signature,
+                });
             }
             // send request to charlie to participate in a peer test process for alice (we're bob
             // and this is an active connection with charlie)
@@ -438,19 +409,14 @@ impl<R: Runtime> Ssu2Session<R> {
                     "send peer test request to charlie",
                 );
 
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_router_info(&router_info)
-                        .with_peer_test(PeerTestBlock::RequestCharlie {
-                            router_id,
-                            message,
-                            signature,
-                        })
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .build::<R>(),
-                );
+                self.transmission.schedule((
+                    PeerTestBlock::RequestCharlie {
+                        router_id,
+                        message,
+                        signature,
+                    },
+                    router_info,
+                ));
             }
             PeerTestCommand::SendCharlieResponse {
                 nonce,
@@ -494,14 +460,8 @@ impl<R: Runtime> Ssu2Session<R> {
                 // append signature at the end of the message
                 message.extend(&signature);
 
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_peer_test(PeerTestBlock::CharlieResponse { message, rejection })
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .build::<R>(),
-                );
+                self.transmission
+                    .schedule(PeerTestBlock::CharlieResponse { message, rejection });
             }
             PeerTestCommand::RelayCharlieResponse {
                 nonce,
@@ -518,19 +478,14 @@ impl<R: Runtime> Ssu2Session<R> {
                     "relay charlie peer test response to alice",
                 );
 
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_pkt_num(self.transmission.next_pkt_num())
-                        .with_router_info(&router_info)
-                        .with_peer_test(PeerTestBlock::RelayCharlieResponse {
-                            message,
-                            router_id,
-                            rejection,
-                        })
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .build::<R>(),
-                );
+                self.transmission.schedule((
+                    PeerTestBlock::RelayCharlieResponse {
+                        message,
+                        router_id,
+                        rejection,
+                    },
+                    router_info,
+                ));
             }
             PeerTestCommand::Dummy => unreachable!(),
         }
@@ -553,7 +508,10 @@ mod tests {
         subsystem::SubsystemEvent,
         timeout,
         transport::ssu2::{
-            message::{Block, HeaderKind, HeaderReader},
+            message::{
+                data::{DataMessageBuilder, MessageKind},
+                Block, HeaderKind, HeaderReader,
+            },
             peer_test::types::{PeerTestEvent, PeerTestEventRecycle, PeerTestHandle},
             session::{active::Ssu2SessionContext, KeyContext},
             Packet,
@@ -703,8 +661,13 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::AliceRequest { message, signature },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &key_ctx)
             .build::<MockRuntime>();
 
@@ -828,8 +791,13 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::AliceRequest { message, signature },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -939,8 +907,13 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::AliceRequest { message, signature },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1050,8 +1023,13 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::AliceRequest { message, signature })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::AliceRequest { message, signature },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1166,12 +1144,17 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1306,12 +1289,17 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1420,18 +1408,24 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
         // decrypt header and send packet to active session
         let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
         let _dst_id = reader.dst_id();
+        tracing::error!("pkt lne = {}", pkt.len());
         pkt_tx
             .try_send(Packet {
                 pkt: pkt.to_vec(),
@@ -1537,12 +1531,17 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1654,12 +1653,17 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: None,
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1764,13 +1768,17 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_router_info(&serialized)
-            .with_peer_test(PeerTestBlock::RequestCharlie {
-                router_id: alice_router_id.clone(),
-                message,
-                signature,
-            })
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::RequestCharlie {
+                        router_id: alice_router_id.clone(),
+                        message,
+                        signature,
+                    },
+                    router_info: Some(&serialized),
+                },
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1843,14 +1851,19 @@ mod tests {
 
         let mut pkt = DataMessageBuilder::default()
             .with_dst_id(dst_id)
-            .with_pkt_num(1)
-            .with_peer_test(PeerTestBlock::CharlieResponse {
-                message: {
-                    message.extend(&signature);
-                    message
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::CharlieResponse {
+                        message: {
+                            message.extend(&signature);
+                            message
+                        },
+                        rejection: None,
+                    },
+                    router_info: None,
                 },
-                rejection: None,
-            })
+            )
             .with_key_context(intro_key, &send_key_ctx)
             .build::<MockRuntime>();
 
@@ -1875,5 +1888,100 @@ mod tests {
             }
             _ => panic!("invalid event"),
         }
+    }
+
+    #[tokio::test]
+    async fn duplicate_message_ignored() {
+        let ActiveSessionContext {
+            session,
+            event_rx,
+            pkt_tx,
+            signing_key,
+            alice_router_id,
+            router_id: bob_router_id,
+            cmd_tx: _cmd_tx,
+            recv_socket: _recv_socket,
+            ..
+        } = make_active_session().await;
+        let dst_id = session.dst_id;
+        let key_ctx = KeyContext {
+            k_data: session.recv_key_ctx.k_data,
+            k_header_2: session.recv_key_ctx.k_header_2,
+        };
+        let intro_key = [0xaa; 32];
+
+        tokio::spawn(session);
+
+        // create message for alice
+        let (message, nonce) = {
+            let nonce = MockRuntime::rng().next_u32();
+            let mut out = BytesMut::with_capacity(128);
+
+            out.put_u8(2);
+            out.put_u32(nonce);
+            out.put_u32(MockRuntime::time_since_epoch().as_secs() as u32);
+            out.put_u8(6u8);
+            out.put_u16(8888);
+            out.put_slice(&[127, 0, 0, 1]);
+
+            (out.to_vec(), nonce)
+        };
+        let signature = {
+            let mut payload = BytesMut::with_capacity(128);
+
+            payload.put_slice(b"PeerTestValidate");
+            payload.put_slice(&bob_router_id);
+            payload.put_slice(&message);
+
+            signing_key.sign(&payload)
+        };
+
+        let mut pkt = DataMessageBuilder::default()
+            .with_dst_id(dst_id)
+            .with_message(
+                1,
+                MessageKind::PeerTest {
+                    peer_test_block: &PeerTestBlock::AliceRequest { message, signature },
+                    router_info: None,
+                },
+            )
+            .with_key_context(intro_key, &key_ctx)
+            .build::<MockRuntime>();
+
+        // decrypt header and send packet to active session
+        let mut reader = HeaderReader::new(intro_key, &mut pkt).unwrap();
+        let _dst_id = reader.dst_id();
+        pkt_tx
+            .try_send(Packet {
+                pkt: pkt.to_vec(),
+                address: ADDRESS,
+            })
+            .unwrap();
+
+        // verify the message is routed to `PeerTestManager`
+        match timeout!(event_rx.recv()).await.unwrap().unwrap() {
+            PeerTestEvent::AliceRequest {
+                address,
+                nonce: received_nonce,
+                router_id,
+                ..
+            } => {
+                assert_eq!(router_id, alice_router_id);
+                assert_eq!(received_nonce, nonce);
+                assert_eq!(address, ADDRESS);
+            }
+            _ => panic!("unexpected event"),
+        }
+
+        // send the message again
+        pkt_tx
+            .try_send(Packet {
+                pkt: pkt.to_vec(),
+                address: ADDRESS,
+            })
+            .unwrap();
+
+        // verify the message is not not relayed to `PeerTestManager`
+        assert!(timeout!(event_rx.recv()).await.is_err());
     }
 }

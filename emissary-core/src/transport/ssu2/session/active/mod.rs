@@ -26,14 +26,13 @@ use crate::{
     subsystem::{OutboundMessage, OutboundMessageRecycle, SubsystemEvent},
     transport::{
         ssu2::{
-            message::{data::DataMessageBuilder, Block, HeaderKind, HeaderReader},
+            duplicate::DuplicateFilter,
+            message::{Block, HeaderKind, HeaderReader},
             metrics::*,
             peer_test::types::PeerTestHandle,
             session::{
                 active::{
-                    ack::{AckInfo, RemoteAckManager},
-                    duplicate::DuplicateFilter,
-                    fragment::FragmentHandler,
+                    ack::RemoteAckManager, fragment::FragmentHandler,
                     transmission::TransmissionManager,
                 },
                 terminating::TerminationContext,
@@ -55,13 +54,12 @@ use core::{
     future::Future,
     net::SocketAddr,
     pin::Pin,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::AtomicU32,
     task::{Context, Poll},
     time::Duration,
 };
 
 mod ack;
-mod duplicate;
 mod fragment;
 mod peer_test;
 mod transmission;
@@ -82,11 +80,6 @@ const MAX_IMMEDIATE_ACK_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// Maximum timeout for ACK.
 const MAX_ACK_TIMEOUT: Duration = Duration::from_millis(150);
-
-/// Immediate ACK interval.
-///
-/// How often should an immediate ACK be bundled in a message.
-const IMMEDIATE_ACK_INTERVAL: u32 = 10u32;
 
 /// ACK timer.
 ///
@@ -203,9 +196,6 @@ pub struct Ssu2Session<R: Runtime> {
     /// Used for encrypting the first part of the header.
     intro_key: [u8; 32],
 
-    /// Packet number of the packet that last requested an immediate ACK.
-    last_immediate_ack: u32,
-
     /// RX channel for receiving messages from `SubsystemManager`.
     msg_rx: Receiver<OutboundMessage, OutboundMessageRecycle>,
 
@@ -214,24 +204,18 @@ pub struct Ssu2Session<R: Runtime> {
     msg_tx: Sender<OutboundMessage, OutboundMessageRecycle>,
 
     /// Peer test handle.
-    peer_test_handle: PeerTestHandle,
+    peer_test_handle: PeerTestHandle<R>,
 
     /// Pending router info for a peer test.
     ///
     /// Sent by Bob in a `RouterInfo` block bundled together with a `PeerTest` block.
     pending_router_info: Option<Box<RouterInfo>>,
 
-    /// Next packet number.
-    pkt_num: Arc<AtomicU32>,
-
     /// RX channel for receiving inbound packets from [`Ssu2Socket`].
     pkt_rx: Receiver<Packet>,
 
     /// Key context for inbound packets.
     recv_key_ctx: KeyContext,
-
-    /// Remote ACK manager.
-    remote_ack: RemoteAckManager,
 
     /// Resend timer.
     resend_timer: Option<R::Timer>,
@@ -268,7 +252,7 @@ impl<R: Runtime> Ssu2Session<R> {
         socket: R::UdpSocket,
         transport_tx: Sender<SubsystemEvent>,
         router_ctx: RouterContext<R>,
-        peer_test_handle: PeerTestHandle,
+        peer_test_handle: PeerTestHandle<R>,
     ) -> Self {
         let (msg_tx, msg_rx) = with_recycle(CMD_CHANNEL_SIZE, OutboundMessageRecycle::default());
         let metrics = router_ctx.metrics_handle().clone();
@@ -288,21 +272,25 @@ impl<R: Runtime> Ssu2Session<R> {
             duplicate_filter: DuplicateFilter::new(),
             fragment_handler: FragmentHandler::<R>::new(metrics.clone()),
             intro_key: context.intro_key,
-            last_immediate_ack: 0u32,
             msg_rx,
             msg_tx,
             peer_test_handle,
             pending_router_info: None,
-            pkt_num: Arc::clone(&pkt_num),
             pkt_rx: context.pkt_rx,
             recv_key_ctx: context.recv_key_ctx,
-            remote_ack: RemoteAckManager::new(),
             resend_timer: None,
             router_ctx,
             router_id: context.router_id.clone(),
-            send_key_ctx: context.send_key_ctx,
+            send_key_ctx: context.send_key_ctx.clone(),
             socket,
-            transmission: TransmissionManager::<R>::new(context.router_id, pkt_num, metrics),
+            transmission: TransmissionManager::<R>::new(
+                context.dst_id,
+                context.router_id,
+                context.intro_key,
+                context.send_key_ctx,
+                pkt_num,
+                metrics,
+            ),
             transport_tx,
             verifying_key: context.verifying_key,
             write_buffer: VecDeque::new(),
@@ -406,7 +394,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     reason,
                     num_valid_pkts,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
 
                     tracing::debug!(
                         target: LOG_TARGET,
@@ -422,7 +410,7 @@ impl<R: Runtime> Ssu2Session<R> {
                 }
                 Block::I2Np { message } => {
                     self.handle_message(message);
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
                 }
                 Block::FirstFragment {
@@ -431,7 +419,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     expiration,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.first_fragment(
@@ -449,7 +437,7 @@ impl<R: Runtime> Ssu2Session<R> {
                     fragment_num,
                     fragment,
                 } => {
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
 
                     if let Some(message) = self.fragment_handler.follow_on_fragment(
@@ -466,46 +454,14 @@ impl<R: Runtime> Ssu2Session<R> {
                     num_acks,
                     ranges,
                 } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
-                    self.remote_ack.register_ack(ack_through, num_acks, &ranges);
+                    self.transmission.register_remote_pkt(pkt_num);
                     self.transmission.register_ack(ack_through, num_acks, &ranges);
-
-                    if let Some(packets) = self.transmission.pending_packets() {
-                        let AckInfo {
-                            highest_seen,
-                            num_acks,
-                            ranges,
-                        } = self.remote_ack.ack_info();
-                        let num_pkts = packets.len();
-
-                        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
-                            // include immediate ack in the last fragment
-                            let message = if num_pkts > 1 && i == num_pkts - 1 {
-                                self.last_immediate_ack = pkt_num;
-
-                                DataMessageBuilder::default().with_immediate_ack()
-                            } else {
-                                DataMessageBuilder::default()
-                            }
-                            .with_dst_id(self.dst_id)
-                            .with_key_context(self.intro_key, &self.send_key_ctx)
-                            .with_message(pkt_num, message_kind)
-                            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                            .build::<R>();
-
-                            self.write_buffer.push_back(message);
-
-                            if self.resend_timer.is_none() {
-                                self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
-                            }
-                        }
-                    }
                 }
                 Block::Address { .. } | Block::DateTime { .. } | Block::Padding { .. } => {
-                    self.remote_ack.register_non_ack_eliciting_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                 }
                 Block::PeerTest { message } => {
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                     self.ack_timer.schedule_ack(self.transmission.round_trip_time());
                     self.handle_peer_test_message(message);
                 }
@@ -526,7 +482,7 @@ impl<R: Runtime> Ssu2Session<R> {
                         ?block,
                         "ignoring block",
                     );
-                    self.remote_ack.register_pkt(pkt_num);
+                    self.transmission.register_remote_pkt(pkt_num);
                 }
             }
         }
@@ -537,90 +493,6 @@ impl<R: Runtime> Ssu2Session<R> {
         self.pending_router_info.take();
 
         Ok(())
-    }
-
-    /// Send `message` to remote router.
-    fn send_message(&mut self, message: Message) {
-        let AckInfo {
-            highest_seen,
-            num_acks,
-            ranges,
-        } = self.remote_ack.ack_info();
-        let pkt_len = message.payload.len();
-
-        let Some(packets) = self.transmission.segment(message) else {
-            return;
-        };
-        let num_pkts = packets.len();
-
-        for (i, (pkt_num, message_kind)) in packets.into_iter().enumerate() {
-            // include immediate ack flag if:
-            //  1) this is the last in a burst of messages
-            //  2) immediate ack has not been sent in the last `IMMEDIATE_ACK_INTERVAL` packets
-            let last_in_burst = num_pkts > 1 && i == num_pkts - 1;
-            let immediate_ack_threshold =
-                pkt_num.saturating_sub(self.last_immediate_ack) > IMMEDIATE_ACK_INTERVAL;
-
-            let message = if last_in_burst || immediate_ack_threshold {
-                self.last_immediate_ack = pkt_num;
-
-                DataMessageBuilder::default().with_immediate_ack()
-            } else {
-                DataMessageBuilder::default()
-            }
-            .with_dst_id(self.dst_id)
-            .with_key_context(self.intro_key, &self.send_key_ctx)
-            .with_message(pkt_num, message_kind)
-            .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-            .build::<R>();
-
-            tracing::trace!(
-                target: LOG_TARGET,
-                router_id = %self.router_id,
-                ?pkt_num,
-                ?pkt_len,
-                "send i2np message",
-            );
-            self.write_buffer.push_back(message);
-
-            if self.resend_timer.is_none() {
-                self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
-            }
-        }
-    }
-
-    fn resend(&mut self) -> Result<usize, ()> {
-        let Some(packets_to_resend) = self.transmission.resend()? else {
-            return Ok(0);
-        };
-        self.router_ctx
-            .metrics_handle()
-            .counter(RETRANSMISSION_COUNT)
-            .increment(packets_to_resend.len());
-
-        let AckInfo {
-            highest_seen,
-            num_acks,
-            ranges,
-        } = self.remote_ack.ack_info();
-
-        Ok(packets_to_resend
-            .into_iter()
-            .fold(0usize, |pkt_count, (pkt_num, message_kind)| {
-                self.last_immediate_ack = pkt_num;
-
-                self.write_buffer.push_back(
-                    DataMessageBuilder::default()
-                        .with_dst_id(self.dst_id)
-                        .with_key_context(self.intro_key, &self.send_key_ctx)
-                        .with_message(pkt_num, message_kind)
-                        .with_immediate_ack()
-                        .with_ack(highest_seen, num_acks, ranges.clone()) // TODO: remove clone
-                        .build::<R>(),
-                );
-
-                pkt_count + 1
-            }))
     }
 
     /// Run the event loop of an active SSU2 session.
@@ -702,55 +574,75 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(TerminationReason::Timeout),
                 Poll::Ready(Some(OutboundMessage::Message(message))) => {
-                    self.send_message(message);
+                    self.transmission.schedule(message);
                 }
                 Poll::Ready(Some(OutboundMessage::MessageWithFeedback(message, feedback_tx))) => {
-                    self.send_message(message);
+                    self.transmission.schedule(message);
                     let _ = feedback_tx.send(());
                 }
-                Poll::Ready(Some(OutboundMessage::Messages(mut messages))) => {
-                    assert!(!messages.is_empty());
-
-                    // TODO: add support for packing multiple message blocks
-                    if messages.len() > 1 {
-                        todo!("not implemented")
-                    }
-
-                    self.send_message(messages.pop().expect("message to exist"));
-                }
+                Poll::Ready(Some(OutboundMessage::Messages(messages))) =>
+                    for message in messages {
+                        self.transmission.schedule(message);
+                    },
                 Poll::Ready(Some(OutboundMessage::Dummy)) => {}
             }
         }
 
+        // drain expired packets
         loop {
-            match &mut self.resend_timer {
-                None => break,
-                Some(timer) => match timer.poll_unpin(cx) {
-                    Poll::Pending => break,
-                    Poll::Ready(_) => match self.resend() {
-                        Err(()) => return Poll::Ready(TerminationReason::Timeout),
-                        Ok(num_resent) => {
-                            if num_resent > 0 {
-                                tracing::trace!(
-                                    target: LOG_TARGET,
-                                    router_id = %self.router_id,
-                                    ?num_resent,
-                                    "packet resent",
-                                );
-                            }
+            let Some(ref mut timer) = self.resend_timer else {
+                break;
+            };
 
-                            self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
+            let Poll::Ready(()) = timer.poll_unpin(cx) else {
+                break;
+            };
+
+            match self.transmission.drain_expired() {
+                Ok(None) => {}
+                Err(_) => return Poll::Ready(TerminationReason::Timeout),
+                Ok(Some(pkts)) => {
+                    let address = self.address;
+
+                    for pkt in pkts.into_iter() {
+                        match Pin::new(&mut self.socket).poll_send_to(cx, &pkt, address) {
+                            Poll::Pending => {}
+                            Poll::Ready(None) =>
+                                return Poll::Ready(TerminationReason::RouterShutdown),
+                            Poll::Ready(Some(_)) => {}
                         }
-                    },
-                },
+                    }
+                }
             }
+
+            self.resend_timer = Some(R::timer(SSU2_RESEND_TIMEOUT));
         }
 
+        // poll command from `PeerTestManager`
+        //
+        // handling a command (most often) results in outbound message which is why this
+        // is done before draining transmission from pending packets
         loop {
             match self.peer_test_handle.poll_next_unpin(cx) {
                 Poll::Pending => break,
                 Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
                 Poll::Ready(Some(command)) => self.handle_peer_test_command(command),
+            }
+        }
+
+        if self.ack_timer.poll_unpin(cx).is_ready() {
+            let pkt = self.transmission.build_explicit_ack();
+
+            // try to send the immediate ack right away and if it fails,
+            // push it at the front of the queue
+            let address = self.address;
+
+            match Pin::new(&mut self.socket).poll_send_to(cx, &pkt, address) {
+                Poll::Pending => {
+                    self.write_buffer.push_front(pkt);
+                }
+                Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
+                Poll::Ready(Some(_)) => {}
             }
         }
 
@@ -768,43 +660,33 @@ impl<R: Runtime> Future for Ssu2Session<R> {
                     Poll::Ready(Some(_)) => {}
                 }
             }
-        }
 
-        if self.ack_timer.poll_unpin(cx).is_ready() {
-            let AckInfo {
-                highest_seen,
-                num_acks,
-                ranges,
-            } = self.remote_ack.ack_info();
+            // only drain more packets from `TransmissionManager` if write buffer is empty,
+            // otherwise the window size is skewed because there's an extra buffer
+            if self.write_buffer.is_empty() {
+                if let Some(pkts) = self.transmission.drain() {
+                    for pkt in pkts {
+                        match Pin::new(&mut self.socket).poll_send_to(cx, &pkt, address) {
+                            Poll::Pending => {
+                                // if the socket is pending, store the packet in a temporary buffer
+                                // that'll be flushed before `TransmissioManager::drain()` is called
+                                // the next time
+                                self.write_buffer.push_back(pkt);
+                            }
+                            Poll::Ready(None) =>
+                                return Poll::Ready(TerminationReason::RouterShutdown),
+                            Poll::Ready(Some(_)) => {}
+                        }
+                    }
 
-            tracing::trace!(
-                target: LOG_TARGET,
-                router_id = %self.router_id,
-                ?highest_seen,
-                ?num_acks,
-                ?ranges,
-                "send explicit ack",
-            );
+                    // create timer for resends and register it into the executor
+                    self.resend_timer = {
+                        let mut timer = R::timer(SSU2_RESEND_TIMEOUT);
+                        let _ = timer.poll_unpin(cx);
 
-            let message = DataMessageBuilder::default()
-                .with_dst_id(self.dst_id)
-                .with_key_context(self.intro_key, &self.send_key_ctx)
-                .with_pkt_num(self.pkt_num.fetch_add(1u32, Ordering::Relaxed))
-                .with_ack(highest_seen, num_acks, ranges)
-                .build::<R>();
-
-            // TODO: report `pkt_num` to `RemoteAckManager`?
-
-            // try to send the immediate ack right away and if it fails,
-            // push it at the front of the queue
-            let address = self.address;
-
-            match Pin::new(&mut self.socket).poll_send_to(cx, &message, address) {
-                Poll::Pending => {
-                    self.write_buffer.push_front(message);
+                        Some(timer)
+                    };
                 }
-                Poll::Ready(None) => return Poll::Ready(TerminationReason::RouterShutdown),
-                Poll::Ready(Some(_)) => {}
             }
         }
 
@@ -828,7 +710,9 @@ mod tests {
         primitives::{MessageId, RouterInfoBuilder},
         profile::ProfileStorage,
         runtime::mock::MockRuntime,
-        transport::ssu2::peer_test::types::PeerTestEventRecycle,
+        transport::ssu2::{
+            message::data::DataMessageBuilder, peer_test::types::PeerTestEventRecycle,
+        },
     };
     use bytes::Bytes;
     use thingbuf::mpsc::channel;

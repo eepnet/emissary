@@ -317,25 +317,28 @@ impl<R: Runtime> NetDb<R> {
             self.floodfill_dht.add_router(router_id.clone());
         }
 
+        // extract raw router info from the database store message and decompress the router info
+        //
+        // `raw_router_info` is used for flooding (if requested)
+        let raw_router_info = DatabaseStore::<R>::extract_raw_router_info(message);
+        let decompressed = match R::gzip_decompress(&raw_router_info) {
+            None => {
+                tracing::warn!(
+                    target: LOG_TARGET,
+                    %router_id,
+                    "failed to decompress router info",
+                );
+                return;
+            }
+            Some(router_info) => Bytes::from(router_info),
+        };
+
         // store both the new router info and its serialized form to profile storage
         //
         // the latter is used when a backup of profile storage is made to disk
-        let raw_router_info =
-            match R::gzip_decompress(DatabaseStore::<R>::extract_raw_router_info(message)) {
-                None => {
-                    tracing::warn!(
-                        target: LOG_TARGET,
-                        %router_id,
-                        "failed to decompress router info",
-                    );
-                    return;
-                }
-                Some(router_info) => Bytes::from(router_info),
-            };
-
         self.router_ctx
             .profile_storage()
-            .discover_router(router_info, raw_router_info.clone());
+            .discover_router(router_info, decompressed.clone());
 
         if !self.floodfill {
             return;
@@ -345,7 +348,7 @@ impl<R: Runtime> NetDb<R> {
         // in the set of router infos we keep track of
         self.router_infos.insert(
             key.clone(),
-            (raw_router_info.clone(), Duration::from_millis(published)),
+            (decompressed.clone(), Duration::from_millis(published)),
         );
         self.router_dht.as_mut().map(|dht| dht.add_router(router_id.clone()));
 

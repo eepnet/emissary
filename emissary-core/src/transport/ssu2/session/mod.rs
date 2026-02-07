@@ -21,6 +21,7 @@ pub mod pending;
 pub mod terminating;
 
 /// Key context for an active session.
+#[derive(Clone)]
 pub struct KeyContext {
     /// Key for encrypting/decrypting `Data` payloads.
     pub k_data: [u8; 32],

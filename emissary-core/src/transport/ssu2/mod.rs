@@ -37,6 +37,7 @@ use core::{
 };
 use thingbuf::mpsc::Sender;
 
+mod duplicate;
 mod message;
 mod metrics;
 mod peer_test;

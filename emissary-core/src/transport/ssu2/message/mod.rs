@@ -260,6 +260,22 @@ pub enum PeerTestMessage {
     Dummy,
 }
 
+impl PeerTestMessage {
+    /// Get nonce of the message
+    ///
+    /// Returns `None` if the message doesn't contain a nonce. This can only happen
+    /// if a faulty/malicious router sends an in-session message 5, 6, or 7.
+    pub fn nonce(&self) -> Option<u32> {
+        match self {
+            Self::Message1 { nonce, .. } => Some(*nonce),
+            Self::Message2 { nonce, .. } => Some(*nonce),
+            Self::Message3 { nonce, .. } => Some(*nonce),
+            Self::Message4 { nonce, .. } => Some(*nonce),
+            _ => None,
+        }
+    }
+}
+
 /// SSU2 message block.
 pub enum Block {
     /// Date time.
