@@ -25,15 +25,15 @@ use crate::{
         Message, MessageType,
     },
     primitives::{RouterId, TunnelId},
-    runtime::{Counter, Gauge, MetricsHandle, Runtime},
+    runtime::{Counter, Gauge, Instant, MetricsHandle, Runtime},
     subsystem::SubsystemHandle,
     tunnel::{
         metrics::{
-            NUM_DROPPED_MESSAGES, NUM_IBGWS, NUM_ROUTED_MESSAGES, NUM_TRANSIT_TUNNELS,
-            TOTAL_TRANSIT_TUNNELS,
+            NUM_DROPPED_MESSAGES, NUM_IBGWS, NUM_ROUTED_MESSAGES, NUM_TERMINATED,
+            NUM_TRANSIT_TUNNELS, TOTAL_TRANSIT_TUNNELS,
         },
         noise::TunnelKeys,
-        transit::{TransitTunnel, TRANSIT_TUNNEL_EXPIRATION},
+        transit::{TransitTunnel, TERMINATION_TIMEOUT, TRANSIT_TUNNEL_EXPIRATION},
     },
 };
 
@@ -88,8 +88,14 @@ pub struct InboundGateway<R: Runtime> {
     /// Random bytes used for tunnel data padding.
     padding_bytes: [u8; 1028],
 
+    // When was the tunnel started.
+    started: Option<R::Instant>,
+
     /// Subsystem handle.
     subsystem_handle: SubsystemHandle,
+
+    /// Total bandwidth.
+    total_bandwidth: usize,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -194,13 +200,15 @@ impl<R: Runtime> TransitTunnel<R> for InboundGateway<R> {
             event_handle,
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             inbound_bandwidth: 0usize,
-            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
             next_router,
             next_tunnel_id,
+            outbound_bandwidth: 0usize,
             padding_bytes,
+            started: Some(R::now()),
             subsystem_handle,
+            total_bandwidth: 0usize,
             tunnel_id,
             tunnel_keys,
         }
@@ -224,6 +232,7 @@ impl<R: Runtime> Future for InboundGateway<R> {
                 }
                 Some(message) => {
                     self.inbound_bandwidth += message.serialized_len_short();
+                    self.total_bandwidth += message.serialized_len_short();
 
                     let MessageType::TunnelGateway = message.message_type else {
                         tracing::warn!(
@@ -266,27 +275,49 @@ impl<R: Runtime> Future for InboundGateway<R> {
                         }
                     };
 
-                    self.outbound_bandwidth +=
-                        messages.into_iter().fold(0usize, |mut acc, message| {
-                            acc += message.serialized_len_short();
+                    let total_len = messages.into_iter().fold(0usize, |mut acc, message| {
+                        acc += message.serialized_len_short();
 
-                            match self.subsystem_handle.send(&router, message) {
-                                Ok(()) => {
-                                    self.metrics_handle.counter(NUM_ROUTED_MESSAGES).increment(1);
-                                }
-                                Err(error) => {
-                                    tracing::error!(
-                                        target: LOG_TARGET,
-                                        tunnel_id = %self.tunnel_id,
-                                        ?error,
-                                        "failed to send message",
-                                    );
-                                    self.metrics_handle.counter(NUM_DROPPED_MESSAGES).increment(1);
-                                }
+                        match self.subsystem_handle.send(&router, message) {
+                            Ok(()) => {
+                                self.metrics_handle.counter(NUM_ROUTED_MESSAGES).increment(1);
                             }
+                            Err(error) => {
+                                tracing::error!(
+                                    target: LOG_TARGET,
+                                    tunnel_id = %self.tunnel_id,
+                                    ?error,
+                                    "failed to send message",
+                                );
+                                self.metrics_handle.counter(NUM_DROPPED_MESSAGES).increment(1);
+                            }
+                        }
 
-                            acc
-                        });
+                        acc
+                    });
+
+                    self.outbound_bandwidth += total_len;
+                    self.total_bandwidth += total_len;
+                }
+            }
+        }
+
+        // terminate IBGW if it hasn't had any activity 2 minutes after starting
+        if let Some(ref started) = self.started {
+            if started.elapsed() > TERMINATION_TIMEOUT {
+                self.started = None;
+
+                if self.total_bandwidth == 0 {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        tunnel_id = %self.tunnel_id,
+                        "shutting down tunnel after 2 minutes of inactivity",
+                    );
+                    self.metrics_handle.gauge(NUM_IBGWS).decrement(1);
+                    self.metrics_handle.gauge(NUM_TRANSIT_TUNNELS).decrement(1);
+                    self.metrics_handle.counter(NUM_TERMINATED).increment(1);
+
+                    return Poll::Ready(self.tunnel_id);
                 }
             }
         }

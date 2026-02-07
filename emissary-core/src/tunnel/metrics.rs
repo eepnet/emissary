@@ -49,6 +49,7 @@ pub const NUM_DROPPED_MESSAGES: &str = "transit_dropped_messages_count";
 pub const NUM_PARTICIPANTS: &str = "transit_num_participants";
 pub const NUM_OBEPS: &str = "transit_num_obeps";
 pub const NUM_IBGWS: &str = "transit_num_ibgws";
+pub const NUM_TERMINATED: &str = "transit_terminated_count";
 
 /// Register tunnel metrics.
 pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
@@ -96,6 +97,10 @@ pub fn register_metrics(mut metrics: Vec<MetricType>) -> Vec<MetricType> {
     metrics.push(MetricType::Counter {
         name: TOTAL_TRANSIT_TUNNELS,
         description: "total number of transit tunnels started",
+    });
+    metrics.push(MetricType::Counter {
+        name: NUM_TERMINATED,
+        description: "total number of terminated tunnels",
     });
 
     // gauges

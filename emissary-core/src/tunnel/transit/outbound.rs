@@ -28,16 +28,16 @@ use crate::{
         Message, MessageType,
     },
     primitives::{MessageId, RouterId, TunnelId},
-    runtime::{Counter, Gauge, MetricsHandle, Runtime},
+    runtime::{Counter, Gauge, Instant, MetricsHandle, Runtime},
     subsystem::SubsystemHandle,
     tunnel::{
         fragment::{FragmentHandler, OwnedDeliveryInstructions},
         metrics::{
-            NUM_DROPPED_MESSAGES, NUM_OBEPS, NUM_ROUTED_MESSAGES, NUM_TRANSIT_TUNNELS,
-            TOTAL_TRANSIT_TUNNELS,
+            NUM_DROPPED_MESSAGES, NUM_OBEPS, NUM_ROUTED_MESSAGES, NUM_TERMINATED,
+            NUM_TRANSIT_TUNNELS, TOTAL_TRANSIT_TUNNELS,
         },
         noise::TunnelKeys,
-        transit::{TransitTunnel, TRANSIT_TUNNEL_EXPIRATION},
+        transit::{TransitTunnel, TERMINATION_TIMEOUT, TRANSIT_TUNNEL_EXPIRATION},
     },
 };
 
@@ -79,8 +79,14 @@ pub struct OutboundEndpoint<R: Runtime> {
     /// Used outbound bandwidth.
     outbound_bandwidth: usize,
 
+    // When was the tunnel started.
+    started: Option<R::Instant>,
+
     /// Subsystem handle.
     subsystem_handle: SubsystemHandle,
+
+    /// Total bandwidth.
+    total_bandwidth: usize,
 
     /// Tunnel ID.
     tunnel_id: TunnelId,
@@ -324,10 +330,12 @@ impl<R: Runtime> TransitTunnel<R> for OutboundEndpoint<R> {
             expiration_timer: R::timer(TRANSIT_TUNNEL_EXPIRATION),
             fragment: FragmentHandler::new(metrics_handle.clone()),
             inbound_bandwidth: 0usize,
-            outbound_bandwidth: 0usize,
             message_rx,
             metrics_handle,
+            outbound_bandwidth: 0usize,
+            started: Some(R::now()),
             subsystem_handle,
+            total_bandwidth: 0usize,
             tunnel_id,
             tunnel_keys,
         }
@@ -351,6 +359,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                 }
                 Some(message) => {
                     self.inbound_bandwidth += message.serialized_len_short();
+                    self.total_bandwidth += message.serialized_len_short();
 
                     let MessageType::TunnelData = message.message_type else {
                         tracing::warn!(
@@ -378,6 +387,7 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                     match self.handle_tunnel_data(&message) {
                         Ok(messages) => messages.into_iter().for_each(|(router, message)| {
                             self.outbound_bandwidth += message.serialized_len_short();
+                            self.total_bandwidth += message.serialized_len_short();
 
                             match self.subsystem_handle.send(&router, message) {
                                 Ok(()) => {
@@ -401,6 +411,26 @@ impl<R: Runtime> Future for OutboundEndpoint<R> {
                             "failed to handle tunnel data",
                         ),
                     }
+                }
+            }
+        }
+
+        // terminate OBEP if it hasn't had any activity 2 minutes after starting
+        if let Some(ref started) = self.started {
+            if started.elapsed() > TERMINATION_TIMEOUT {
+                self.started = None;
+
+                if self.total_bandwidth == 0 {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        tunnel_id = %self.tunnel_id,
+                        "shutting down tunnel after 2 minutes of inactivity",
+                    );
+                    self.metrics_handle.gauge(NUM_OBEPS).decrement(1);
+                    self.metrics_handle.gauge(NUM_TRANSIT_TUNNELS).decrement(1);
+                    self.metrics_handle.counter(NUM_TERMINATED).increment(1);
+
+                    return Poll::Ready(self.tunnel_id);
                 }
             }
         }

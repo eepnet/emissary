@@ -91,6 +91,9 @@ const TUNNEL_CHANNEL_SIZE: usize = 64usize;
 /// 20 seconds to allow remaining traffic pass through the tunnel before it is destroyed.
 const TRANSIT_TUNNEL_EXPIRATION: Duration = Duration::from_secs(10 * 60 + 20);
 
+/// Time after which a transit tunnel is terminated if it hasn't had any activity.
+const TERMINATION_TIMEOUT: Duration = Duration::from_secs(2 * 60);
+
 /// Common interface for transit tunnels.
 pub trait TransitTunnel<R: Runtime>: Future<Output = TunnelId> + Send {
     /// Create new [`TransitTunnel`].
