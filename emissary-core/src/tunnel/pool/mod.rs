@@ -2982,40 +2982,31 @@ mod tests {
         )
         .await
         .is_err());
-        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
+        let (mut router, mut message) = routers.get_mut(&router).unwrap().select_message().unwrap();
 
-        // 1st inbound hop (ibgw)
-        routers
-            .get_mut(&router)
-            .unwrap()
-            .subsystem_handle()
-            .send(&router, message)
-            .unwrap();
-        assert!(tokio::time::timeout(
-            Duration::from_millis(250),
-            &mut routers.get_mut(&router).unwrap()
-        )
-        .await
-        .is_err());
-        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
+        for _ in 0..2 {
+            // 1st inbound hop (ibgw) or 2nd hop (participant) if obep and ibgw were the same router
+            routers
+                .get_mut(&router)
+                .unwrap()
+                .subsystem_handle()
+                .send(&router, message)
+                .unwrap();
+            assert!(tokio::time::timeout(
+                Duration::from_millis(250),
+                &mut routers.get_mut(&router).unwrap()
+            )
+            .await
+            .is_err());
 
-        // 2nd inbound hop (participant)
-        routers
-            .get_mut(&router)
-            .unwrap()
-            .subsystem_handle()
-            .send(&router, message)
-            .unwrap();
-        assert!(tokio::time::timeout(
-            Duration::from_millis(250),
-            &mut routers.get_mut(&router).unwrap()
-        )
-        .await
-        .is_err());
-        let (router, message) = routers.get_mut(&router).unwrap().select_message().unwrap();
+            let res = routers.get_mut(&router).unwrap().select_message().unwrap();
+            router = res.0;
+            message = res.1;
 
-        // route response to local router and verify that tunnel test is considered succeeded
-        assert_eq!(router, our_id);
+            if router == our_id {
+                break;
+            }
+        }
 
         subsys_handle.send(&router, message).unwrap();
 
