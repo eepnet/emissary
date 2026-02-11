@@ -595,6 +595,31 @@ destination_path = "/path/to/base64-destination.keys"
 Server tunnels require SAM to be enabled. Each tunnel must have a unique name, port, and destination path.
 :::
 
+### Router UI (Web)
+
+**Config file section:** `[router-ui]`
+
+Starts a local webserver on the specified `port`.
+
+| Option | Config file | Description |
+|--------|-------------|-------------|
+| Theme | `theme` | Options: `light`, `dark`. (default: dark). |
+| Refresh interval | `refresh_interval` | How often the web UI should update. (default: 5). |
+| Port | `port` | The port to start the webserver on. (default: 7657) |
+
+Example:
+
+```toml
+[router-ui]
+theme = "dark"
+refresh_interval = 5
+port = 7657
+```
+
+::: info
+Requires the `web-ui` feature.
+:::
+
 ## Enabling and disabling subsystems
 
 To disable a subsystem, remove or comment out its section in `router.toml`. To re-enable it, uncomment the section and restart the router.
