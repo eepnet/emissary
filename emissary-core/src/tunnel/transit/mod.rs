@@ -870,15 +870,13 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
                 return Poll::Ready(());
             };
 
-            let tunnel_id = match result {
+            match result {
                 Ok(tunnel_id) => {
                     tracing::debug!(
                         target: LOG_TARGET,
                         %tunnel_id,
                         "transit tunnel expired",
                     );
-
-                    tunnel_id
                 }
                 Err(tunnel_id) => {
                     tracing::debug!(
@@ -886,12 +884,8 @@ impl<R: Runtime> Future for TransitTunnelManager<R> {
                         %tunnel_id,
                         "failed to dial next hop, unable to start transit tunnel",
                     );
-
-                    tunnel_id
                 }
-            };
-
-            self.subsystem_handle.remove_tunnel(&tunnel_id);
+            }
 
             if self.tunnels.is_empty() && self.shutdown_handle.is_shutting_down() {
                 tracing::info!(

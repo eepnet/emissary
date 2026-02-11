@@ -173,6 +173,7 @@ impl<R: Runtime> Future for Participant<R> {
                         tunnel_id = %self.tunnel_id,
                         "message channel closed",
                     );
+                    self.subsystem_handle.remove_tunnel(&self.tunnel_id);
                     self.metrics_handle.gauge(NUM_PARTICIPANTS).decrement(1);
                     return Poll::Ready(self.tunnel_id);
                 }
@@ -246,6 +247,7 @@ impl<R: Runtime> Future for Participant<R> {
                         tunnel_id = %self.tunnel_id,
                         "shutting down tunnel after 2 minutes of inactivity",
                     );
+                    self.subsystem_handle.remove_tunnel(&self.tunnel_id);
                     self.metrics_handle.gauge(NUM_PARTICIPANTS).decrement(1);
                     self.metrics_handle.gauge(NUM_TRANSIT_TUNNELS).decrement(1);
                     self.metrics_handle.counter(NUM_TERMINATED).increment(1);
@@ -263,6 +265,7 @@ impl<R: Runtime> Future for Participant<R> {
         }
 
         if self.expiration_timer.poll_unpin(cx).is_ready() {
+            self.subsystem_handle.remove_tunnel(&self.tunnel_id);
             self.metrics_handle.gauge(NUM_PARTICIPANTS).decrement(1);
             self.metrics_handle.gauge(NUM_TRANSIT_TUNNELS).decrement(1);
 
