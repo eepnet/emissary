@@ -12,6 +12,8 @@ export default defineConfig({
       { text: "Contact", link: "/contact" }
     ],
 
+    search: { provider: "local" },
+
     sidebar: [
       {
         text: "User guide",
