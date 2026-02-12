@@ -32,7 +32,11 @@ use futures::Stream;
 use futures_io::{AsyncRead as _, AsyncWrite as _};
 use parking_lot::RwLock;
 use rand_core::{CryptoRng, RngCore};
-use tokio::{io::ReadBuf, net, task, time::Sleep};
+use tokio::{
+    io::ReadBuf,
+    net, task,
+    time::{Instant, Sleep},
+};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use std::{
@@ -43,7 +47,7 @@ use std::{
     pin::{pin, Pin},
     sync::{Arc, LazyLock},
     task::{Context, Poll, Waker},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 pub struct MockTcpStream(Compat<net::TcpStream>);

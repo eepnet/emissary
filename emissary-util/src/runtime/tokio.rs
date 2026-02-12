@@ -26,7 +26,11 @@ use flate2::{
 };
 use futures::{AsyncRead as _, AsyncWrite as _, Stream};
 use rand_core::{CryptoRng, RngCore};
-use tokio::{io::ReadBuf, net, task, time::Sleep};
+use tokio::{
+    io::ReadBuf,
+    net, task,
+    time::{Instant, Sleep},
+};
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 #[cfg(feature = "metrics")]
@@ -41,7 +45,7 @@ use std::{
     pin::{pin, Pin},
     sync::Arc,
     task::{Context, Poll, Waker},
-    time::{Duration, Instant, SystemTime},
+    time::{Duration, SystemTime},
 };
 
 /// Logging target for the file.
