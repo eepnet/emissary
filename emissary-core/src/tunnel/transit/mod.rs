@@ -930,7 +930,7 @@ mod tests {
     use rand_core::RngCore;
     use thingbuf::mpsc::{channel, Sender};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn accept_tunnel_build_request_participant() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) =
@@ -1001,7 +1001,7 @@ mod tests {
         assert!(transit_managers[0].handle_short_tunnel_build(message).is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn accept_tunnel_build_request_ibgw() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -1089,7 +1089,7 @@ mod tests {
         assert!(transit_managers[0].1.handle_short_tunnel_build(message).is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn accept_tunnel_build_request_obep() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -1183,7 +1183,7 @@ mod tests {
         pending_tunnel.try_build_tunnel(message).unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn local_record_not_found() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -1282,7 +1282,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn invalid_public_key_used() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) =
@@ -1364,7 +1364,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_shutting_down_tunnel_rejected() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let mut hops = Vec::<(Bytes, StaticPublicKey)>::new();
@@ -1465,7 +1465,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn transit_manager_exits_after_all_tunnels_have_expired() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_router_hash, static_key, signing_key, _noise_context, router_info) =
@@ -1514,7 +1514,7 @@ mod tests {
         assert!(handle.await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn transit_tunnels_disabled() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let mut hops = Vec::<(Bytes, StaticPublicKey)>::new();
@@ -1612,7 +1612,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn maximum_transit_tunnels() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let mut hops = Vec::<(Bytes, StaticPublicKey)>::new();
@@ -1712,7 +1712,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn next_hop_dial_failure() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) =

@@ -110,12 +110,12 @@ async fn make_router(
     Router::<Runtime>::new(config, None, None).await.unwrap()
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn generate_destination_ntcp2() {
     generate_destination(TransportKind::Ntcp2).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn generate_destination_ssu2() {
     generate_destination(TransportKind::Ssu2).await;
 }
@@ -166,12 +166,12 @@ async fn generate_destination(kind: TransportKind) {
     .expect("to succeed");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn streaming_works_ntcp2() {
     streaming_works(TransportKind::Ntcp2).await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn streaming_works_ssu2() {
     streaming_works(TransportKind::Ssu2).await;
 }
@@ -261,12 +261,12 @@ async fn streaming_works(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn repliable_datagrams_work_ntcp2() {
     repliable_datagrams_work(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn repliable_datagrams_work_ssu2() {
     repliable_datagrams_work(TransportKind::Ssu2).await
 }
@@ -359,12 +359,12 @@ async fn repliable_datagrams_work(kind: TransportKind) {
     let _ = handle.await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn anonymous_datagrams_work_ntcp2() {
     anonymous_datagrams_work(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn anonymous_datagrams_work_ssu2() {
     anonymous_datagrams_work(TransportKind::Ssu2).await
 }
@@ -456,12 +456,12 @@ async fn anonymous_datagrams_work(kind: TransportKind) {
     let _ = handle.await;
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn open_stream_to_self_ntcp2() {
     open_stream_to_self(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn open_stream_to_self_ssu2() {
     open_stream_to_self(TransportKind::Ssu2).await
 }
@@ -511,12 +511,12 @@ async fn open_stream_to_self(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_same_session_twice_transient_ntcp2() {
     create_same_session_twice_transient(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_same_session_twice_transient_ssu2() {
     create_same_session_twice_transient(TransportKind::Ssu2).await
 }
@@ -573,12 +573,12 @@ async fn create_same_session_twice_transient(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_same_session_twice_persistent_ntcp2() {
     create_same_session_twice_persistent(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_same_session_twice_persistent_ssu2() {
     create_same_session_twice_persistent(TransportKind::Ssu2).await
 }
@@ -646,12 +646,12 @@ async fn create_same_session_twice_persistent(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn duplicate_session_id_ntcp2() {
     duplicate_session_id(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn duplicate_session_id_ssu2() {
     duplicate_session_id(TransportKind::Ssu2).await
 }
@@ -708,7 +708,7 @@ async fn duplicate_session_id(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn stream_lots_of_data_ntcp2() {
     stream_lots_of_data(TransportKind::Ntcp2).await
 }
@@ -716,7 +716,7 @@ async fn stream_lots_of_data_ntcp2() {
 // more worker threads are needed because the test transfer a lot of data and it consist of running
 // 6 routers without optimizations in a single thread which the executor doesn't like, causing
 // immediate ACKs to be delayed up to 100ms.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::test(start_paused = true)]
 async fn stream_lots_of_data_ssu2() {
     stream_lots_of_data(TransportKind::Ssu2).await
 }
@@ -815,12 +815,12 @@ async fn stream_lots_of_data(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn forward_stream_ntcp2() {
     forward_stream(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn forward_stream_ssu2() {
     forward_stream(TransportKind::Ssu2).await
 }
@@ -910,12 +910,12 @@ async fn forward_stream(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn connect_to_inactive_destination_ntcp2() {
     connect_to_inactive_destination(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn connect_to_inactive_destination_ssu2() {
     connect_to_inactive_destination(TransportKind::Ssu2).await
 }
@@ -973,12 +973,12 @@ async fn connect_to_inactive_destination(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn closed_stream_detected_ntcp2() {
     closed_stream_detected(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn closed_stream_detected_ssu2() {
     closed_stream_detected(TransportKind::Ssu2).await
 }
@@ -1077,12 +1077,12 @@ async fn closed_stream_detected(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn close_and_reconnect_ntcp2() {
     close_and_reconnect(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn close_and_reconnect_ssu2() {
     close_and_reconnect(TransportKind::Ssu2).await
 }
@@ -1185,12 +1185,12 @@ async fn close_and_reconnect(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_multiple_sessions_ntcp2() {
     create_multiple_sessions(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn create_multiple_sessions_ssu2() {
     create_multiple_sessions(TransportKind::Ssu2).await
 }
@@ -1257,12 +1257,12 @@ async fn create_multiple_sessions(kind: TransportKind) {
     .expect("to succeed");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn send_data_to_destroyed_session_ntcp2() {
     send_data_to_destroyed_session(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn send_data_to_destroyed_session_ssu2() {
     send_data_to_destroyed_session(TransportKind::Ssu2).await
 }
@@ -1356,12 +1356,12 @@ async fn send_data_to_destroyed_session(kind: TransportKind) {
     tokio::time::timeout(Duration::from_secs(15), future).await.expect("no timeout");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn connect_using_b32_i2p_ntcp2() {
     connect_using_b32_i2p(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn connect_using_b32_i2p_ssu2() {
     connect_using_b32_i2p(TransportKind::Ssu2).await
 }
@@ -1463,12 +1463,12 @@ async fn connect_using_b32_i2p(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unpublished_destination_ntcp2() {
     unpublished_destination(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unpublished_destination_ssu2() {
     unpublished_destination(TransportKind::Ssu2).await
 }
@@ -1544,12 +1544,12 @@ async fn unpublished_destination(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn host_lookup_ntcp2() {
     host_lookup(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn host_lookup_ssu2() {
     host_lookup(TransportKind::Ssu2).await
 }
@@ -1721,12 +1721,12 @@ async fn host_lookup(kind: TransportKind) {
     assert!(handle.await.is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn open_parallel_streams_ntcp2() {
     open_parallel_streams(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn open_parallel_streams_ssu2() {
     open_parallel_streams(TransportKind::Ssu2).await
 }
@@ -1839,12 +1839,12 @@ async fn open_parallel_streams(kind: TransportKind) {
     assert!(values.into_iter().all(|value| value.is_ok()));
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn duplicate_sub_session_id_ntcp2() {
     duplicate_sub_session_id(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn duplicate_sub_session_id_ssu2() {
     duplicate_sub_session_id(TransportKind::Ssu2).await
 }
@@ -1923,12 +1923,12 @@ async fn duplicate_sub_session_id(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_stream_and_repliable_ntcp2() {
     primary_session_with_stream_and_repliable(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_stream_and_repliable_ssu2() {
     primary_session_with_stream_and_repliable(TransportKind::Ssu2).await
 }
@@ -2086,12 +2086,12 @@ async fn primary_session_with_stream_and_repliable(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_stream_and_anonymous_ntcp2() {
     primary_session_with_stream_and_anonymous(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_stream_and_anonymous_ssu2() {
     primary_session_with_stream_and_anonymous(TransportKind::Ssu2).await
 }
@@ -2241,12 +2241,12 @@ async fn primary_session_with_stream_and_anonymous(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_primary_sessions_ntcp2() {
     two_primary_sessions(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn two_primary_sessions_ssu2() {
     two_primary_sessions(TransportKind::Ssu2).await
 }
@@ -2417,12 +2417,12 @@ async fn two_primary_sessions(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_repliable_and_anonymous_ntcp2() {
     primary_session_with_repliable_and_anonymous(TransportKind::Ntcp2).await
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn primary_session_with_repliable_and_anonymous_ssu2() {
     primary_session_with_repliable_and_anonymous(TransportKind::Ssu2).await
 }
@@ -2504,7 +2504,7 @@ async fn primary_session_with_repliable_and_anonymous(kind: TransportKind) {
     }
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn active_session_destroyed_and_recreated() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())

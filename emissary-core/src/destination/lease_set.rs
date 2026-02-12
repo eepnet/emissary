@@ -1002,7 +1002,7 @@ mod tests {
     };
     use std::collections::VecDeque;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_published_and_storage_verified() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -1177,7 +1177,7 @@ mod tests {
         assert!(std::matches!(manager.state, PublishState::Inactive));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_storage_reverified() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -1359,7 +1359,7 @@ mod tests {
         assert!(std::matches!(manager.state, PublishState::Inactive));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_republished_after_timeout() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -1550,7 +1550,7 @@ mod tests {
         assert!(std::matches!(manager.state, PublishState::Inactive));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn database_search_reply_with_locally_available_routers() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -1788,7 +1788,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_lookup_started_for_new_floodfills_all_queries_succeed() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2042,7 +2042,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_lookup_started_for_new_floodfills_one_query_succeeds() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2305,7 +2305,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_lookups_fail_lease_set_republished() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2560,7 +2560,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floodfills_rerequested() {
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2635,7 +2635,7 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(5), netdb_rx.recv()).await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn all_floodfills_used_for_store() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2808,7 +2808,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn extra_floodfills_removed() {
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();
@@ -2872,7 +2872,7 @@ mod tests {
         assert_eq!(manager.floodfills.len(), NUM_CLOSEST_FLOODFILLS);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn new_lease_set_published() {
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
         let sender = tp_handle.sender();

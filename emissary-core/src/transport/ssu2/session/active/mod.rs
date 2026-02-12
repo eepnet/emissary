@@ -717,7 +717,7 @@ mod tests {
     use bytes::Bytes;
     use thingbuf::mpsc::channel;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn backpressure_works() {
         let (from_socket_tx, from_socket_rx) = channel(128);
         let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
@@ -874,7 +874,7 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), future).await.expect("no timeout");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_terminated_after_too_many_resends() {
         let (_from_socket_tx, from_socket_rx) = channel(128);
         let (transport_tx, transport_rx) = channel(16);

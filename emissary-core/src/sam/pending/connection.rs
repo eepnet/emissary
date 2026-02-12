@@ -491,7 +491,7 @@ mod tests {
         net::TcpListener,
     };
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_closes_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -505,7 +505,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn keep_alive_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -517,7 +517,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn keep_alive_timeout_after_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -562,7 +562,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_requests_no_version() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(response, "HELLO REPLY RESULT=OK VERSION=3.2\n");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_requests_max_version() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -640,7 +640,7 @@ mod tests {
         assert_eq!(response, "HELLO REPLY RESULT=OK VERSION=3.1\n");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_requests_min_version() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(response, "HELLO REPLY RESULT=OK VERSION=3.2\n");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_create() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -738,7 +738,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_sesssion_create_before_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

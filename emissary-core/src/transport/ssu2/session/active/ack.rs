@@ -225,7 +225,7 @@ impl RemoteAckManager {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ack_one_packet() {
         let mut manager = RemoteAckManager::new();
         manager.register_pkt(1);
@@ -240,7 +240,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ack_multiple_packets() {
         let mut manager = RemoteAckManager::new();
 
@@ -260,7 +260,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn too_many_unacked_packets() {
         let mut manager = RemoteAckManager::new();
 
@@ -279,7 +279,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn max_acks() {
         let mut manager = RemoteAckManager::new();
 
@@ -298,7 +298,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn next_pkt_missing() {
         let mut manager = RemoteAckManager::new();
 
@@ -353,7 +353,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn packet_dropped() {
         let mut manager = RemoteAckManager::new();
 
@@ -375,7 +375,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn packet_dropped_2() {
         let mut manager = RemoteAckManager::new();
 
@@ -395,7 +395,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn packet_dropped_3() {
         let mut manager = RemoteAckManager::new();
 
@@ -413,7 +413,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn packet_dropped_4() {
         let mut manager = RemoteAckManager::new();
 

@@ -371,7 +371,7 @@ impl Stream for TunnelPoolHandle {
 mod tests {
     use super::*;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_router_via_any() {
         let (tx, rx) = mpsc::with_recycle(64, TunnelMessageRecycle::default());
         let sender = TunnelMessageSender(tx);
@@ -399,7 +399,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_tunnel_via_any() {
         let (tx, rx) = mpsc::with_recycle(64, TunnelMessageRecycle::default());
         let sender = TunnelMessageSender(tx);
@@ -430,7 +430,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_router_via_route() {
         let (tx, rx) = mpsc::with_recycle(64, TunnelMessageRecycle::default());
         let sender = TunnelMessageSender(tx);
@@ -460,7 +460,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_to_tunnel_via_route() {
         let (tx, rx) = mpsc::with_recycle(64, TunnelMessageRecycle::default());
         let sender = TunnelMessageSender(tx);

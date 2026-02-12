@@ -499,7 +499,7 @@ mod tests {
         assert_eq!(message.payload, vec![0u8; 1337]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn garbage_collection_incomplete() {
         let message_id = MessageId::from(1338);
         let mut handler =
@@ -520,7 +520,7 @@ mod tests {
         assert!(handler.message_first_seen_queue.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn garbage_collection_complete() {
         let mut handler =
             FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));
@@ -568,7 +568,7 @@ mod tests {
         assert!(handler.message_first_seen_queue.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn garbage_collection_multiple() {
         let mut handler =
             FragmentHandler::<MockRuntime>::new(MockRuntime::register_metrics(vec![], None));

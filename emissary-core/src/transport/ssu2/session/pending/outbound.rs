@@ -1041,7 +1041,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn token_request_timeout() {
         let (
             InboundContext {
@@ -1086,7 +1086,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_request_timeout() {
         let (
             InboundContext {
@@ -1143,7 +1143,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_confirmed_timeout() {
         let (
             InboundContext {
@@ -1217,7 +1217,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_session_created_received() {
         let (
             InboundContext {

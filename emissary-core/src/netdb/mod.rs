@@ -1986,7 +1986,7 @@ mod tests {
     use std::collections::VecDeque;
     use thingbuf::mpsc::{channel, with_recycle};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_store_to_floodfill() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2114,7 +2114,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_store_to_non_floodfill() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2211,7 +2211,7 @@ mod tests {
         assert!(netdb.lease_sets.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn expired_lease_set_store() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2610,7 +2610,7 @@ mod tests {
         assert_eq!(netdb.lease_sets.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_store_to_floodfill() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2734,7 +2734,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stale_router_info_not_stored_nor_flooded() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2823,7 +2823,7 @@ mod tests {
         assert!(netdb.router_infos.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_query() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -2944,7 +2944,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_query_value_not_found() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3030,7 +3030,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_query() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3169,7 +3169,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_query_value_not_found() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3276,7 +3276,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn pending_messages_sent_when_floodfill_connects() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3371,7 +3371,7 @@ mod tests {
         assert!(DatabaseStore::<MockRuntime>::parse(&message.payload).is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_with_different_network_id_ignored() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3459,7 +3459,7 @@ mod tests {
         assert!(netdb.router_infos.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_store_with_zero_reply_token() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3551,7 +3551,7 @@ mod tests {
         assert_eq!(netdb.lease_sets.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_info_store_with_zero_reply_token() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3640,7 +3640,7 @@ mod tests {
         assert_eq!(netdb.router_infos.len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn recursive_lease_set_query_with_duplicate_floodfills() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3809,7 +3809,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn local_router_info_store() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3924,7 +3924,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_exploration_works() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -3994,7 +3994,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_lease_set_query() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -4071,7 +4071,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_router_info_query() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -4149,7 +4149,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn floodfill_is_ibgw() {
         let storage = ProfileStorage::new(&Vec::new(), &Vec::new());
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();

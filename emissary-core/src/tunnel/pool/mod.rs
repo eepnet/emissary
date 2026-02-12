@@ -1493,7 +1493,7 @@ mod tests {
     };
     use thingbuf::mpsc::{channel, with_recycle};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn build_outbound_exploratory_tunnel() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -1608,7 +1608,7 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_OUTBOUND_TUNNELS), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn outbound_exploratory_build_request_expires() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -1720,7 +1720,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn build_inbound_exploratory_tunnel() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -1847,7 +1847,7 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_INBOUND_TUNNELS), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn inbound_exploratory_build_request_expires() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -1976,7 +1976,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_FAILURES), Some(1))
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn build_inbound_client_tunnel() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -2259,7 +2259,7 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_INBOUND_TUNNELS), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn build_outbound_client_tunnel() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -2541,7 +2541,7 @@ mod tests {
         assert_eq!(MockRuntime::get_gauge_value(NUM_INBOUND_TUNNELS), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_outbound_build_reply_received_late() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -2660,7 +2660,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_BUILD_SUCCESSES), None);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_inbound_build_reply_received_late() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -2794,7 +2794,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_tunnel_test() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..20)
@@ -3019,7 +3019,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_TEST_SUCCESSES), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_tunnel_test_expires() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)
@@ -3212,7 +3212,7 @@ mod tests {
         assert_eq!(MockRuntime::get_counter_value(NUM_TEST_FAILURES), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn inbound_tunnels_removed_from_routing_table() {
         // create 10 routers and add them to local `ProfileStorage`
         let mut routers = (0..10)

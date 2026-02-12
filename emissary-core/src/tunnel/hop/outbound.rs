@@ -265,7 +265,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_tunnel_message() {
         let (_local_outbound_hash, outbound, mut outbound_transit) =
             build_outbound_tunnel(true, 2usize);
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(message[0].payload, b"hello, world".to_vec());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn send_tunnel_message_fragmented() {
         let original = (0..4 * 1028usize).map(|i| (i % 256) as u8).collect::<Vec<_>>();
         let (_local_outbound_hash, outbound, mut outbound_transit) =

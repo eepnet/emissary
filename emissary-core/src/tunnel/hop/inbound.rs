@@ -400,7 +400,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn fragment_reception_works() {
         let (local_hash, mut tunnel, mut hops) = build_inbound_tunnel(true, 3usize);
         let local_router_id = RouterId::from(local_hash);

@@ -757,7 +757,7 @@ mod test {
     use bytes::Bytes;
     use thingbuf::mpsc::channel;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn create_outbound_tunnel() {
         let (hops, mut transit_managers): (
             Vec<(Bytes, StaticPublicKey)>,
@@ -814,7 +814,7 @@ mod test {
         assert!(pending_tunnel.try_build_tunnel(message).is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn create_inbound_tunnel() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
@@ -1123,7 +1123,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn create_long_outbound_tunnel() {
         let (hops, mut transit_managers): (
             Vec<(Bytes, StaticPublicKey)>,
@@ -1230,7 +1230,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn build_message_garlic_decrypt_error() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let mut hops = Vec::<(Bytes, StaticPublicKey)>::new();
@@ -1475,7 +1475,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn hop_record_decrypt_error() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
@@ -1589,7 +1589,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn too_long_inbound_tunnel() {
         let hops: Vec<(Bytes, StaticPublicKey)> = (0..8)
             .map(|i| make_router(if i % 2 == 0 { true } else { false }))
@@ -1627,7 +1627,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn inbound_fake_record_router_hash_modified() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
@@ -1743,7 +1743,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn inbound_fake_record_modified() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
@@ -1859,7 +1859,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn empty_payload_inbound() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_event_mgr, _event_subscriber, event_handle) = EventManager::new(None, handle.clone());
@@ -1971,7 +1971,7 @@ mod test {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn empty_payload_outbound_garlic() {
         let (hops, mut transit_managers): (
             Vec<(Bytes, StaticPublicKey)>,

@@ -403,7 +403,7 @@ mod tests {
     use super::*;
     use crate::{primitives::Str, runtime::mock::MockRuntime};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn publish_ntcp() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -428,7 +428,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn dont_publish_ntcp() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -446,7 +446,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn dont_publish_ntcp_host_specified() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -464,7 +464,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn publish_ntcp_but_no_host() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -482,7 +482,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn bind_to_random_port() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -504,7 +504,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn publish_random_port() {
         let config = Some(Ntcp2Config {
             port: 0u16,
@@ -533,7 +533,7 @@ mod tests {
         assert!(context.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn ntcp2_not_enabled() {
         let (context, address) = Ntcp2Transport::<MockRuntime>::initialize(None).await.unwrap();
         assert!(context.is_none());

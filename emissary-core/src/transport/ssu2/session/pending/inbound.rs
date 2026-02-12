@@ -1035,7 +1035,7 @@ mod tests {
         )
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_request_timeout() {
         let (
             InboundContext {
@@ -1077,7 +1077,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn token_request_received_again() {
         let (
             InboundContext {
@@ -1133,7 +1133,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn use_old_token_for_session_request() {
         let (
             InboundContext {
@@ -1203,7 +1203,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn use_new_token_for_session_request() {
         let (
             InboundContext {
@@ -1263,7 +1263,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_session_request() {
         let (
             InboundContext {
@@ -1370,7 +1370,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_created_timeout() {
         let (
             InboundContext {
@@ -1497,7 +1497,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn token_request_clock_skew() {
         // set time backwards by 2 * `MAX_CLOCK_SKEW` so the `Retry` message has an invalid time
         MockRuntime::set_time(Some(

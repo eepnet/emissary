@@ -659,7 +659,7 @@ mod tests {
     use super::*;
     use crate::runtime::mock::MockRuntime;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn event_handle_timer_works() {
         let handle = MockRuntime::register_metrics(vec![], None);
         let (_manager, _subscriber, handle) =

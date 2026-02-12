@@ -1034,7 +1034,7 @@ mod tests {
         tunnel::pool::TunnelPoolBuildParameters,
     };
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn not_enough_routers_for_exploratory_tunnel() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1055,7 +1055,7 @@ mod tests {
         assert!(selector.select_hops(5).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn select_exploratory_hops() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1092,7 +1092,7 @@ mod tests {
         assert_ne!(num_same, 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn use_fast_routers_as_fallback() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(fast, 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn not_enough_routers_for_client_tunnel() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1181,7 +1181,7 @@ mod tests {
         assert!(selector.select_hops(5).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn select_client_hops() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1221,7 +1221,7 @@ mod tests {
         assert_ne!(num_same, 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn use_standard_routers_as_fallback() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1271,7 +1271,7 @@ mod tests {
         assert_eq!(fast, 3);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_not_enough_routers_in_distinct_subnets() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1323,7 +1323,7 @@ mod tests {
         assert!(selector.select_hops(3).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_not_enough_routers_in_distinct_subnets() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1378,7 +1378,7 @@ mod tests {
         assert!(selector.select_hops(3).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_not_enough_reachable_routers() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1415,7 +1415,7 @@ mod tests {
         assert!(selector.select_hops(5).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_not_enough_standard_or_fast_routers() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1455,7 +1455,7 @@ mod tests {
         assert!(selector.select_hops(5).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_insecure_tunnels_not_enough_distinct_subnets() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1511,7 +1511,7 @@ mod tests {
             .is_standard()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_insecure_tunnels_not_enough_distinct_subnets() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1570,7 +1570,7 @@ mod tests {
             .is_fast()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_insecure_tunnels_not_enough_distinct_subnets_or_standard_peers() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1650,7 +1650,7 @@ mod tests {
         assert_ne!(num_same, 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_insecure_tunnels_not_enough_distinct_subnets_or_fast_peers() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -1733,7 +1733,7 @@ mod tests {
         assert_ne!(num_same, 5);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn router_participation() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1812,7 +1812,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_enforce_max_participation() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1851,7 +1851,7 @@ mod tests {
         assert!(selector.select_hops(3).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_ignore_max_participation_for_insecure_tunnels() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1889,7 +1889,7 @@ mod tests {
         assert!(selector.select_hops(3).is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn exploratory_enforce_max_participation_with_fast_fallbacks() {
         let build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let profile_storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
@@ -1963,7 +1963,7 @@ mod tests {
         assert!(selector.select_hops(3).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_enforce_max_participation() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -2005,7 +2005,7 @@ mod tests {
         assert!(selector.select_hops(3).is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_ignore_max_participation_for_insecure_tunnels() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());
@@ -2046,7 +2046,7 @@ mod tests {
         assert!(selector.select_hops(3).is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_enforce_max_participation_with_fast_fallbacks() {
         let exploratory_build_parameters = TunnelPoolBuildParameters::new(Default::default());
         let client_build_parameters = TunnelPoolBuildParameters::new(Default::default());

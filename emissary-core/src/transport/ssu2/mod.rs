@@ -352,7 +352,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn connect_ssu2_wrong_network() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));

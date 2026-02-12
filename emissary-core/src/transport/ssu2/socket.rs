@@ -948,7 +948,7 @@ mod tests {
         transport::ssu2::session::KeyContext,
     };
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn session_terminated() {
         let storage = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();

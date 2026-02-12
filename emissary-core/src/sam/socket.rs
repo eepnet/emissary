@@ -237,7 +237,7 @@ mod tests {
     use std::time::Duration;
     use tokio::{io::AsyncWriteExt, net::TcpListener};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_command_normal() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(socket.read_offset, 0usize);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn read_command_partial() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

@@ -1197,7 +1197,7 @@ mod tests {
     use crate::{primitives::RouterId, runtime::mock::MockRuntime};
     use futures::StreamExt;
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn make_routing_path() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1280,7 +1280,7 @@ mod tests {
         assert!(handle.routing_path().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn expired_outbound_tunnel_invalidates_routing_path() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1339,7 +1339,7 @@ mod tests {
         assert!(handle.routing_path().is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn failing_tunnels_reused() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1418,7 +1418,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn new_outbound_tunnel_replaces_expiring_tunnel() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1495,7 +1495,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn new_outbound_tunnel_replaces_failing_tunnel() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1584,7 +1584,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn expiring_tunnel_is_used() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1686,7 +1686,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn failing_inbound_tunnel_replaced() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1778,7 +1778,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn bind_to_destination() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1926,7 +1926,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn lease_set_requested_through_routing_path() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1991,7 +1991,7 @@ mod tests {
         assert!(handle.make_routing_path().is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn multiple_consecutive_lease_set_query_errors() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();

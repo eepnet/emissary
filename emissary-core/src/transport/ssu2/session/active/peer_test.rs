@@ -608,7 +608,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_1_relayed_to_manager_alice_rejected() {
         let ActiveSessionContext {
             session,
@@ -741,7 +741,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_1_invalid_signature() {
         let ActiveSessionContext {
             session,
@@ -854,7 +854,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_1_invalid_address() {
         let ActiveSessionContext {
             session,
@@ -970,7 +970,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_1_invalid_port() {
         let ActiveSessionContext {
             session,
@@ -1086,7 +1086,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_alice_alice_accepted() {
         let ActiveSessionContext {
             session,
@@ -1237,7 +1237,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_alice_verifying_key_not_found() {
         let ActiveSessionContext {
             session,
@@ -1353,7 +1353,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_invalid_signature() {
         let ActiveSessionContext {
             session,
@@ -1473,7 +1473,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_invalid_address() {
         let ActiveSessionContext {
             session,
@@ -1595,7 +1595,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_invalid_port() {
         let ActiveSessionContext {
             session,
@@ -1717,7 +1717,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_2_alice_verifying_from_router_block() {
         let ActiveSessionContext {
             session,
@@ -1805,7 +1805,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn peer_test_message_3_routed_to_manager() {
         let ActiveSessionContext {
             session,
@@ -1890,7 +1890,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_message_ignored() {
         let ActiveSessionContext {
             session,

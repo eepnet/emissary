@@ -1696,7 +1696,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn receive_multiple_packets() {
         let (
             stream,
@@ -1805,7 +1805,7 @@ mod tests {
             .expect_err("stream closed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn out_of_order() {
         let (
             stream,
@@ -2059,7 +2059,7 @@ mod tests {
             .expect_err("stream closed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn out_of_order_random() {
         let (
             stream,
@@ -2116,7 +2116,7 @@ mod tests {
             .expect_err("stream closed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn stream_reset() {
         let (stream, StreamBuilder { cmd_tx, .. }) = StreamBuilder::build_stream().await;
 
@@ -2157,7 +2157,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn duplicate_packets() {
         let (
             stream,
@@ -2222,7 +2222,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn out_of_order_last_packet_closes_connection() {
         let (
             stream,
@@ -2295,7 +2295,7 @@ mod tests {
         assert!(packet.flags.close());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn sequence_number_too_high() {
         let (stream, StreamBuilder { cmd_tx, .. }) = StreamBuilder::build_stream().await;
 
@@ -2341,7 +2341,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn choke() {
         let (
             stream,
@@ -2389,7 +2389,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn outbound_packets() {
         let (
             mut stream,
@@ -2469,7 +2469,7 @@ mod tests {
         assert_ne!(*stream.rto, INITIAL_RTO);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn rto_works() {
         let (
             mut stream,
@@ -2552,7 +2552,7 @@ mod tests {
         assert!(stream.rto_timer.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn resend_decrease_window_size() {
         let (
             mut stream,
@@ -2669,7 +2669,7 @@ mod tests {
         assert!(stream.rto_timer.is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn data_split_into_multiple_packets() {
         let (
             mut stream,
@@ -2811,7 +2811,7 @@ mod tests {
         assert_eq!(third.payload, vec![4u8; MTU_SIZE]);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn nacks_work() {
         let (
             mut stream,
@@ -3036,7 +3036,7 @@ mod tests {
         assert_eq!(stream.window_size, 67);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn rtt_rto_calculated_correctly() {
         let (
             mut stream,
@@ -3324,7 +3324,7 @@ mod tests {
         assert_eq!(rto.exponential_backoff(), Duration::from_millis(238));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_closes_socket_with_pending_data() {
         let (
             stream,
@@ -3425,7 +3425,7 @@ mod tests {
             .expect("to succeed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn local_client_closes_socket() {
         let (
             stream,
@@ -3534,7 +3534,7 @@ mod tests {
             .expect("to succeed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn remote_closes_socket() {
         let (
             stream,
@@ -3649,7 +3649,7 @@ mod tests {
             .expect("to succeed");
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_socket_closed_with_pending_data() {
         let (
             (
@@ -3726,7 +3726,7 @@ mod tests {
         assert_eq!(outbound_checksum, inbound_checksum);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn client_socket_closed_with_pending_data_with_packet_loss() {
         let (
             (
@@ -3812,7 +3812,7 @@ mod tests {
         assert_eq!(outbound_checksum, inbound_checksum);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn postpone_close_until_all_data_is_received() {
         let (
             stream,

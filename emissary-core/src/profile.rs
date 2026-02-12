@@ -898,7 +898,7 @@ mod tests {
     use super::*;
     use crate::{crypto::base64_encode, primitives::RouterInfoBuilder, runtime::mock::MockRuntime};
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn initialize_with_infos_without_profiles() {
         let (_, infos): (Vec<_>, Vec<_>) = (0..5)
             .map(|_| {
@@ -921,7 +921,7 @@ mod tests {
         assert!(profiles.profiles.read().values().all(|profile| profile == &Profile::new()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn initialize_with_infos_and_profiles() {
         let (router_ids, infos): (Vec<_>, Vec<_>) = (0..5)
             .map(|_| {
@@ -983,7 +983,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn profile_without_router_info() {
         let profiles = (0..3)
             .map(|i| {
@@ -1017,7 +1017,7 @@ mod tests {
         assert!(profiles.profiles.read().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn create_profile_if_it_doesnt_exist() {
         let profiles = ProfileStorage::<MockRuntime>::new(&Vec::new(), &Vec::new());
         let router_id = RouterId::random();
