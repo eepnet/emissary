@@ -111,18 +111,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: actions-rust-lang/setup-rust-toolchain@v1
-
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: nextest
     - name: Install fontconfig
       run: sudo apt-get update && sudo apt-get install -y pkg-config libfontconfig1-dev
-
-    - name: cargo-test emissary-cli
-      working-directory: emissary-cli
-      run: cargo test --profile testnet
-
-    - name: cargo-test emissary-util
-      working-directory: emissary-util
-      run: cargo test --profile testnet
-
-    - name: cargo-test emissary-core
-      working-directory: emissary-core
-      run: cargo test --profile testnet
+    - name: cargo-nextest emissary-cli
+      run:
+        cargo nextest run --package emissary-cli --cargo-profile testnet
+    - name: cargo-nextest emissary-core
+      run:
+        cargo nextest run --package emissary-core --cargo-profile testnet
+    - name: cargo-nextest emissary-util
+      run:
+        cargo nextest run --package emissary-util --cargo-profile testnet
