@@ -1,2 +1,9 @@
 [profile.default]
 slow-timeout = "5s"
+
+[profile.default.junit]
+path = "junit.xml"
+
+[profile.tests-slow]
+slow-timeout = { period = "1s", terminate-after = 2, grace-period = "0s" }
+fail-fast = false
