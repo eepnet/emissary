@@ -36,7 +36,7 @@ serde = "1.0.219"
 sha2 = { version = "0.10.9", default-features = false }
 smol = "2.0.2"
 tempfile = "3.20.0"
-tokio-util = { version = "0.7.15", features = ["compat"] }
+tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio = { version = "1.45.1", features = ["full"] }
 toml = "0.8.23"
 tracing-subscriber = { version = "0.3.19", features = ["chrono", "env-filter", "time"] }
