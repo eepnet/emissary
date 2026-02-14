@@ -485,7 +485,7 @@ mod tests {
     // outbound endpoint and the target router are the same router
     //
     // verify that the payload inside the `TunnelData` message gets routed correctly TunnelManager
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn obep_routes_message_to_self() {
         let (_tx, rx) = channel(64);
         let (subsys_handle, event_rx) = SubsystemHandle::new();
@@ -603,7 +603,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn expired_unfragmented_message() {
         let (_tx, rx) = channel(64);
         let (subsys_handle, _event_rx) = SubsystemHandle::new();

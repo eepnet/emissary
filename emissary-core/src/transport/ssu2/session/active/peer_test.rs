@@ -608,7 +608,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn peer_test_message_1_relayed_to_manager_alice_rejected() {
         let ActiveSessionContext {
             session,
@@ -1086,7 +1086,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn peer_test_message_2_alice_alice_accepted() {
         let ActiveSessionContext {
             session,
@@ -1717,7 +1717,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn peer_test_message_2_alice_verifying_from_router_block() {
         let ActiveSessionContext {
             session,
@@ -1805,7 +1805,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn peer_test_message_3_routed_to_manager() {
         let ActiveSessionContext {
             session,

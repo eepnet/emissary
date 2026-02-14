@@ -243,7 +243,7 @@ mod tests {
         fragments
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn simple_fragmentation() {
         let expiration = MockRuntime::time_since_epoch();
         let message_id = MessageId::from(1338);
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(message.payload, vec![0u8; 1337]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn first_and_last_fragment() {
         let expiration = MockRuntime::time_since_epoch();
         let message_id = MessageId::from(1339);
@@ -320,7 +320,7 @@ mod tests {
         assert_eq!(message.payload, data);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_order_last_is_first() {
         let expiration = MockRuntime::time_since_epoch();
         let message_id = MessageId::from(1338);
@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(message.payload, vec![0u8; 30_005]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn middle_fragment_delivered_last() {
         let expiration = MockRuntime::time_since_epoch();
         let mut fragments = split(4, vec![0u8; 1337]);

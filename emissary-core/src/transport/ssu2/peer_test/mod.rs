@@ -1417,7 +1417,7 @@ mod tests {
         (router_id, router_info, serialized)
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn session_doesnt_exist_in_profile_storage() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],
@@ -1432,7 +1432,7 @@ mod tests {
         assert!(!manager.active.contains_key(&router_id));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     #[should_panic]
     async fn session_doesnt_support_ssu2() {
         let (router_info, _, _) = RouterInfoBuilder::default().build();
@@ -1451,7 +1451,7 @@ mod tests {
         manager.add_session(&router_id, tx);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn router_doesnt_support_peer_testing() {
         let (router_id, router_info, _) = make_router_info(Str::from("C"), Some(true));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1470,7 +1470,7 @@ mod tests {
         assert!(!manager.active.contains_key(&router_id));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn router_doesnt_support_ipv4_or_ipv6() {
         let (router_id, router_info, _) = make_router_info(Str::from("BC"), None);
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1489,7 +1489,7 @@ mod tests {
         assert!(!manager.active.contains_key(&router_id));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn router_supports_peer_testing_over_ipv4() {
         let (router_id, router_info, _) = make_router_info(Str::from("BC"), Some(true));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1509,7 +1509,7 @@ mod tests {
         assert!(supports_ipv4);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn router_supports_peer_testing_over_ipv6() {
         let (router_id, router_info, _) = make_router_info(Str::from("BC"), Some(false));
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1529,7 +1529,7 @@ mod tests {
         assert!(!supports_ipv4);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     #[should_panic]
     async fn inbound_request_alice_doesnt_exist() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
@@ -1560,7 +1560,7 @@ mod tests {
     // alice is the only router with an active session
     //
     // make sure it's not chosen as charlie
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_request_alice_is_not_chosen() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (router_id, router_info, _) = make_router_info(Str::from("BC"), Some(true));
@@ -1595,7 +1595,7 @@ mod tests {
         assert!(manager.pending_tests.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_request_rejected_no_ipv4_routers() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (router_id1, router_info1, _) = make_router_info(Str::from("BC"), Some(true));
@@ -1632,7 +1632,7 @@ mod tests {
         assert!(manager.pending_tests.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_request_rejected_no_ipv6_routers() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (router_id1, router_info1, _) = make_router_info(Str::from("BC"), Some(false));
@@ -1669,7 +1669,7 @@ mod tests {
         assert!(manager.pending_tests.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_request_accepted() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (router_id1, router_info1, serialized1) = make_router_info(Str::from("BC"), Some(true));
@@ -1728,7 +1728,7 @@ mod tests {
         assert_eq!(charlie_router_id, router_id2);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn bob_request_rejected_already_connected() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (alice_router_id, alice_router_info, alice_serialized) =
@@ -1778,7 +1778,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn bob_request_rejected_address_not_supported() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (alice_router_id, alice_router_info, alice_serialized) =
@@ -1826,7 +1826,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn bob_request_accepted() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (alice_router_id, alice_router_info, alice_serialized) =
@@ -1917,7 +1917,7 @@ mod tests {
         }));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn alice_request_charlie_no_longer_connected() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (charlie_router_id, charlie_router_info, charlie_serialized) =
@@ -1979,7 +1979,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn charlie_response_relayed() {
         let storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (charlie_router_id, charlie_router_info, charlie_serialized) =
@@ -2052,7 +2052,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_session_too_short_packet() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],
@@ -2073,7 +2073,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_session_no_active_test() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],
@@ -2090,7 +2090,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_session_peer_test_block_missing() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],
@@ -2137,7 +2137,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_session_invalid_peer_test_block() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],
@@ -2197,7 +2197,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn out_of_session_response() {
         let mut manager = PeerTestManager::new(
             [0xaa; 32],

@@ -1197,7 +1197,7 @@ mod tests {
     use crate::{primitives::RouterId, runtime::mock::MockRuntime};
     use futures::StreamExt;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn make_routing_path() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();
@@ -1339,7 +1339,7 @@ mod tests {
         assert!(handle.routing_path().is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn failing_tunnels_reused() {
         let remote = DestinationId::random();
         let outbound = TunnelId::random();

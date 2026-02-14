@@ -1715,7 +1715,7 @@ mod tests {
         )
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn create_stream_sub_session() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1732,7 +1732,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn duplicate_sub_session() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1748,7 +1748,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&result).contains("DUPLICATE_ID"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn non_primary_sub_session() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Stream;
@@ -1758,7 +1758,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&result).contains("not a primary session"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn create_datagram_sub_session() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1778,7 +1778,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn create_multiple_datagram_sub_sessions() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1834,7 +1834,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn reject_datagram_sub_session_with_occupied_port() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1866,7 +1866,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn register_sub_session_sam_server_exited() {
         let (mut session, _) = create_session().await;
         session.session_kind = SamSessionKind::Primary {
@@ -1878,7 +1878,7 @@ mod tests {
         assert!(String::from_utf8_lossy(&result).contains("internal error"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_me() {
         let (mut session, mut ctx) = create_session().await;
         session.on_naming_lookup("ME".to_string());
@@ -1898,7 +1898,7 @@ mod tests {
         assert!(response.ends_with("\n"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_b32_invalid() {
         let (mut session, mut ctx) = create_session().await;
         session.on_naming_lookup("invalid.b32.i2p".to_string());
@@ -1917,7 +1917,7 @@ mod tests {
         assert!(response.ends_with("\n"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_b32_with_http() {
         let (mut session, mut ctx) = create_session().await;
 
@@ -1937,7 +1937,7 @@ mod tests {
         assert!(response.contains("RESULT=INVALID_KEY"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_b32_with_https() {
         let (mut session, mut ctx) = create_session().await;
 
@@ -1957,7 +1957,7 @@ mod tests {
         assert!(response.contains("RESULT=INVALID_KEY"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_i2p_no_addressbook() {
         let (mut session, mut ctx) = create_session().await;
         session.on_naming_lookup("example.i2p".to_string());
@@ -1977,7 +1977,7 @@ mod tests {
         assert!(response.ends_with("\n"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_invalid_name() {
         let (mut session, mut ctx) = create_session().await;
         session.on_naming_lookup("invalid-name-without-tld".to_string());
@@ -1997,7 +1997,7 @@ mod tests {
         assert!(response.ends_with("\n"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn naming_lookup_clearnet() {
         let (mut session, mut ctx) = create_session().await;
         session.on_naming_lookup("https://google.com".to_string());
@@ -2017,7 +2017,7 @@ mod tests {
         assert!(response.ends_with("\n"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_connect_for_repliable() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2044,7 +2044,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_connect_for_anonymous() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2071,7 +2071,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_connect_for_self() {
         let (mut session, _ctx) = create_session().await;
 
@@ -2099,7 +2099,7 @@ mod tests {
         assert!(response.contains("STREAM STATUS RESULT=CANT_REACH_PEER"));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_accept_for_repliable() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2121,7 +2121,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_accept_for_anonymous() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2143,7 +2143,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_forward_for_repliable() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2165,7 +2165,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_forward_for_anonymous() {
         let (mut session, _ctx) = create_session().await;
         session.session_kind = SamSessionKind::Datagram {
@@ -2187,7 +2187,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_accept_then_forward() {
         let (mut session, _ctx) = create_session().await;
 
@@ -2224,7 +2224,7 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_secs(1), future).await.is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_forward_then_accept() {
         let (mut session, _ctx) = create_session().await;
 

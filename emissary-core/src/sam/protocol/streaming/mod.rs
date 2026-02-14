@@ -1318,7 +1318,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn register_ephemeral_listener() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -1441,7 +1441,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn pending_stream_initialized_with_silent_listener() {
         let signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let destination = Destination::new::<MockRuntime>(signing_key.public());
@@ -1519,7 +1519,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn pending_stream_initialized_with_non_silent_listener() {
         let local_signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let local_destination = Destination::new::<MockRuntime>(local_signing_key.public());
@@ -1623,7 +1623,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn pending_stream_initialized_with_persistent_listener() {
         let signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let destination = Destination::new::<MockRuntime>(signing_key.public());
@@ -1730,7 +1730,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn pending_stream_with_buffered_data_initialized() {
         let signing_key = SigningPrivateKey::from_bytes(&[0u8; 32]).unwrap();
         let destination = Destination::new::<MockRuntime>(signing_key.public());
@@ -1880,7 +1880,7 @@ mod tests {
         assert_eq!(buffer, b"hello, worldtesting 123goodbye world");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn outbound_stream_accepted() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2060,7 +2060,7 @@ mod tests {
         assert_eq!(response, "STREAM STATUS RESULT=CANT_REACH_PEER\n");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn data_in_syn_packet_silent_ephemeral() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2125,7 +2125,7 @@ mod tests {
         assert_eq!(&buffer, b"hello, world");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn data_in_syn_packet_non_silent_ephemeral() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2197,7 +2197,7 @@ mod tests {
         assert_eq!(response, "hello, world\n");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn data_in_syn_packet_non_silent_pending_ephemeral() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2270,7 +2270,7 @@ mod tests {
         assert_eq!(response, "hello, world\n");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn data_in_syn_packet_silent_pending_ephemeral() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2333,7 +2333,7 @@ mod tests {
         assert_eq!(response, "hello, world\n");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn active_session_destroyed() {
         let socket_factory = SocketFactory::new().await;
 
@@ -2456,7 +2456,7 @@ mod tests {
         assert_eq!(listener_stream.read(&mut buffer).await.unwrap(), 0);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn signature_missing_inbound_stream() {
         let mut manager = {
             let signing_key = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
@@ -2490,7 +2490,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn destination_missing() {
         let mut manager = {
             let signing_key = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
@@ -2522,7 +2522,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_stream() {
         let signing_key = SigningPrivateKey::from_bytes(&[
             116, 15, 103, 156, 205, 43, 224, 113, 103, 249, 182, 195, 149, 25, 171, 177, 151, 135,
@@ -2589,7 +2589,7 @@ mod tests {
             .is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_signature() {
         let signing_key = SigningPrivateKey::from_bytes(&[
             116, 15, 103, 156, 205, 43, 224, 113, 103, 249, 182, 195, 149, 25, 171, 177, 151, 135,
@@ -2657,7 +2657,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_destination_id() {
         let mut manager = {
             let signing_key = SigningPrivateKey::from_bytes(&[1u8; 32]).unwrap();
@@ -2691,7 +2691,7 @@ mod tests {
     }
 
     // TODO: add better test
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn offline() {
         // set runtime unix time clock to 0 to pass the offline signature expiration check
         MockRuntime::set_time(Some(Duration::from_nanos(0)));
@@ -2808,7 +2808,7 @@ mod tests {
         assert!(manager2.destination_streams.get(&manager1.destination_id).is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dst_and_src_ports_specified() {
         let socket_factory = SocketFactory::new().await;
 

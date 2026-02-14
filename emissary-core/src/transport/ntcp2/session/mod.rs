@@ -586,7 +586,7 @@ mod tests {
         static_key: StaticPrivateKey,
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn connection_succeeds() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -649,7 +649,7 @@ mod tests {
         assert!(res2.unwrap().is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_network_id_initiator() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -709,7 +709,7 @@ mod tests {
         assert!(handle.await.unwrap().is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_network_id_responder() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -770,7 +770,7 @@ mod tests {
         assert!(handle.await.unwrap().is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dialer_local_addresses_disabled() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));
@@ -830,7 +830,7 @@ mod tests {
         assert!(local_manager.create_session(remote.router_info.clone()).await.is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn listener_local_addresses_disabled() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));

@@ -237,7 +237,7 @@ mod tests {
     use std::time::Duration;
     use tokio::{io::AsyncWriteExt, net::TcpListener};
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn read_command_normal() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

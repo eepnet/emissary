@@ -491,7 +491,7 @@ mod tests {
         net::TcpListener,
     };
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn client_closes_socket() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -738,7 +738,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn send_sesssion_create_before_handshake() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();

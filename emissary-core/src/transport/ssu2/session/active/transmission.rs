@@ -798,7 +798,7 @@ mod tests {
         transport::ssu2::message::{HeaderKind, HeaderReader},
     };
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn ack_one_packet() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -824,7 +824,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn ack_multiple_packets_last_packet_missing() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -853,7 +853,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&1));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn ack_multiple_packets_first_packet_missing() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -880,7 +880,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&4));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn ack_multiple_packets_middle_packets_nacked() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -910,7 +910,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&2));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn multiple_ranges() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -940,7 +940,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&3));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn alternating() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -973,7 +973,7 @@ mod tests {
         }));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn no_ranges() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1002,7 +1002,7 @@ mod tests {
         assert!((1..=9).all(|i| mgr.segments.contains_key(&i)));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn highest_pkts_not_received() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1032,7 +1032,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&3));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_nack_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1062,7 +1062,7 @@ mod tests {
         assert!(mgr.segments.contains_key(&3));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_ack_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1090,7 +1090,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn num_acks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1118,7 +1118,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn nacks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1147,7 +1147,7 @@ mod tests {
         assert!((1..=9).all(|i| mgr.segments.contains_key(&i)));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn acks_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1175,7 +1175,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn highest_seen_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1203,7 +1203,7 @@ mod tests {
         assert_eq!(mgr.segments.len(), 10);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn num_ack_out_of_range() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1231,7 +1231,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn nothing_to_resend() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1256,7 +1256,7 @@ mod tests {
         assert!(mgr.drain_expired().unwrap().is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn packets_resent() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1394,7 +1394,7 @@ mod tests {
         assert!(mgr.segments.is_empty());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn window_size_increases() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1505,7 +1505,7 @@ mod tests {
         assert_eq!(mgr.window_size, MIN_WINDOW_SIZE);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn excess_packets_stay_in_pending() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1558,7 +1558,7 @@ mod tests {
         assert!(mgr.has_capacity()); // window size has grown
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn pending_packets_partially_sent() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,
@@ -1648,7 +1648,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn peer_test_with_router_info() {
         let mut mgr = TransmissionManager::<MockRuntime>::new(
             1337u64,

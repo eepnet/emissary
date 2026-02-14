@@ -2116,7 +2116,7 @@ mod tests {
             .expect_err("stream closed");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn stream_reset() {
         let (stream, StreamBuilder { cmd_tx, .. }) = StreamBuilder::build_stream().await;
 
@@ -2157,7 +2157,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn duplicate_packets() {
         let (
             stream,
@@ -2295,7 +2295,7 @@ mod tests {
         assert!(packet.flags.close());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn sequence_number_too_high() {
         let (stream, StreamBuilder { cmd_tx, .. }) = StreamBuilder::build_stream().await;
 
@@ -2341,7 +2341,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn choke() {
         let (
             stream,

@@ -979,7 +979,7 @@ mod tests {
     };
     use std::collections::VecDeque;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn query_lease_set_found() {
         let (netdb_handle, _rx) = NetDbHandle::create();
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -1011,7 +1011,7 @@ mod tests {
         assert_eq!(destination.query_lease_set(&remote), LeaseSetStatus::Found);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn query_lease_set_expired() {
         let (netdb_handle, _rx) = NetDbHandle::create();
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -1050,7 +1050,7 @@ mod tests {
         assert_eq!(destination.query_futures.len(), 1);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn query_lease_set_not_found() {
         let (netdb_handle, _rx) = NetDbHandle::create();
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -1078,7 +1078,7 @@ mod tests {
         assert_eq!(destination.query_futures.len(), 1);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn query_lease_set_pending() {
         let (netdb_handle, _rx) = NetDbHandle::create();
         let (tp_handle, _tm_rx, _tp_tx, _srx) = TunnelPoolHandle::create();
@@ -1184,7 +1184,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn create_lease_set_immediately() {
         let (netdb_handle, _rx) = NetDbHandle::create();
         let (tp_handle, _tm_rx, tp_tx, _srx) = TunnelPoolHandle::from_config(TunnelPoolConfig {

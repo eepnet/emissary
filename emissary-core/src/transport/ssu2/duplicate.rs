@@ -101,7 +101,7 @@ mod tests {
     use super::*;
     use crate::runtime::mock::MockRuntime;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn insert_duplicate_and_decay() {
         let mut filter = DuplicateFilter::<MockRuntime>::new();
 

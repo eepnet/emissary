@@ -168,7 +168,7 @@ mod tests {
     use crate::runtime::mock::MockRuntime;
     use std::time::Duration;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn immediate_shutdown() {
         let mut context = ShutdownContext::<MockRuntime>::new();
 
@@ -222,7 +222,7 @@ mod tests {
             .expect("no timeout");
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn subsystem_already_shut_down() {
         let mut context = ShutdownContext::<MockRuntime>::new();
 

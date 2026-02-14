@@ -1497,7 +1497,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn token_request_clock_skew() {
         // set time backwards by 2 * `MAX_CLOCK_SKEW` so the `Retry` message has an invalid time
         MockRuntime::set_time(Some(

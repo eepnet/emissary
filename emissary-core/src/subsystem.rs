@@ -975,7 +975,7 @@ mod tests {
         assert_eq!(manager.max_transit, 100 * 1024);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_router_connection_disconnection() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1017,7 +1017,7 @@ mod tests {
         assert!(!manager.routers.contains_key(&router));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dial_router() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1070,7 +1070,7 @@ mod tests {
         assert!(msg_rx.try_recv().is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dial_fails() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1123,7 +1123,7 @@ mod tests {
         assert!(feedback_rx.await.is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dial_fails_with_feedback() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1174,7 +1174,7 @@ mod tests {
         assert!(feedback_rx.await.is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn send_message_to_router() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1289,7 +1289,7 @@ mod tests {
         assert!(feedback_rx.await.is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn send_pending_messages_to_router() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1406,7 +1406,7 @@ mod tests {
         assert!(feedback_rx.await.is_ok());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn install_listener_through_handle() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1436,7 +1436,7 @@ mod tests {
         assert!(handle_clone.listeners.read().contains_key(&message_id));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn no_active_listener_variable_tunnel_build() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1472,7 +1472,7 @@ mod tests {
         assert_eq!(message[0].1.message_type, MessageType::VariableTunnelBuild);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn no_listener_short_tunnel_build() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1508,7 +1508,7 @@ mod tests {
         assert_eq!(message[0].1.message_type, MessageType::ShortTunnelBuild);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn no_listener_outbound_tunnel_build_reply() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1547,7 +1547,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn active_listener_short_tunnel_build() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1592,7 +1592,7 @@ mod tests {
         assert_eq!(message.message_id, *message_id);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn active_listener_outbound_tunnel_build_reply() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1637,7 +1637,7 @@ mod tests {
         assert_eq!(message.message_id, *message_id);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn register_tunnel_through_handle() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1668,7 +1668,7 @@ mod tests {
         assert!(!manager.tunnels.read().contains_key(&tunnel_id));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn route_tunnel_data() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1720,7 +1720,7 @@ mod tests {
         assert_eq!(message.ciphertext(), &[0xbb; 1008]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn route_tunnel_gateway() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1771,7 +1771,7 @@ mod tests {
         assert_eq!(message.payload, &[0xaa; 512]);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn route_tunnel_data_of_non_existent_tunnel() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1819,7 +1819,7 @@ mod tests {
         assert!(transit_rx.try_recv().is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn route_tunnel_gateway_of_non_existent_tunnel() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -1867,7 +1867,7 @@ mod tests {
         assert!(transit_rx.try_recv().is_err());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     #[should_panic]
     async fn route_message_to_closed_tunnel() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
@@ -1967,7 +1967,7 @@ mod tests {
         make_garlic_message_with_noise_context(&noise, remote_key, cloves)
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn outbound_garlic_message_triggers_a_dial() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2017,7 +2017,7 @@ mod tests {
         assert_eq!(dial_rx.try_recv().unwrap(), remote_router);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn outbound_garlic_message_pending_dial() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2091,7 +2091,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn outbound_garlic_message_for_tunnel() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2160,7 +2160,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn outbound_garlic_message_for_router() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2219,7 +2219,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn multiple_inbound_cloves() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2324,7 +2324,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_and_outbound_cloves() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();
@@ -2469,7 +2469,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     #[ignore]
     async fn recursive_inbound_garlic_message() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
@@ -2539,7 +2539,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn route_message_locally() {
         let private_key = StaticPrivateKey::random(rand_core::OsRng);
         let router_id = RouterId::random();

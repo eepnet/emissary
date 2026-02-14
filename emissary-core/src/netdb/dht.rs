@@ -301,7 +301,7 @@ mod tests {
     };
     use bytes::Bytes;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn lookup() {
         let routers = HashSet::from_iter([
             RouterId::from(&base64_decode("4wlqrFG46mv7ujZi18KwEf9uJz2MgOIebdMMxDHsh~0=").unwrap()),
@@ -359,7 +359,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn utc_date() {
         type D = Dht<MockRuntime>;
 

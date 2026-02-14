@@ -987,7 +987,7 @@ mod tests {
         (builder, dial_tx, transport_rx)
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn external_address_discovered_ntcp2() {
         let context = Ntcp2Transport::<MockRuntime>::initialize(Some(Ntcp2Config {
             port: 0,
@@ -1049,7 +1049,7 @@ mod tests {
             .is_some());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn external_address_discovered_ntcp2_unpublished() {
         let context = Ntcp2Transport::<MockRuntime>::initialize(Some(Ntcp2Config {
             port: 0,
@@ -1108,7 +1108,7 @@ mod tests {
             .is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn external_address_discovered_ssu2() {
         let ssu2 = Ssu2Config {
             port: 0,
@@ -1152,7 +1152,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn external_address_discovered_ssu2_unpublished() {
         let context = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
             port: 0,
@@ -1195,7 +1195,7 @@ mod tests {
             .is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn new_external_address_discovered() {
         let ssu2_context = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
             port: 0,
@@ -1287,7 +1287,7 @@ mod tests {
             .is_some());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn discovered_address_doesnt_match_published_address_ntcp2() {
         let context = Ntcp2Transport::<MockRuntime>::initialize(Some(Ntcp2Config {
             port: 0,
@@ -1349,7 +1349,7 @@ mod tests {
             .is_some());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn discovered_address_doesnt_match_published_address_ssu2() {
         let context = Ssu2Transport::<MockRuntime>::initialize(Some(Ssu2Config {
             port: 0,
@@ -1396,7 +1396,7 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_connection_rejected_connection_already_exists() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
@@ -1514,7 +1514,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn inbound_connection_rejected_outbound_pending() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
@@ -1854,7 +1854,7 @@ mod tests {
         .is_usable());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn transit_tunnels_disabled() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
@@ -2020,7 +2020,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn router_without_ntcp2_support_dialed() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));
@@ -2143,7 +2143,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn simultaneous_outbound_ssu2_connections() {
         let config1 = Ssu2Config {
             port: 0,
@@ -2350,7 +2350,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn dial_connected_router() {
         let (router_info, static_key, signing_key) = RouterInfoBuilder::default().build();
         let serialized = Bytes::from(router_info.serialize(&signing_key));

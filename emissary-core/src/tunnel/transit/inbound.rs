@@ -366,7 +366,7 @@ mod tests {
     use bytes::Bytes;
     use thingbuf::mpsc::channel;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn expired_tunnel_gateway_payload() {
         let (ibgw_router_hash, ibgw_static_key, _, ibgw_noise, ibgw_router_info) =
             make_router(false);
@@ -483,7 +483,7 @@ mod tests {
         };
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn invalid_tunnel_gateway_payload() {
         let (_event_mgr, _event_subscriber, event_handle) =
             EventManager::new(None, MockRuntime::register_metrics(vec![], None));

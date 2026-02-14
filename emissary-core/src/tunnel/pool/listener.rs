@@ -236,7 +236,7 @@ mod tests {
     use rand_core::RngCore;
     use std::time::Duration;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn response_channel_closed() {
         let profile_storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (hops, _noise_contexts): (Vec<(Bytes, StaticPublicKey)>, Vec<NoiseContext>) = (0..3)
@@ -288,7 +288,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn tunnel_build_timeouts() {
         let profile_storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (hops, _noise_contexts): (Vec<(Bytes, StaticPublicKey)>, Vec<NoiseContext>) = (0..3)
@@ -340,7 +340,7 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn tunnel_build_dial_failure() {
         let profile_storage = ProfileStorage::<MockRuntime>::new(&[], &[]);
         let (hops, _noise_contexts): (Vec<(Bytes, StaticPublicKey)>, Vec<NoiseContext>) = (0..3)

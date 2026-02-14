@@ -717,7 +717,7 @@ mod tests {
     use bytes::Bytes;
     use thingbuf::mpsc::channel;
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn backpressure_works() {
         let (from_socket_tx, from_socket_rx) = channel(128);
         let socket = <MockRuntime as Runtime>::UdpSocket::bind("127.0.0.1:0".parse().unwrap())
