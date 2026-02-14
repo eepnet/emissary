@@ -40,7 +40,7 @@ tracing = { workspace = true, features = ["log"] }
 yosemite = { workspace = true }
 
 [dev-dependencies]
-fast-socks5 = { version = "0.10.0", features = ["socks4"] }
+fast-socks5 = { version = "1.0.0", features = ["socks4"] }
 
 [features]
 default = ["native-ui"]
