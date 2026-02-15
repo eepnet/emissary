@@ -224,10 +224,13 @@ pub enum FirewallStatus {
     Unknown,
 
     /// SSU2 has detected that the router is firewalled.
-    Firewall,
+    Firewalled,
 
     /// Firewall is open.
     Ok,
+
+    /// Router is behind a symmetric NAT.
+    SymmetricNat,
 }
 
 /// Direction of the connection.

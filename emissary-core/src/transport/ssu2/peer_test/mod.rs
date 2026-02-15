@@ -22,23 +22,16 @@ use crate::{
     primitives::{RouterId, RouterInfo, TransportKind},
     router::context::RouterContext,
     runtime::{Instant, Runtime, UdpSocket},
-    transport::{
-        ssu2::{
-            message::{Block, PeerTestBuilder, PeerTestMessage},
-            peer_test::{
-                detector::{Detector, DetectorEvent},
-                types::{
-                    PeerTestCommand, PeerTestEvent, PeerTestEventRecycle, PeerTestHandle,
-                    RejectionReason,
-                },
-            },
+    transport::ssu2::{
+        message::{Block, PeerTestBuilder, PeerTestMessage},
+        peer_test::types::{
+            PeerTestCommand, PeerTestEvent, PeerTestEventRecycle, PeerTestHandle, RejectionReason,
         },
-        FirewallStatus,
     },
 };
 
 use bytes::{BufMut, BytesMut};
-use futures::{FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream};
 use hashbrown::{HashMap, HashSet};
 use rand_core::RngCore;
 use thingbuf::mpsc::{with_recycle, Receiver, Sender};
@@ -51,7 +44,6 @@ use core::{
     time::Duration,
 };
 
-pub mod detector;
 pub mod types;
 
 /// Logging target for the file.
@@ -69,17 +61,17 @@ const ALICE_WAIT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Events emitted by `PeerTestManager`.
 #[derive(Debug)]
 pub enum PeerTestManagerEvent {
-    /// External address was discovered.
-    ExternalAddress {
-        /// Discovered external address.
-        #[allow(unused)]
-        address: SocketAddr,
-    },
+    PeerTestResult {
+        /// Was message 4 received.
+        message4: bool,
 
-    /// `PeerTestManager` learned something about the firewall status.
-    FirewallStatus {
-        /// Firewall status.
-        status: FirewallStatus,
+        /// Was message 5 received.
+        message5: bool,
+
+        /// Address block from message 7.
+        ///
+        /// `None` if address block was not received.
+        message7: Option<SocketAddr>,
     },
 }
 
@@ -210,8 +202,10 @@ pub struct PeerTestManager<R: Runtime> {
     /// All connected routers.
     connected: HashSet<RouterId>,
 
-    /// Firewall/external address detector.
-    detector: Detector,
+    /// Our external address.
+    ///
+    /// `None` if there are no samples.
+    external_address: Option<SocketAddr>,
 
     /// Our intro key.
     intro_key: [u8; 32],
@@ -248,7 +242,7 @@ impl<R: Runtime> PeerTestManager<R> {
             active_outbound: None,
             active_tests: HashMap::new(),
             connected: HashSet::new(),
-            detector: Detector::new(socket.local_address().expect("to exist").port()),
+            external_address: None,
             intro_key,
             maintenance_timer: R::timer(MAINTENANCE_INTERVAL),
             pending_tests: HashMap::new(),
@@ -265,9 +259,9 @@ impl<R: Runtime> PeerTestManager<R> {
         PeerTestHandle::new(self.tx.clone())
     }
 
-    /// Add an external address discovered during an outbound handshake.
+    /// Register external address.
     pub fn add_external_address(&mut self, address: SocketAddr) {
-        self.detector.register_external_address(address);
+        self.external_address = Some(address);
     }
 
     /// Add new active session to `PeerTestManager`.
@@ -694,7 +688,7 @@ impl<R: Runtime> PeerTestManager<R> {
         pkt_num: u32,
         datagram: Vec<u8>,
         address: SocketAddr,
-    ) -> Result<(), Ssu2Error> {
+    ) -> Result<Option<PeerTestManagerEvent>, Ssu2Error> {
         tracing::trace!(
             target: LOG_TARGET,
             ?src_id,
@@ -744,7 +738,7 @@ impl<R: Runtime> PeerTestManager<R> {
                 requested_address,
             ));
 
-            return Ok(());
+            return Ok(None);
         }
 
         let Some(local_peer_test) = self.active_outbound.take() else {
@@ -844,11 +838,13 @@ impl<R: Runtime> PeerTestManager<R> {
                 ChaChaPoly::with_nonce(&self.intro_key, pkt_num as u64)
                     .decrypt_with_ad(&ad, &mut datagram)?;
 
-                match Block::parse(&datagram)
-                    .map_err(|_| Ssu2Error::Malformed)?
-                    .iter()
-                    .find(|block| core::matches!(block, Block::PeerTest { .. }))
-                {
+                let blocks = Block::parse(&datagram).map_err(|_| Ssu2Error::Malformed)?;
+                let address = blocks.iter().find_map(|block| match block {
+                    Block::Address { address } => Some(*address),
+                    _ => None,
+                });
+
+                match blocks.iter().find(|block| core::matches!(block, Block::PeerTest { .. })) {
                     Some(Block::PeerTest {
                         message: PeerTestMessage::Message5,
                     }) => {
@@ -879,28 +875,36 @@ impl<R: Runtime> PeerTestManager<R> {
                             "peer test message 7 received, peer test completed",
                         );
 
-                        self.detector.register_peer_test_result(true, message_5_received, true);
+                        return Ok(Some(PeerTestManagerEvent::PeerTestResult {
+                            message4: true,
+                            message5: message_5_received,
+                            message7: address,
+                        }));
                     }
-                    _ => {
-                        todo!()
+                    block => {
+                        tracing::warn!(
+                            target: LOG_TARGET,
+                            ?nonce,
+                            ?block,
+                            "unhandled block",
+                        );
+                        debug_assert!(false);
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(None)
     }
 
     /// Maintain the state of `PeerTestManager`.
-    fn maintain(&mut self) {
+    fn maintain(&mut self) -> Option<PeerTestManagerEvent> {
         // skip peer test since we don't know what our external address is
-        let Some(external_address) = self.detector.external_address() else {
-            return;
-        };
+        let external_address = self.external_address?;
 
         match &self.active_outbound {
             None => {}
-            Some(test) if test.is_active() => return,
+            Some(test) if test.is_active() => return None,
             Some(ActiveTest::Pending {
                 nonce,
                 started,
@@ -919,7 +923,11 @@ impl<R: Runtime> PeerTestManager<R> {
                 // message 4 was never received since the test is still pending
                 // message 5 might've been received
                 // message 7 was not received since message 4 was not received (unknown charlie)
-                self.detector.register_peer_test_result(false, *message_5_received, false);
+                return Some(PeerTestManagerEvent::PeerTestResult {
+                    message4: false,
+                    message5: *message_5_received,
+                    message7: None,
+                });
             }
             Some(ActiveTest::Active {
                 bob_router_id,
@@ -941,7 +949,11 @@ impl<R: Runtime> PeerTestManager<R> {
                 // message 4 was never received since the test is active
                 // message 5 might've been received
                 // message 7 was not received since the test timed out
-                self.detector.register_peer_test_result(true, *message_5_received, false);
+                return Some(PeerTestManagerEvent::PeerTestResult {
+                    message4: true,
+                    message5: *message_5_received,
+                    message7: None,
+                });
             }
         }
 
@@ -954,7 +966,7 @@ impl<R: Runtime> PeerTestManager<R> {
                 num_active = ?self.active.len(),
                 "cannot perform peer test, no available candidates",
             );
-            return;
+            return None;
         };
 
         let (message, nonce) = {
@@ -1021,6 +1033,8 @@ impl<R: Runtime> PeerTestManager<R> {
                 "failed to send peer test request to bob",
             ),
         }
+
+        None
     }
 
     /// Handle peer test response from either Bob or Charlie.
@@ -1300,7 +1314,9 @@ impl<R: Runtime> Stream for PeerTestManager<R> {
                 let _ = self.maintenance_timer.poll_unpin(cx);
             }
 
-            self.maintain();
+            if let Some(event) = self.maintain() {
+                return Poll::Ready(Some(event));
+            }
         }
 
         while let Some((pkt, address)) = self.write_buffer.pop_front() {
@@ -1314,23 +1330,12 @@ impl<R: Runtime> Stream for PeerTestManager<R> {
             }
         }
 
-        match self.detector.poll_next_unpin(cx) {
-            Poll::Pending => {}
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some(DetectorEvent::ExternalAddressChanged { address })) =>
-                return Poll::Ready(Some(PeerTestManagerEvent::ExternalAddress { address })),
-            Poll::Ready(Some(DetectorEvent::FirewallStatus { status })) =>
-                return Poll::Ready(Some(PeerTestManagerEvent::FirewallStatus { status })),
-        }
-
         Poll::Pending
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use crate::{
         crypto::{base64_encode, chachapoly::ChaChaPoly},
@@ -1350,6 +1355,7 @@ mod tests {
     use bytes::{BufMut, Bytes};
     use futures::StreamExt;
     use rand::RngCore;
+    use std::time::Duration;
     use thingbuf::mpsc::channel;
 
     macro_rules! decrypt_pkt {
@@ -2252,8 +2258,8 @@ mod tests {
         };
 
         match manager.handle_peer_test(dst_id, pkt_num, pkt, address) {
-            Ok(()) => {}
-            error => panic!("invalid error: {error:?}"),
+            Ok(None) => {}
+            result => panic!("invalid result: {result:?}"),
         }
 
         // spawn manager in the background so the datagram is sent
@@ -2416,11 +2422,10 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            assert!(manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Unknown);
+                .unwrap()
+                .is_none());
         }
 
         // read message 6 (alice sends peer test to chalie)
@@ -2455,11 +2460,19 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            match manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Ok);
+                .unwrap()
+            {
+                Some(PeerTestManagerEvent::PeerTestResult {
+                    message4,
+                    message5,
+                    message7,
+                }) => {
+                    assert!(message4 && message5 && message7.is_some());
+                }
+                _ => panic!("invlid event"),
+            }
         }
     }
 
@@ -2561,11 +2574,10 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            assert!(manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Unknown);
+                .unwrap()
+                .is_none());
         }
 
         // attempt to read message 6 from charlie's socket
@@ -2586,8 +2598,10 @@ mod tests {
         loop {
             tokio::select! {
                 event = manager.next() => match event.unwrap() {
-                    PeerTestManagerEvent::FirewallStatus { status: FirewallStatus::Ok } => break,
-                    _ => {}
+                    PeerTestManagerEvent::PeerTestResult { message4, message5, message7 } => {
+                        assert!(!message4 && message5 && message7.is_none());
+                        break;
+                    }
                 },
                 _ = tokio::time::sleep(Duration::from_secs(15)) => panic!("timeout"),
             };
@@ -2697,11 +2711,10 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            assert!(manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Unknown);
+                .unwrap()
+                .is_none());
 
             match manager.active_outbound.as_ref().unwrap() {
                 ActiveTest::Pending {
@@ -2779,11 +2792,19 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            match manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Ok);
+                .unwrap()
+            {
+                Some(PeerTestManagerEvent::PeerTestResult {
+                    message4,
+                    message5,
+                    message7,
+                }) => {
+                    assert!(message4 && message5 && message7.is_some());
+                }
+                _ => panic!("invaid event"),
+            }
         }
     }
 
@@ -2942,11 +2963,19 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            match manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Firewall);
+                .unwrap()
+            {
+                Some(PeerTestManagerEvent::PeerTestResult {
+                    message4,
+                    message5,
+                    message7,
+                }) => {
+                    assert!(message4 && !message5 && message7.is_some());
+                }
+                _ => panic!("invalid event"),
+            }
         }
     }
 
@@ -3081,11 +3110,10 @@ mod tests {
                 .build::<MockRuntime>();
             let (pkt_num, src_id) = decrypt_pkt!([0xff; 32], pkt);
 
-            manager
+            assert!(manager
                 .handle_peer_test(src_id, pkt_num, pkt.to_vec(), charlie_address)
-                .unwrap();
-
-            assert_eq!(manager.detector.status(), FirewallStatus::Unknown);
+                .unwrap()
+                .is_none());
 
             match manager.active_outbound.as_ref().unwrap() {
                 ActiveTest::Active {
@@ -3130,8 +3158,10 @@ mod tests {
         loop {
             tokio::select! {
                 event = manager.next() => match event.unwrap() {
-                    PeerTestManagerEvent::FirewallStatus { status: FirewallStatus::Ok } => break,
-                    _ => {}
+                    PeerTestManagerEvent::PeerTestResult { message4, message5, message7 } => {
+                        assert!(message4 && message5 && message7.is_none());
+                        break;
+                    }
                 },
                 _ = tokio::time::sleep(Duration::from_secs(15)) => panic!("timeout"),
             };
@@ -3197,21 +3227,16 @@ mod tests {
             _ => panic!("active test"),
         }
 
-        // poll manager until timeout
-        //
-        // since a status change is emitted only when the status actually changes and since it
-        // starts with `Unknown` and failure to receive any messages keeps it as `Unknown`, no
-        // status should be emitted
         loop {
             tokio::select! {
                 event = manager.next() => match event.unwrap() {
-                    PeerTestManagerEvent::FirewallStatus { .. } => panic!("unexpected firewall status"),
-                    _ => {}
+                    PeerTestManagerEvent::PeerTestResult { message4, message5, message7 } => {
+                        assert!(!message4 && !message5 && message7.is_none());
+                        break;
+                    }
                 },
                 _ = tokio::time::sleep(Duration::from_secs(11)) => break,
             };
         }
-
-        assert_eq!(manager.detector.status(), FirewallStatus::Unknown);
     }
 }

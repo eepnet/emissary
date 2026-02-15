@@ -25,6 +25,7 @@ use crate::{
     subsystem::SubsystemEvent,
     transport::{
         ssu2::{
+            detector::Detector,
             message::{HeaderKind, HeaderReader},
             metrics::*,
             peer_test::{PeerTestManager, PeerTestManagerEvent},
@@ -167,6 +168,9 @@ pub struct Ssu2Socket<R: Runtime> {
     /// Chaining key.
     chaining_key: Bytes,
 
+    /// Firewall/external address detector.
+    detector: Detector,
+
     /// Inbound state.
     inbound_state: Bytes,
 
@@ -239,16 +243,14 @@ impl<R: Runtime> Ssu2Socket<R> {
             .update(static_key.public().to_vec())
             .finalize();
 
-        // TODO: pass intro key
-        let peer_test_manager = PeerTestManager::new(intro_key, socket.clone(), router_ctx.clone());
-
         Self {
             active_sessions: R::join_set(),
             chaining_key: Bytes::from(chaining_key),
             inbound_state: Bytes::from(inbound_state),
+            detector: Detector::new(),
             intro_key,
             outbound_state: Bytes::from(outbound_state),
-            peer_test_manager,
+            peer_test_manager: PeerTestManager::new(intro_key, socket.clone(), router_ctx.clone()),
             pending_outbound: HashMap::new(),
             pending_pkts: VecDeque::new(),
             pending_sessions: R::join_set(),
@@ -273,7 +275,7 @@ impl<R: Runtime> Ssu2Socket<R> {
         &mut self,
         mut datagram: Vec<u8>,
         address: SocketAddr,
-    ) -> Result<(), Ssu2Error> {
+    ) -> Result<Option<TransportEvent>, Ssu2Error> {
         let mut reader = HeaderReader::new(self.intro_key, &mut datagram)?;
         let connection_id = reader.dst_id();
 
@@ -282,7 +284,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 pkt: datagram,
                 address,
             }) {
-                Ok(()) => return Ok(()),
+                Ok(()) => return Ok(None),
                 Err(TrySendError::Closed(_)) => {
                     tracing::warn!(
                         target: LOG_TARGET,
@@ -337,7 +339,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                 self.pending_sessions.push(session.run());
                 self.router_ctx.metrics_handle().counter(NUM_INBOUND_SSU2).increment(1);
 
-                Ok(())
+                Ok(None)
             }
             Ok(HeaderKind::PeerTest {
                 net_id,
@@ -354,16 +356,27 @@ impl<R: Runtime> Ssu2Socket<R> {
                     return Err(Ssu2Error::NetworkMismatch);
                 }
 
-                self.peer_test_manager
-                    .handle_peer_test(src_id, pkt_num, datagram, address)
-                    .inspect_err(|error| {
+                match self.peer_test_manager.handle_peer_test(src_id, pkt_num, datagram, address) {
+                    Err(error) => {
                         tracing::debug!(
                             target: LOG_TARGET,
                             ?src_id,
                             ?error,
                             "failed to handle out-of-session peer test message",
                         );
-                    })
+
+                        Err(error)
+                    }
+                    Ok(None) => Ok(None),
+                    Ok(Some(PeerTestManagerEvent::PeerTestResult {
+                        message4,
+                        message5,
+                        message7,
+                    })) => match self.detector.add_peer_test_result(message4, message5, message7) {
+                        Some(status) => Ok(Some(TransportEvent::FirewallStatus { status })),
+                        None => Ok(None),
+                    },
+                }
             }
             _ => match self.pending_outbound.get(&address) {
                 Some(intro_key) =>
@@ -373,6 +386,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                                 pkt: datagram,
                                 address,
                             })
+                            .map(|_| None)
                             .map_err(From::from),
                         None => {
                             tracing::debug!(
@@ -380,7 +394,7 @@ impl<R: Runtime> Ssu2Socket<R> {
                                 ?address,
                                 "pending connection found but no associated session",
                             );
-                            Ok(())
+                            Ok(None)
                         }
                     },
                 None => {
@@ -642,7 +656,8 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             ?error,
                             "failed to handle packet",
                         ),
-                        Ok(()) => {}
+                        Ok(None) => {}
+                        Ok(Some(event)) => return Poll::Ready(Some(event)),
                     }
                 }
             }
@@ -803,7 +818,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             // report external address to `PeerTestManager` so it can be used
                             // for status detection and active peer tests
                             if let Some(address) = external_address {
-                                this.peer_test_manager.add_external_address(address);
+                                if let Some(address) = this.detector.add_external_address(address) {
+                                    this.peer_test_manager.add_external_address(address);
+                                }
                             }
 
                             return Poll::Ready(Some(TransportEvent::ConnectionEstablished {
@@ -922,9 +939,17 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
         match this.peer_test_manager.poll_next_unpin(cx) {
             Poll::Pending => {}
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some(PeerTestManagerEvent::FirewallStatus { status })) =>
-                return Poll::Ready(Some(TransportEvent::FirewallStatus { status })),
-            Poll::Ready(Some(PeerTestManagerEvent::ExternalAddress { .. })) => {}
+            Poll::Ready(Some(PeerTestManagerEvent::PeerTestResult {
+                message4,
+                message5,
+                message7,
+            })) => {
+                if let Some(status) =
+                    this.detector.add_peer_test_result(message4, message5, message7)
+                {
+                    return Poll::Ready(Some(TransportEvent::FirewallStatus { status }));
+                }
+            }
         }
 
         self.waker = Some(cx.waker().clone());
