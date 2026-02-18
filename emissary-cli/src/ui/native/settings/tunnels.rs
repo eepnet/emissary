@@ -85,24 +85,20 @@ impl TryInto<Option<crate::config::ExploratoryConfig>> for ExploratoryConfig {
         Ok(Some(crate::config::ExploratoryConfig {
             inbound_len: self
                 .inbound_len
-                .map(|inbound_len| inbound_len.parse::<usize>())
-                .transpose()
-                .map_err(|_| String::from("Invalid inbound length"))?,
+                .and_then(|x| x.parse::<usize>().ok())
+                .ok_or(String::from("Invalid inbound length"))?,
             inbound_count: self
                 .inbound_count
-                .map(|inbound_count| inbound_count.parse::<usize>())
-                .transpose()
-                .map_err(|_| String::from("Invalid inbound count"))?,
+                .and_then(|x| x.parse::<usize>().ok())
+                .ok_or(String::from("Invalid inbound count"))?,
             outbound_len: self
                 .outbound_len
-                .map(|outbound_len| outbound_len.parse::<usize>())
-                .transpose()
-                .map_err(|_| String::from("Invalid outbound length"))?,
+                .and_then(|x| x.parse::<usize>().ok())
+                .ok_or(String::from("Invalid outbound length"))?,
             outbound_count: self
                 .outbound_count
-                .map(|outbound_count| outbound_count.parse::<usize>())
-                .transpose()
-                .map_err(|_| String::from("Invalid outbound count"))?,
+                .and_then(|x| x.parse::<usize>().ok())
+                .ok_or(String::from("Invalid outbound count"))?,
         }))
     }
 }
@@ -119,10 +115,10 @@ impl From<&Option<crate::config::ExploratoryConfig>> for ExploratoryConfig {
         };
 
         Self {
-            inbound_len: value.inbound_len.map(|value| value.to_string()),
-            inbound_count: value.inbound_count.map(|value| value.to_string()),
-            outbound_len: value.outbound_len.map(|value| value.to_string()),
-            outbound_count: value.outbound_count.map(|value| value.to_string()),
+            inbound_len: Some(value.inbound_len.to_string()),
+            inbound_count: Some(value.inbound_count.to_string()),
+            outbound_len: Some(value.outbound_len.to_string()),
+            outbound_count: Some(value.outbound_count.to_string()),
         }
     }
 }

@@ -25,37 +25,21 @@ use iced::{
     Background, Border, Color, Theme,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct TunnelConfig {
-    inbound_len: String,
-    inbound_count: String,
-    outbound_len: String,
-    outbound_count: String,
+    inbound_len: Option<String>,
+    inbound_count: Option<String>,
+    outbound_len: Option<String>,
+    outbound_count: Option<String>,
 }
 
-/// Defaults from yosemite.
-impl Default for TunnelConfig {
-    fn default() -> Self {
-        Self {
-            inbound_len: String::from("3"),
-            inbound_count: String::from("2"),
-            outbound_len: String::from("3"),
-            outbound_count: String::from("2"),
-        }
-    }
-}
-
-/// Defaults from yosemite.
 impl From<crate::config::TunnelConfig> for TunnelConfig {
     fn from(value: crate::config::TunnelConfig) -> Self {
         Self {
-            inbound_len: value.inbound_len.map(|x| x.to_string()).unwrap_or(String::from("3")),
-            inbound_count: value.inbound_count.map(|x| x.to_string()).unwrap_or(String::from("2")),
-            outbound_len: value.outbound_len.map(|x| x.to_string()).unwrap_or(String::from("3")),
-            outbound_count: value
-                .outbound_count
-                .map(|x| x.to_string())
-                .unwrap_or(String::from("2")),
+            inbound_len: Some(value.inbound_len.to_string()),
+            inbound_count: Some(value.inbound_count.to_string()),
+            outbound_len: Some(value.outbound_len.to_string()),
+            outbound_count: Some(value.outbound_count.to_string()),
         }
     }
 }
@@ -64,15 +48,27 @@ impl TryInto<crate::config::TunnelConfig> for TunnelConfig {
     type Error = String;
 
     fn try_into(self) -> Result<crate::config::TunnelConfig, Self::Error> {
-        let inbound_len = self.inbound_len.parse::<usize>().ok().unwrap_or(0);
-        let inbound_count = self.inbound_count.parse::<usize>().unwrap_or(0);
-        let outbound_len = self.outbound_len.parse::<usize>().unwrap_or(0);
-        let outbound_count = self.outbound_count.parse::<usize>().unwrap_or(0);
+        let inbound_len = self
+            .inbound_len
+            .and_then(|x| x.parse::<usize>().ok())
+            .ok_or(String::from("Invalid inbound length"))?;
+        let inbound_count = self
+            .inbound_count
+            .and_then(|x| x.parse::<usize>().ok())
+            .ok_or(String::from("Invalid inbound count"))?;
+        let outbound_len = self
+            .outbound_len
+            .and_then(|x| x.parse::<usize>().ok())
+            .ok_or(String::from("Invalid outbound length"))?;
+        let outbound_count = self
+            .outbound_count
+            .and_then(|x| x.parse::<usize>().ok())
+            .ok_or(String::from("Invalid outbound count"))?;
         Ok(crate::config::TunnelConfig {
-            inbound_len: Some(inbound_len),
-            inbound_count: Some(inbound_count),
-            outbound_len: Some(outbound_len),
-            outbound_count: Some(outbound_count),
+            inbound_len,
+            inbound_count,
+            outbound_len,
+            outbound_count,
         })
     }
 }
@@ -100,19 +96,19 @@ impl HttpProxyConfig {
     }
 
     fn inbound_len(&self) -> &str {
-        self.tunnel_config.inbound_len.as_str()
+        self.tunnel_config.inbound_len.as_ref().map_or("", |il| il.as_str())
     }
 
     fn inbound_count(&self) -> &str {
-        self.tunnel_config.inbound_count.as_str()
+        self.tunnel_config.inbound_count.as_ref().map_or("", |ic| ic.as_str())
     }
 
     fn outbound_len(&self) -> &str {
-        self.tunnel_config.outbound_len.as_str()
+        self.tunnel_config.outbound_len.as_ref().map_or("", |ol| ol.as_str())
     }
 
     fn outbound_count(&self) -> &str {
-        self.tunnel_config.outbound_count.as_str()
+        self.tunnel_config.outbound_count.as_ref().map_or("", |oc| oc.as_str())
     }
 
     pub fn enabled(&self) -> bool {
@@ -136,19 +132,19 @@ impl HttpProxyConfig {
     }
 
     pub fn set_inbound_len(&mut self, inbound_len: String) {
-        self.tunnel_config.inbound_len = inbound_len;
+        self.tunnel_config.inbound_len = Some(inbound_len);
     }
 
     pub fn set_inbound_count(&mut self, inbound_count: String) {
-        self.tunnel_config.inbound_count = inbound_count;
+        self.tunnel_config.inbound_count = Some(inbound_count);
     }
 
     pub fn set_outbound_len(&mut self, outbound_len: String) {
-        self.tunnel_config.outbound_len = outbound_len;
+        self.tunnel_config.outbound_len = Some(outbound_len);
     }
 
     pub fn set_outbound_count(&mut self, outbound_count: String) {
-        self.tunnel_config.outbound_count = outbound_count;
+        self.tunnel_config.outbound_count = Some(outbound_count);
     }
 }
 

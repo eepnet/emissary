@@ -45,20 +45,20 @@ const RESERVED_PORTS: [u16; 57] = [
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelConfig {
-    pub inbound_len: Option<usize>,
-    pub inbound_count: Option<usize>,
-    pub outbound_len: Option<usize>,
-    pub outbound_count: Option<usize>,
+    pub inbound_len: usize,
+    pub inbound_count: usize,
+    pub outbound_len: usize,
+    pub outbound_count: usize,
 }
 
 /// Copied from yosemite.
 impl Default for TunnelConfig {
     fn default() -> Self {
         Self {
-            inbound_len: Some(3),
-            inbound_count: Some(2),
-            outbound_len: Some(3),
-            outbound_count: Some(2),
+            inbound_len: 3,
+            inbound_count: 2,
+            outbound_len: 3,
+            outbound_count: 2,
         }
     }
 }
@@ -103,7 +103,7 @@ pub struct HttpProxyConfig {
     pub port: u16,
     pub host: String,
     pub outproxy: Option<String>,
-    #[serde(flatten)]
+    #[serde(flatten, default)]
     pub tunnel_config: TunnelConfig,
 }
 
@@ -571,10 +571,10 @@ impl Config {
             caps: config.caps,
             client_tunnels: config.client_tunnels.unwrap_or(Vec::new()),
             exploratory: config.exploratory.map(|config| emissary_core::ExploratoryConfig {
-                inbound_len: config.inbound_len,
-                inbound_count: config.inbound_count,
-                outbound_len: config.outbound_len,
-                outbound_count: config.outbound_count,
+                inbound_len: Some(config.inbound_len),
+                inbound_count: Some(config.inbound_count),
+                outbound_len: Some(config.outbound_len),
+                outbound_count: Some(config.outbound_count),
             }),
             floodfill: config.floodfill,
             http_proxy: config.http_proxy,

@@ -95,11 +95,10 @@ impl HttpProxy {
             publish: false,
             samv3_tcp_port,
             nickname: "http-proxy".to_string(),
-            // Copied from yosemite.
-            inbound_len: config.tunnel_config.inbound_len.unwrap_or(3),
-            inbound_quantity: config.tunnel_config.inbound_count.unwrap_or(2),
-            outbound_len: config.tunnel_config.outbound_len.unwrap_or(3),
-            outbound_quantity: config.tunnel_config.outbound_count.unwrap_or(2),
+            inbound_len: config.tunnel_config.inbound_len,
+            inbound_quantity: config.tunnel_config.inbound_count,
+            outbound_len: config.tunnel_config.outbound_len,
+            outbound_quantity: config.tunnel_config.outbound_count,
             ..Default::default()
         })
         .await?;
