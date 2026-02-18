@@ -144,7 +144,11 @@ impl ClientTunnelManager {
                     debug_assert!(false);
                 }
                 Ok(tunnel) => {
-                    tracing::error!(target: LOG_TARGET, "tunnel returned, restart event loop");
+                    tracing::info!(
+                        target: LOG_TARGET,
+                        name = %tunnel.name,
+                        "tunnel returned, restart event loop"
+                    );
 
                     let future = session.connect_detached_with_options(
                         &tunnel.destination,
