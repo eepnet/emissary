@@ -149,36 +149,15 @@ IPv6 is currently **not** supported for either transport.
 
 **Config file section:** `[http-proxy]`
 
-<table>
-  <thead>
-    <tr>
-      <th>Option</th>
-      <th>Config file</th>
-      <th style="width: 33%">CLI</th>
-      <th>Description</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>Port</td>
-      <td><code>port</code></td>
-      <td><code>--http-proxy-port &lt;PORT&gt;</code></td>
-      <td>HTTP proxy port. (default: 4444)</td>
-    </tr>
-    <tr>
-      <td>Host</td>
-      <td><code>host</code></td>
-      <td><code>--http-proxy-host &lt;HOST&gt;</code></td>
-      <td>HTTP proxy bind address. (default: 127.0.0.1)</td>
-    </tr>
-    <tr>
-      <td>Outproxy</td>
-      <td><code>outproxy</code></td>
-      <td><code>--http-outproxy &lt;HOST&gt;</code></td>
-      <td>HTTP outproxy for clearnet access.</td>
-    </tr>
-  </tbody>
-</table>
+| Option | Config file | CLI | Description |
+|--------|-------------|-----|-------------|
+| Port | `port` | `--http-proxy-port` | HTTP proxy port. (default: 4444) |
+| Host | `host` | `--http-proxy-host` | HTTP proxy bind address. (default: 127.0.0.1) |
+| Outproxy | `outproxy` | `--http-outproxy` | HTTP outproxy for clearnet access. |
+| Inbound tunnel length | `inbound_len` | - | Length of inbound tunnels. (default: 3) |
+| Inbound tunnel count | `inbound_count` | - | Number of inbound tunnels. (default: 2) |
+| Outbound tunnel length | `outbound_len` | - | Length of outbound tunnels. (default: 3) |
+| Outbound tunnel count | `outbound_count` | - | Number of outbound tunnels. (default: 2) |
 
 Example:
 
@@ -187,6 +166,12 @@ Example:
 port = 4444
 host = "127.0.0.1"
 outproxy = "http://exit.stormycloud.i2p"
+
+# Optional
+inbound_len = 3
+inbound_count = 2
+outbound_len = 3
+outbound_count = 2
 ```
 
 ::: info
