@@ -28,7 +28,7 @@ use crate::ui::native::{
 use iced::{
     advanced::widget::Text,
     border::Radius,
-    widget::{button, column, row, Column, Container},
+    widget::{button, column, row, scrollable, Column, Container},
     Border, Color, Element, Length, Theme,
 };
 
@@ -126,17 +126,21 @@ impl RouterUi {
             }
         }
 
-        let settings = Container::new(settings).padding(10).height(750).style(|_theme: &Theme| {
-            iced::widget::container::Style {
-                border: Border {
-                    radius: Radius::from(12.0),
-                    width: 1.0,
-                    color: Color::from_rgb8(28, 36, 49),
-                },
-                background: Some(iced::Background::Color(Color::from_rgb8(28, 36, 49))),
-                ..Default::default()
-            }
-        });
+        // For some reason, scrollable only works here. Anywhere else and the save button on longer
+        // pages (proxies) is hidden.
+        let settings =
+            Container::new(scrollable(settings))
+                .padding(10)
+                .height(750)
+                .style(|_theme: &Theme| iced::widget::container::Style {
+                    border: Border {
+                        radius: Radius::from(12.0),
+                        width: 1.0,
+                        color: Color::from_rgb8(28, 36, 49),
+                    },
+                    background: Some(iced::Background::Color(Color::from_rgb8(28, 36, 49))),
+                    ..Default::default()
+                });
 
         column![title, settings].spacing(30).padding(20).into()
     }

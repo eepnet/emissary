@@ -701,6 +701,30 @@ impl RouterUi {
 
                 Task::none()
             }
+            Message::HttpInboundLenChanged(data) => {
+                self.http_proxy.set_inbound_len(data);
+                self.settings_status = SettingsStatus::Idle(self.active_settings_tab);
+
+                Task::none()
+            }
+            Message::HttpInboundCountChanged(data) => {
+                self.http_proxy.set_inbound_count(data);
+                self.settings_status = SettingsStatus::Idle(self.active_settings_tab);
+
+                Task::none()
+            }
+            Message::HttpOutboundLenChanged(data) => {
+                self.http_proxy.set_outbound_len(data);
+                self.settings_status = SettingsStatus::Idle(self.active_settings_tab);
+
+                Task::none()
+            }
+            Message::HttpOutboundCountChanged(data) => {
+                self.http_proxy.set_outbound_count(data);
+                self.settings_status = SettingsStatus::Idle(self.active_settings_tab);
+
+                Task::none()
+            }
             Message::HttpEnabled(enabled) => {
                 self.http_proxy.set_enabled(enabled);
                 self.settings_status = SettingsStatus::Idle(self.active_settings_tab);
