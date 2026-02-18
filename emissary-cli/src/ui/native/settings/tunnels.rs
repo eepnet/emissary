@@ -194,7 +194,7 @@ impl RouterUi {
                     Text::new("Inbound length").size(15).color(Color::from_rgb8(0x9b, 0xa2, 0xae)),
                 )
                 .push(
-                    TextInput::new("2", self.exploratory.inbound_len())
+                    TextInput::new("3", self.exploratory.inbound_len())
                         .size(15)
                         .on_input(Message::ExploratoryInboundLengthChanged)
                         .padding(10)
@@ -217,7 +217,7 @@ impl RouterUi {
                 )
                 .push(Text::new("Inbound count").size(15).color(Color::from_rgb8(0x9b, 0xa2, 0xae)))
                 .push(
-                    TextInput::new("3", self.exploratory.inbound_count())
+                    TextInput::new("2", self.exploratory.inbound_count())
                         .size(15)
                         .on_input(Message::ExploratoryInboundCountChanged)
                         .padding(10)
@@ -242,7 +242,7 @@ impl RouterUi {
                     Text::new("Outbound length").size(15).color(Color::from_rgb8(0x9b, 0xa2, 0xae)),
                 )
                 .push(
-                    TextInput::new("2", self.exploratory.outbound_len())
+                    TextInput::new("3", self.exploratory.outbound_len())
                         .size(15)
                         .on_input(Message::ExploratoryOutboundLengthChanged)
                         .padding(10)
@@ -267,7 +267,7 @@ impl RouterUi {
                     Text::new("Outbound count").size(15).color(Color::from_rgb8(0x9b, 0xa2, 0xae)),
                 )
                 .push(
-                    TextInput::new("3", self.exploratory.outbound_count())
+                    TextInput::new("2", self.exploratory.outbound_count())
                         .size(15)
                         .on_input(Message::ExploratoryOutboundCountChanged)
                         .padding(10)
