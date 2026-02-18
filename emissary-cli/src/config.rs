@@ -44,12 +44,26 @@ const RESERVED_PORTS: [u16; 57] = [
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExploratoryConfig {
+pub struct TunnelConfig {
     pub inbound_len: Option<usize>,
     pub inbound_count: Option<usize>,
     pub outbound_len: Option<usize>,
     pub outbound_count: Option<usize>,
 }
+
+/// Copied from yosemite.
+impl Default for TunnelConfig {
+    fn default() -> Self {
+        Self {
+            inbound_len: Some(3),
+            inbound_count: Some(2),
+            outbound_len: Some(3),
+            outbound_count: Some(2),
+        }
+    }
+}
+
+pub type ExploratoryConfig = TunnelConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ntcp2Config {
@@ -89,6 +103,8 @@ pub struct HttpProxyConfig {
     pub port: u16,
     pub host: String,
     pub outproxy: Option<String>,
+    #[serde(flatten)]
+    pub tunnel_config: TunnelConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +227,7 @@ impl Default for EmissaryConfig {
                 host: "127.0.0.1".to_string(),
                 port: 4444u16,
                 outproxy: None,
+                tunnel_config: TunnelConfig::default(),
             }),
             socks_proxy: None,
             i2cp: Some(I2cpConfig {
@@ -715,6 +732,7 @@ impl Config {
                     port: *port,
                     host: host.clone(),
                     outproxy: http_outproxy.clone(),
+                    tunnel_config: TunnelConfig::default(),
                 });
             }
             _ => {}
