@@ -17,6 +17,7 @@
 // DEALINGS IN THE SOFTWARE.
 
 use crate::ui::native::{types::Message, RouterUi};
+use std::num::NonZeroUsize;
 
 use iced::{
     advanced::widget::Text,
@@ -85,20 +86,24 @@ impl TryInto<Option<crate::config::ExploratoryConfig>> for ExploratoryConfig {
         Ok(Some(crate::config::ExploratoryConfig {
             inbound_len: self
                 .inbound_len
-                .and_then(|x| x.parse::<usize>().ok())
-                .ok_or(String::from("Invalid inbound length"))?,
+                .and_then(|x| x.parse::<NonZeroUsize>().ok())
+                .ok_or(String::from("Invalid inbound length"))?
+                .into(),
             inbound_count: self
                 .inbound_count
-                .and_then(|x| x.parse::<usize>().ok())
-                .ok_or(String::from("Invalid inbound count"))?,
+                .and_then(|x| x.parse::<NonZeroUsize>().ok())
+                .ok_or(String::from("Invalid inbound count"))?
+                .into(),
             outbound_len: self
                 .outbound_len
-                .and_then(|x| x.parse::<usize>().ok())
-                .ok_or(String::from("Invalid outbound length"))?,
+                .and_then(|x| x.parse::<NonZeroUsize>().ok())
+                .ok_or(String::from("Invalid outbound length"))?
+                .into(),
             outbound_count: self
                 .outbound_count
-                .and_then(|x| x.parse::<usize>().ok())
-                .ok_or(String::from("Invalid outbound count"))?,
+                .and_then(|x| x.parse::<NonZeroUsize>().ok())
+                .ok_or(String::from("Invalid outbound count"))?
+                .into(),
         }))
     }
 }
