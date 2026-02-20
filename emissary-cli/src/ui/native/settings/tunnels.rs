@@ -163,7 +163,7 @@ impl TryInto<Option<crate::config::TransitConfig>> for TransitConfig {
         Ok(Some(crate::config::TransitConfig {
             max_tunnels: self
                 .max_tunnels
-                .map(|max_tunnels| max_tunnels.parse::<usize>())
+                .map(|max_tunnels| max_tunnels.parse::<NonZeroUsize>().map(usize::from))
                 .transpose()
                 .map_err(|_| String::from("Invalid transit tunnel max count"))?,
         }))
