@@ -840,10 +840,6 @@ mod tests {
             base_path: None,
             command: None,
             log: None,
-            #[cfg(any(
-                all(feature = "native-ui", not(feature = "web-ui")),
-                all(not(feature = "native-ui"), feature = "web-ui")
-            ))]
             router_ui: crate::cli::RouterUiOptions {
                 disable_ui: None,
                 refresh_interval: None,
