@@ -239,7 +239,7 @@ pub struct Arguments {
     #[clap(flatten)]
     pub port_forwarding: PortForwardingOptions,
 
-    /// Port forwarding options.
+    /// Router UI options.
     #[clap(flatten)]
     pub router_ui: RouterUiOptions,
 
