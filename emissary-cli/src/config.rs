@@ -103,8 +103,8 @@ pub struct HttpProxyConfig {
     pub port: u16,
     pub host: String,
     pub outproxy: Option<String>,
-    #[serde(flatten, default)]
-    pub tunnel_config: TunnelConfig,
+    #[serde(flatten)]
+    pub tunnel_config: Option<TunnelConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,7 +227,7 @@ impl Default for EmissaryConfig {
                 host: "127.0.0.1".to_string(),
                 port: 4444u16,
                 outproxy: None,
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: Some(TunnelConfig::default()),
             }),
             socks_proxy: None,
             i2cp: Some(I2cpConfig {
@@ -732,7 +732,7 @@ impl Config {
                     port: *port,
                     host: host.clone(),
                     outproxy: http_outproxy.clone(),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: Some(TunnelConfig::default()),
                 });
             }
             _ => {}

@@ -91,14 +91,15 @@ impl HttpProxy {
         );
 
         // create session before starting the tcp listener for the proxy
+        let tunnel_config = config.tunnel_config.unwrap_or_default();
         let session = Session::<style::Stream>::new(SessionOptions {
             publish: false,
             samv3_tcp_port,
             nickname: "http-proxy".to_string(),
-            inbound_len: config.tunnel_config.inbound_len,
-            inbound_quantity: config.tunnel_config.inbound_count,
-            outbound_len: config.tunnel_config.outbound_len,
-            outbound_quantity: config.tunnel_config.outbound_count,
+            inbound_len: tunnel_config.inbound_len,
+            inbound_quantity: tunnel_config.inbound_count,
+            outbound_len: tunnel_config.outbound_len,
+            outbound_quantity: tunnel_config.outbound_count,
             ..Default::default()
         })
         .await?;
@@ -306,10 +307,7 @@ impl HttpProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        address_book::AddressBookManager,
-        config::{AddressBookConfig, TunnelConfig},
-    };
+    use crate::{address_book::AddressBookManager, config::AddressBookConfig};
     use reqwest::{
         header::{HeaderMap, HeaderValue, CONNECTION},
         Client, Proxy, StatusCode,
@@ -411,7 +409,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: None,
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -446,7 +444,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: None,
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -516,7 +514,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: None,
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -565,7 +563,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: None,
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -618,7 +616,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: Some("outproxy.i2p".to_string()),
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -688,7 +686,7 @@ mod tests {
                 port: 0,
                 host: "127.0.0.1".to_string(),
                 outproxy: Some("outproxy.i2p".to_string()),
-                tunnel_config: TunnelConfig::default(),
+                tunnel_config: None,
             },
             sam_port,
             None,
@@ -766,7 +764,7 @@ mod tests {
                     port: 0,
                     host: "127.0.0.1".to_string(),
                     outproxy: Some("zzz.i2p".to_string()),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -788,7 +786,7 @@ mod tests {
                     port: 0,
                     host: "127.0.0.1".to_string(),
                     outproxy: Some("www.zzz.i2p".to_string()),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -810,7 +808,7 @@ mod tests {
                     port: 0,
                     host: "127.0.0.1".to_string(),
                     outproxy: Some("http://zzz.i2p".to_string()),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -832,7 +830,7 @@ mod tests {
                     port: 0,
                     host: "127.0.0.1".to_string(),
                     outproxy: Some("http://www.zzz.i2p".to_string()),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -857,7 +855,7 @@ mod tests {
                         "http://www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
                             .to_string(),
                     ),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -882,7 +880,7 @@ mod tests {
                         "http://lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
                             .to_string(),
                     ),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -907,7 +905,7 @@ mod tests {
                         "www.lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p"
                             .to_string(),
                     ),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,
@@ -931,7 +929,7 @@ mod tests {
                     outproxy: Some(
                         "lhbd7ojcaiofbfku7ixh47qj537g572zmhdc4oilvugzxdpdghua.b32.i2p".to_string(),
                     ),
-                    tunnel_config: TunnelConfig::default(),
+                    tunnel_config: None,
                 },
                 sam_port,
                 None,

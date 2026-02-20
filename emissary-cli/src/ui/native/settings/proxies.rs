@@ -44,6 +44,15 @@ impl From<crate::config::TunnelConfig> for TunnelConfig {
     }
 }
 
+impl From<Option<crate::config::TunnelConfig>> for TunnelConfig {
+    fn from(value: Option<crate::config::TunnelConfig>) -> Self {
+        match value {
+            Some(v) => v.into(),
+            None => Self::default(),
+        }
+    }
+}
+
 impl TryInto<crate::config::TunnelConfig> for TunnelConfig {
     type Error = String;
 
@@ -172,10 +181,7 @@ impl TryInto<Option<crate::config::HttpProxyConfig>> for HttpProxyConfig {
                 host
             },
             outproxy: self.outproxy,
-            tunnel_config: self
-                .tunnel_config
-                .try_into()
-                .map_err(|_| String::from("Invalid tunnel config"))?,
+            tunnel_config: Some(self.tunnel_config.try_into()?),
         }))
     }
 }
