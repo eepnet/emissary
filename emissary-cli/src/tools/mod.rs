@@ -21,12 +21,12 @@ use clap::{ArgGroup, Subcommand};
 mod base64;
 mod devnet;
 
+#[cfg(any(feature = "native-ui", feature = "web-ui"))]
+mod router_ui_dev;
+
 /// Logging target for the file.
 const LOG_TARGET: &str = "emissary::tools";
 
-/// Router commands.
-///
-/// These are inspired by [`i2pd-tools`](https://github.com/PurpleI2P/i2pd-tools/).
 #[derive(Subcommand)]
 pub enum RouterCommand {
     /// Base64-encode data using the I2P Base64 alphabet.
@@ -95,6 +95,12 @@ pub enum RouterCommand {
         #[arg(short = 'p', long, value_name = "PATH")]
         path: Option<String>,
     },
+
+    /// Start the router UI (either native or web) in development mode.
+    ///
+    /// The actual router is not started and the router UI is fed mock data.
+    #[cfg(any(feature = "native-ui", feature = "web-ui"))]
+    RouterUiDev,
 }
 
 impl RouterCommand {
@@ -132,6 +138,8 @@ impl RouterCommand {
                 num_routers,
                 path,
             } => devnet::spawn_network(num_floodfills, num_routers, path).await,
+            #[cfg(any(feature = "native-ui", feature = "web-ui"))]
+            RouterCommand::RouterUiDev => router_ui_dev::run().await,
         }
 
         std::process::exit(0);

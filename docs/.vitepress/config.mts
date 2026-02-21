@@ -37,6 +37,7 @@ export default defineConfig({
         text: "Development",
         items: [
           { text: "Debugging", link: "/debugging.md" },
+          { text: "Development", link: "/development.md" },
         ]
       },
     ],

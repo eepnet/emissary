@@ -86,7 +86,7 @@ impl Default for SubsystemEvent {
 
 /// Event handle.
 #[cfg(feature = "events")]
-pub(crate) struct EventHandle<R: Runtime> {
+pub struct EventHandle<R: Runtime> {
     /// TX channel for sending events to [`EventSubscriber`].
     event_tx: Sender<SubsystemEvent>,
 
@@ -154,7 +154,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::store()`] is used because the count is updated only by
     /// `TransitTunnelManager`.
     #[inline(always)]
-    pub(crate) fn num_transit_tunnels(&self, _num_tunnels: usize) {
+    pub fn num_transit_tunnels(&self, _num_tunnels: usize) {
         #[cfg(feature = "events")]
         self.num_transit_tunnels.store(_num_tunnels, Ordering::Release);
     }
@@ -163,7 +163,7 @@ impl<R: Runtime> EventHandle<R> {
     ///
     /// [`AtomicUsize::fetch_add()`] is used because each transit tunnel keeps track
     /// of its own bandwidth.
-    pub(crate) fn transit_inbound_bandwidth(&self, _bandwidth: usize) {
+    pub fn transit_inbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
         self.transit_inbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
@@ -173,7 +173,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each transit tunnel keeps track
     /// of its own bandwidth.
     #[inline(always)]
-    pub(crate) fn transit_outbound_bandwidth(&self, _bandwidth: usize) {
+    pub fn transit_outbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
         self.transit_outbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
@@ -183,7 +183,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each connection keeps track of its own
     /// bandwidth.
     #[inline(always)]
-    pub(crate) fn transport_inbound_bandwidth(&self, _bandwidth: usize) {
+    pub fn transport_inbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
         self.inbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
@@ -193,7 +193,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each connection keeps track of its own
     /// bandwidth.
     #[inline(always)]
-    pub(crate) fn transport_outbound_bandwidth(&self, _bandwidth: usize) {
+    pub fn transport_outbound_bandwidth(&self, _bandwidth: usize) {
         #[cfg(feature = "events")]
         self.outbound_bandwidth.fetch_add(_bandwidth, Ordering::Release);
     }
@@ -203,7 +203,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::store()`] is used because the count is updated only by
     /// `TransportManager`.
     #[inline(always)]
-    pub(crate) fn num_connected_routers(&self, _num_connected_routers: usize) {
+    pub fn num_connected_routers(&self, _num_connected_routers: usize) {
         #[cfg(feature = "events")]
         self.num_connected_routers.store(_num_connected_routers, Ordering::Release);
     }
@@ -213,11 +213,7 @@ impl<R: Runtime> EventHandle<R> {
     /// [`AtomicUsize::fetch_add()`] is used because each tunnel pool keeps track of its own
     /// tunnel build success/failure rate.
     #[inline(always)]
-    pub(crate) fn tunnel_status(
-        &self,
-        _num_tunnels_built: usize,
-        _num_tunnel_build_failures: usize,
-    ) {
+    pub fn tunnel_status(&self, _num_tunnels_built: usize, _num_tunnel_build_failures: usize) {
         #[cfg(feature = "events")]
         self.num_tunnels_built.fetch_add(_num_tunnels_built, Ordering::Release);
         #[cfg(feature = "events")]
@@ -227,7 +223,7 @@ impl<R: Runtime> EventHandle<R> {
 
     /// Notify the [`EventManager`] that a server destination was started.
     #[inline(always)]
-    pub(crate) fn server_destination_started(&self, _name: String, _address: String) {
+    pub fn server_destination_started(&self, _name: String, _address: String) {
         #[cfg(feature = "events")]
         let _ = self.event_tx.try_send(SubsystemEvent::ServerDestinationStarted {
             name: _name,
@@ -237,14 +233,14 @@ impl<R: Runtime> EventHandle<R> {
 
     /// Notify the [`EventManager`] that a client destination was started.
     #[inline(always)]
-    pub(crate) fn client_destination_started(&self, _name: String) {
+    pub fn client_destination_started(&self, _name: String) {
         #[cfg(feature = "events")]
         let _ = self.event_tx.try_send(SubsystemEvent::ClientDestinationStarted { name: _name });
     }
 
     /// Create new `EventHandle` for tests.
     #[cfg(test)]
-    pub(crate) fn new_for_tests() -> Self {
+    pub fn new_for_tests() -> Self {
         let (event_tx, _event_rx) = channel(16);
 
         Self {
@@ -385,7 +381,7 @@ enum State {
 
 /// Event manager.
 #[cfg(feature = "events")]
-pub(crate) struct EventManager<R: Runtime> {
+pub struct EventManager<R: Runtime> {
     /// RX channel for receiving events from other subsystems.
     event_rx: Receiver<SubsystemEvent>,
 
@@ -432,7 +428,7 @@ pub(crate) struct EventManager<R: Runtime> {
 impl<R: Runtime> EventManager<R> {
     /// Create new [`EventManager`].
     #[cfg(feature = "events")]
-    pub(crate) fn new(
+    pub fn new(
         update_interval: Option<Duration>,
         metrics_handle: R::MetricsHandle,
     ) -> (Self, EventSubscriber, EventHandle<R>) {

@@ -20,7 +20,7 @@ use clap::{Args, Parser};
 
 use crate::{config::Theme, tools::RouterCommand};
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct TunnelOptions {
     /// Length of an inbound exploratory tunnel
     #[arg(long, value_name = "NUM")]
@@ -47,7 +47,7 @@ pub struct TunnelOptions {
     pub insecure_tunnels: Option<bool>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct TransitOptions {
     /// Maximum number of transit tunnels.
     #[arg(long, value_name = "MAX_TUNNELS")]
@@ -58,7 +58,7 @@ pub struct TransitOptions {
     pub disable_transit_tunnels: Option<bool>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct ReseedOptions {
     /// Comma-separated list of reseed hosts
     ///
@@ -84,7 +84,7 @@ pub struct ReseedOptions {
     pub disable_force_ipv4: Option<bool>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct MetricsOptions {
     /// Metrics server port.
     #[arg(long)]
@@ -95,7 +95,7 @@ pub struct MetricsOptions {
     pub disable_metrics: Option<bool>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct HttpProxyOptions {
     /// HTTP proxy port.
     ///
@@ -114,7 +114,7 @@ pub struct HttpProxyOptions {
     pub http_outproxy: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct SocksProxyOptions {
     /// SOCKS proxy port.
     ///
@@ -129,7 +129,7 @@ pub struct SocksProxyOptions {
     pub socks_proxy_host: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct PortForwardingOptions {
     /// Disable UPnP.
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -144,7 +144,7 @@ pub struct PortForwardingOptions {
     pub upnp_name: Option<String>,
 }
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct RouterUiOptions {
     /// Disable router UI
     #[arg(long, action = clap::ArgAction::SetTrue)]
@@ -169,7 +169,7 @@ pub struct RouterUiOptions {
     pub web_ui_port: Option<u16>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Default)]
 #[command(version, about)]
 pub struct Arguments {
     /// Base path where all i2p-related files are stored
