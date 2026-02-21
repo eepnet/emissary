@@ -368,14 +368,20 @@ impl<R: Runtime> Ssu2Socket<R> {
                         Err(error)
                     }
                     Ok(None) => Ok(None),
-                    Ok(Some(PeerTestManagerEvent::PeerTestResult {
-                        message4,
-                        message5,
-                        message7,
-                    })) => match self.detector.add_peer_test_result(message4, message5, message7) {
-                        Some(status) => Ok(Some(TransportEvent::FirewallStatus { status })),
-                        None => Ok(None),
-                    },
+                    Ok(Some(PeerTestManagerEvent::PeerTestResult { results })) => Ok(results
+                        .into_iter()
+                        .fold(None, |prev, result| {
+                            match (
+                                prev,
+                                self.detector.add_peer_test_result(result.0, result.1, result.2),
+                            ) {
+                                (None, None) => None,
+                                (None, Some(event)) => Some(event),
+                                (Some(_), Some(event)) => Some(event),
+                                (Some(event), None) => Some(event),
+                            }
+                        })
+                        .map(|status| TransportEvent::FirewallStatus { status })),
                 }
             }
             _ => match self.pending_outbound.get(&address) {
@@ -939,14 +945,18 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
         match this.peer_test_manager.poll_next_unpin(cx) {
             Poll::Pending => {}
             Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Ready(Some(PeerTestManagerEvent::PeerTestResult {
-                message4,
-                message5,
-                message7,
-            })) => {
-                if let Some(status) =
-                    this.detector.add_peer_test_result(message4, message5, message7)
-                {
+            Poll::Ready(Some(PeerTestManagerEvent::PeerTestResult { results })) => {
+                if let Some(status) = results.into_iter().fold(None, |prev, result| {
+                    match (
+                        prev,
+                        this.detector.add_peer_test_result(result.0, result.1, result.2),
+                    ) {
+                        (None, None) => None,
+                        (None, Some(event)) => Some(event),
+                        (Some(_), Some(event)) => Some(event),
+                        (Some(event), None) => Some(event),
+                    }
+                }) {
                     return Poll::Ready(Some(TransportEvent::FirewallStatus { status }));
                 }
             }
