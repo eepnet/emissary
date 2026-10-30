@@ -1364,6 +1364,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             loop {
                 let (nread, from) = {
                     // socket must exist since it was checked above
+                    #[allow(clippy::unnecessary_unwrap)]
                     let socket = this.ipv4_socket.as_mut().expect("ipv4 socket to exist");
 
                     match Pin::new(socket).poll_recv_from(cx, &mut this.read_buffer) {
@@ -1424,6 +1425,7 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
             loop {
                 let (nread, from) = {
                     // socket must exist since it was checked above
+                    #[allow(clippy::unnecessary_unwrap)]
                     let socket = this.ipv6_socket.as_mut().expect("ipv6 socket to exist");
 
                     match Pin::new(socket).poll_recv_from(cx, &mut this.read_buffer) {
@@ -1679,11 +1681,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             //
                             // also report the new address to `TransportManager`
                             if let Some(address) = external_address {
-                                if let Some(address) = {
-                                    match address.is_ipv4() {
-                                        true => this.ipv4_detector.add_external_address(address),
-                                        false => this.ipv6_detector.add_external_address(address),
-                                    }
+                                if let Some(address) = match address.is_ipv4() {
+                                    true => this.ipv4_detector.add_external_address(address),
+                                    false => this.ipv6_detector.add_external_address(address),
                                 } {
                                     this.peer_test_manager.add_external_address(address);
                                     this.relay_manager.add_external_address(address);

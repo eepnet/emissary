@@ -143,8 +143,8 @@ impl KeyBytes {
     where
         U: AsRef<KeyBytes>,
     {
-        let a = U256::from(self.0.as_slice());
-        let b = U256::from(other.as_ref().0.as_slice());
+        let a = U256::from_big_endian(self.0.as_slice());
+        let b = U256::from_big_endian(other.as_ref().0.as_slice());
         Distance(a ^ b)
     }
 }

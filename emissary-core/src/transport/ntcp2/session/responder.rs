@@ -261,7 +261,7 @@ impl Responder {
                 let encap_size = kind.encapsulation_key_size() + POLY1305_MAC_SIZE;
 
                 if message.len() < encap_size {
-                    tracing::warn!(
+                    tracing::debug!(
                         target: LOG_TARGET,
                         %kind,
                         size = message.len(),

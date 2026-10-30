@@ -395,6 +395,9 @@ impl SessionRequestBuilder {
         };
 
         // padding must not exceed maximum payload size which depends on encryption and ip types
+        //
+        // the encrypted payload must be at least `2 * IV_SIZE` bytes so that header encryption
+        // has two IVs to derive from the payload
         let padding = {
             let bytes_left = self
                 .max_payload_size
@@ -402,15 +405,11 @@ impl SessionRequestBuilder {
                 .saturating_sub(self.encapsulation_key.as_ref().map_or(0, |c| c.len()))
                 .saturating_sub(10 + POLY13055_MAC_LEN);
 
-            if bytes_left == 0 {
-                vec![]
-            } else {
-                let padding_len = rng.next_u32() % MAX_PADDING as u32 + 16;
-                let mut padding = vec![0u8; (padding_len as usize).min(bytes_left)];
-                rng.fill_bytes(&mut padding);
+            let padding_len = rng.next_u32() % MAX_PADDING as u32 + 16;
+            let mut padding = vec![0u8; (padding_len as usize).min(bytes_left).max(1usize)];
+            rng.fill_bytes(&mut padding);
 
-                padding
-            }
+            padding
         };
 
         let mut payload = Vec::with_capacity(10 + padding.len() + POLY13055_MAC_LEN);
@@ -1276,6 +1275,23 @@ mod tests {
                 _ => panic!("invalid message"),
             }
         }
+    }
+
+    #[test]
+    fn session_request_small_max_payload_size() {
+        let mut message = SessionRequestBuilder::default()
+            .with_max_payload_size(80)
+            .with_dst_id(1337)
+            .with_src_id(1338)
+            .with_ephemeral_key(EphemeralPrivateKey::random(MockRuntime::rng()).public())
+            .with_token(1339)
+            .build::<MockRuntime>();
+
+        let mut noise_ctx = NoiseContext::new([0xaa; 32], [0xbb; 32]);
+        message.encrypt_payload(&[0xcc; 32], &mut noise_ctx);
+
+        message.encrypt_header([1u8; 32], [1u8; 32]);
+        let _ = message.build();
     }
 
     #[test]
