@@ -580,7 +580,7 @@ impl<R: Runtime> InboundSsu2Session<R> {
                 let encap_size = kind.encapsulation_key_size() + POLY1305_MAC_SIZE;
 
                 if pkt.len() < encap_size + 64 {
-                    tracing::warn!(
+                    tracing::debug!(
                         target: LOG_TARGET,
                         dst_id = ?self.dst_id,
                         src_id = ?self.src_id,
