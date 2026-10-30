@@ -358,7 +358,8 @@ impl<'a> MessageBlock<'a> {
     /// Create new NTCP2 `RouterInfo` message block.
     pub fn new_router_info(router_info: &[u8]) -> Vec<u8> {
         let mut out = vec![0u8; router_info.len() + BlockType::RouterInfo.header_size()];
-        let block_size = router_info.len() as u16 + 1u16; // router info length + 1 byte for the flag
+        let block_size = router_info.len() as u16 + 1u16; // router info length + 1 byte for the
+                                                          // flag
 
         out[0] = BlockType::RouterInfo.as_u8();
         out[1..3].copy_from_slice(block_size.to_be_bytes().as_ref());

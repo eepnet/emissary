@@ -1681,11 +1681,9 @@ impl<R: Runtime> Stream for Ssu2Socket<R> {
                             //
                             // also report the new address to `TransportManager`
                             if let Some(address) = external_address {
-                                if let Some(address) = {
-                                    match address.is_ipv4() {
-                                        true => this.ipv4_detector.add_external_address(address),
-                                        false => this.ipv6_detector.add_external_address(address),
-                                    }
+                                if let Some(address) = match address.is_ipv4() {
+                                    true => this.ipv4_detector.add_external_address(address),
+                                    false => this.ipv6_detector.add_external_address(address),
                                 } {
                                     this.peer_test_manager.add_external_address(address);
                                     this.relay_manager.add_external_address(address);
