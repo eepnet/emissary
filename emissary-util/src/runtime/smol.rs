@@ -204,12 +204,19 @@ impl TcpListener<SmolTcpStream> for SmolTcpListener {
                             continue;
                         }
                     },
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-                    Err(error) => {
-                        tracing::warn!(
+                    Err(error) if crate::runtime::is_transient_accept_error(&error) => {
+                        tracing::debug!(
                             target: LOG_TARGET,
                             ?error,
-                            "failed to accept connection",
+                            "transient accept error, retrying",
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            target: LOG_TARGET,
+                            ?error,
+                            "accept failed, closing listener",
                         );
                         return Poll::Ready(None);
                     }

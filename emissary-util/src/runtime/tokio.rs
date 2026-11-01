@@ -187,7 +187,22 @@ impl TcpListener<TokioTcpStream> for TokioTcpListener {
     fn poll_accept(&mut self, cx: &mut Context<'_>) -> Poll<Option<(TokioTcpStream, SocketAddr)>> {
         loop {
             match futures::ready!(self.0.poll_accept(cx)) {
-                Err(_) => return Poll::Ready(None),
+                Err(error) if crate::runtime::is_transient_accept_error(&error) => {
+                    tracing::debug!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "transient accept error, retrying",
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        target: LOG_TARGET,
+                        ?error,
+                        "accept failed, closing listener",
+                    );
+                    return Poll::Ready(None);
+                }
                 Ok((stream, address)) => match stream.set_nodelay(true) {
                     Err(error) => {
                         tracing::debug!(
@@ -595,5 +610,24 @@ impl RuntimeT for Runtime {
         e.write_all(bytes.as_ref()).ok()?;
 
         e.finish().ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn poll_accept_returns_connection() {
+        let mut listener =
+            TokioTcpListener::bind("127.0.0.1:0".parse().unwrap()).await.expect("to bind");
+        let address = listener.local_address().unwrap();
+
+        let client = std::net::TcpStream::connect(address).unwrap();
+
+        let result = futures::future::poll_fn(|cx| listener.poll_accept(cx)).await;
+        assert!(result.is_some(), "listener should accept the connection");
+
+        drop(client);
     }
 }
