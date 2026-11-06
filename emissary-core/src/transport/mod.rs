@@ -980,9 +980,24 @@ impl<R: Runtime> TransportManager<R> {
         if ipv4 {
             self.ipv4_info.firewall_status = status;
             self.event_handle.set_ipv4_status(status);
+
+            // the external address may have been discovered while the firewall status was still
+            // unknown, in which case it was never published; publish it now that the router is
+            // known to be reachable
+            if status == FirewallStatus::Ok {
+                if let Some(address) = self.ipv4_info.external_address {
+                    self.update_router_addresses(IpAddr::V4(address));
+                }
+            }
         } else {
             self.ipv6_info.firewall_status = status;
             self.event_handle.set_ipv6_status(status);
+
+            if status == FirewallStatus::Ok {
+                if let Some(address) = self.ipv6_info.external_address {
+                    self.update_router_addresses(IpAddr::V6(address));
+                }
+            }
         }
     }
 
@@ -6730,6 +6745,43 @@ mod tests {
                         socket_address.is_none()
                             && options.get(&Str::from("host")).is_none()
                             && options.get(&Str::from("port")).is_none(),
+                }));
+            }
+            _ => panic!("unexpected action"),
+        }
+    }
+
+    #[tokio::test]
+    async fn publish_router_info_ok_after_external_address_discovery() {
+        let (router_info, ..) = RouterInfoBuilder::default().build();
+        let (mut manager, netdb_rx, _dial_tx, _subsys_rx) = TestContextBuilder::default()
+            .with_router(router_info)
+            .with_ntcp2(Box::new(NoopTransport {}))
+            .with_publish()
+            .build();
+
+        // external address is discovered before the firewall status is known so
+        // the ntcp2 address is not published yet
+        manager.add_external_address("127.0.0.1".parse().unwrap());
+
+        // firewall status is later determined to be Ok which must publish the
+        // previously-discovered ntcp2 address
+        manager.on_firewall_status(FirewallStatus::Ok, true);
+        manager.publish_router_info();
+
+        match netdb_rx.try_recv().unwrap() {
+            NetDbAction::PublishRouterInfo { router_info, .. } => {
+                let router_info = RouterInfo::parse::<MockRuntime>(&router_info).unwrap();
+                assert_eq!(
+                    router_info.options.get(&Str::from("caps")),
+                    Some(&Str::from("LR"))
+                );
+                assert!(router_info.addresses.iter().any(|address| match address {
+                    RouterAddress::Ntcp2 { options, .. } =>
+                        options.get(&Str::from("host")) == Some(&Str::from("127.0.0.1"))
+                            && options.get(&Str::from("port")).is_some()
+                            && options.get(&Str::from("i")).is_some(),
+                    _ => false,
                 }));
             }
             _ => panic!("unexpected action"),
