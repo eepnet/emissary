@@ -1050,6 +1050,7 @@ impl<R: Runtime> TransportManager<R> {
         self.local_router_info.published = Date::new(R::time_since_epoch().as_millis() as u64);
 
         // publish `G`, i.e., rejecting all tunnels, if transit tunnels have been disabled
+        // or `f` if transit tunnels are enabled as well as floodfill mode
         if self.transit_tunnels_disabled {
             tracing::info!(
                 target: LOG_TARGET,
@@ -1057,6 +1058,13 @@ impl<R: Runtime> TransportManager<R> {
             );
 
             caps += "G";
+        } else if self.local_router_info.is_floodfill() {
+            tracing::info!(
+                target: LOG_TARGET,
+                "transit tunnels and floodfill enabled, publishing f",
+            );
+
+            caps += "f";
         }
 
         let update_introducers =
