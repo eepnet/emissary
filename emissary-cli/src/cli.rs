@@ -188,6 +188,20 @@ pub struct BandwidthOptions {
     pub share_ratio: Option<f64>,
 }
 
+#[derive(Args, Default)]
+pub struct Ntcp2Options {
+    /// NTCP2 port
+    #[arg(long, value_name = "PORT")]
+    pub ntcp2_port: Option<u16>,
+}
+
+#[derive(Args, Default)]
+pub struct Ssu2Options {
+    /// SSU2 port
+    #[arg(long, value_name = "PORT")]
+    pub ssu2_port: Option<u16>,
+}
+
 #[derive(Parser, Default)]
 #[command(version, about)]
 pub struct Arguments {
@@ -265,6 +279,14 @@ pub struct Arguments {
     /// Bandwidth options.
     #[clap(flatten)]
     pub bandwidth: BandwidthOptions,
+
+    /// NTCP2 options.
+    #[clap(flatten)]
+    pub ntcp2: Ntcp2Options,
+
+    /// SSU2 options.
+    #[clap(flatten)]
+    pub ssu2: Ssu2Options,
 
     /// Optional router command.
     ///
