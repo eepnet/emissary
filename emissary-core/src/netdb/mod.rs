@@ -206,13 +206,13 @@ impl<R: Runtime> NetDb<R> {
 
                     Some(R::timer(Duration::from_secs(
                         if router_ctx.profile_storage().num_routers() >= HIGH_ROUTER_COUNT {
-                            ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
-                                + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
-                                / 2) as u64
-                        } else {
                             (EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT
                                 + (variance % EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT))
                                 as u64
+                        } else {
+                            ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
+                                + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
+                                / 2) as u64
                         },
                     )))
                 } else {
@@ -1966,13 +1966,13 @@ impl<R: Runtime> Future for NetDb<R> {
 
                     R::timer(Duration::from_secs(
                         if self.router_ctx.profile_storage().num_routers() >= HIGH_ROUTER_COUNT {
-                            ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
-                                + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
-                                / 2) as u64
-                        } else {
                             (EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT
                                 + (variance % EXPLORATION_INTERVAL_HIGH_ROUTER_COUNT))
                                 as u64
+                        } else {
+                            ((EXPLORATION_INTERVAL_LOW_ROUTER_COUNT
+                                + (variance % EXPLORATION_INTERVAL_LOW_ROUTER_COUNT))
+                                / 2) as u64
                         },
                     ))
                 });
