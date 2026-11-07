@@ -571,6 +571,7 @@ async fn router_status_event_loop(
     traffic: Arc<Mutex<Traffic>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut last_uptime_secs = 0.0f64;
 
     loop {
         interval.tick().await;
@@ -584,7 +585,7 @@ async fn router_status_event_loop(
                     firewall_statuses,
                     ..
                 } => {
-                    {
+                    let uptime_secs = {
                         let mut state = router_state.lock().expect("to succeed");
                         state.num_transit_tunnels = transit.num_tunnels;
                         state.num_routers = transport.num_connected_routers;
@@ -600,7 +601,9 @@ async fn router_status_event_loop(
                         {
                             state.ipv6_status = status.clone();
                         }
-                    }
+
+                        state.uptime.elapsed().as_secs_f64()
+                    };
 
                     let mut traffic = traffic.lock().expect("to succeed");
                     traffic.prev_inbound_bandwidth = traffic.inbound_bandwidth;
@@ -616,7 +619,11 @@ async fn router_status_event_loop(
                     }
                     traffic.inbound_bandwidth = transport.inbound_bandwidth;
                     traffic.outbound_bandwidth = transport.outbound_bandwidth;
-                    traffic.total_bandwidth.update(inbound_diff as f64, outbound_diff as f64);
+                    traffic.total_bandwidth.update(
+                        inbound_diff as f64,
+                        outbound_diff as f64,
+                        uptime_secs - last_uptime_secs,
+                    );
 
                     let transit_in_diff =
                         transit.inbound_bandwidth.saturating_sub(traffic.transit_inbound_bandwidth);
@@ -625,9 +632,13 @@ async fn router_status_event_loop(
                         .saturating_sub(traffic.transit_outbound_bandwidth);
                     traffic.transit_inbound_bandwidth = transit.inbound_bandwidth;
                     traffic.transit_outbound_bandwidth = transit.outbound_bandwidth;
-                    traffic
-                        .transit_bandwidth
-                        .update(transit_in_diff as f64, transit_out_diff as f64);
+                    traffic.transit_bandwidth.update(
+                        transit_in_diff as f64,
+                        transit_out_diff as f64,
+                        uptime_secs - last_uptime_secs,
+                    );
+
+                    last_uptime_secs = uptime_secs;
                 }
                 Event::ShuttingDown => {
                     router_state.lock().expect("to succeed").status = RouterStatus::ShuttingDown;

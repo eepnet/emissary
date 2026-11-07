@@ -101,13 +101,30 @@ impl ResolutionTracker {
     }
 
     fn tick(&mut self, bw_in: f64, bw_out: f64, dt: f64) {
-        self.accumulator.add_sample(bw_in, bw_out);
+        // smear sample over multiple buckets if the delta time is too long
         self.elapsed += dt;
+        let intervals_elapsed = (self.elapsed / self.interval_seconds).floor();
+        let buckets_elapsed = intervals_elapsed.min(80.0) as i32;
 
-        if self.elapsed >= self.interval_seconds {
+        if buckets_elapsed > 1 {
+            let bw_in_smear = bw_in / buckets_elapsed as f64;
+            let bw_out_smear = bw_out / buckets_elapsed as f64;
+
+            for _ in 1..buckets_elapsed {
+                self.accumulator.add_sample(bw_in_smear, bw_out_smear);
+                self.buffer.push(self.accumulator.clone());
+                self.accumulator = TimeBucket::default();
+            }
+
+            self.accumulator.add_sample(bw_in_smear, bw_out_smear);
+        } else {
+            self.accumulator.add_sample(bw_in, bw_out);
+        }
+
+        if buckets_elapsed > 0 {
             self.buffer.push(self.accumulator.clone());
             self.accumulator = TimeBucket::default();
-            self.elapsed = 0.0;
+            self.elapsed -= intervals_elapsed * self.interval_seconds;
         }
     }
 
@@ -135,14 +152,14 @@ impl BandwidthMonitor {
     }
 
     /// Call this every second with a new bandwidth sample.
-    pub fn update(&mut self, bw_in: f64, bw_out: f64) {
+    pub fn update(&mut self, bw_in: f64, bw_out: f64, dt: f64) {
         let mut bucket = TimeBucket::default();
         bucket.add_sample(bw_in, bw_out);
         self.live_buffer.push(bucket);
 
-        self.res_10min.tick(bw_in, bw_out, 1.0);
-        self.res_1hr.tick(bw_in, bw_out, 1.0);
-        self.res_6hr.tick(bw_in, bw_out, 1.0);
+        self.res_10min.tick(bw_in, bw_out, dt);
+        self.res_1hr.tick(bw_in, bw_out, dt);
+        self.res_6hr.tick(bw_in, bw_out, dt);
     }
 
     pub fn get_live(&self) -> &VecDeque<TimeBucket> {
