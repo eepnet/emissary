@@ -62,7 +62,7 @@ fn format_y_label(val: f64) -> String {
 }
 
 // Pad start of chart values with zeroes if there isn't enough data yet.
-fn zero_pad_chart_values(vals: &mut Vec<f64>, expected_size: usize) -> () {
+fn zero_pad_chart_values(vals: &mut Vec<f64>, expected_size: usize) {
     let actual_size = vals.len();
     if actual_size < expected_size {
         vals.splice(0..0, [0.0].repeat(expected_size - actual_size));

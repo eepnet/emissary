@@ -619,7 +619,11 @@ async fn router_status_event_loop(
                     }
                     traffic.inbound_bandwidth = transport.inbound_bandwidth;
                     traffic.outbound_bandwidth = transport.outbound_bandwidth;
-                    traffic.total_bandwidth.update(inbound_diff as f64, outbound_diff as f64, uptime_secs - last_uptime_secs);
+                    traffic.total_bandwidth.update(
+                        inbound_diff as f64,
+                        outbound_diff as f64,
+                        uptime_secs - last_uptime_secs,
+                    );
 
                     let transit_in_diff =
                         transit.inbound_bandwidth.saturating_sub(traffic.transit_inbound_bandwidth);
@@ -628,9 +632,11 @@ async fn router_status_event_loop(
                         .saturating_sub(traffic.transit_outbound_bandwidth);
                     traffic.transit_inbound_bandwidth = transit.inbound_bandwidth;
                     traffic.transit_outbound_bandwidth = transit.outbound_bandwidth;
-                    traffic
-                        .transit_bandwidth
-                        .update(transit_in_diff as f64, transit_out_diff as f64, uptime_secs - last_uptime_secs);
+                    traffic.transit_bandwidth.update(
+                        transit_in_diff as f64,
+                        transit_out_diff as f64,
+                        uptime_secs - last_uptime_secs,
+                    );
 
                     last_uptime_secs = uptime_secs;
                 }
