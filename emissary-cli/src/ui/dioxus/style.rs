@@ -317,7 +317,7 @@ body {
 .chart-x-axis {
   display: flex;
   justify-content: space-between;
-  padding: 2px 52px 0 52px;
+  padding: 2px 0px 0 52px;
   font-size: 10px;
   color: var(--em-text-4);
 }

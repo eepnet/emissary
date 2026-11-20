@@ -61,18 +61,21 @@ fn format_y_label(val: f64) -> String {
     }
 }
 
+// Pad start of chart values with zeroes if there isn't enough data yet.
+fn zero_pad_chart_values(vals: &mut Vec<f64>, expected_size: usize) {
+    let actual_size = vals.len();
+    if actual_size < expected_size {
+        vals.splice(0..0, [0.0].repeat(expected_size - actual_size));
+    }
+}
+
 // Normalize buckets.
 fn normalize_buckets(buckets: &VecDeque<TimeBucket>) -> (Vec<f64>, Vec<f64>, f64) {
     let mut in_vals: Vec<f64> = buckets.iter().map(|b| b.average().0).collect();
     let mut out_vals: Vec<f64> = buckets.iter().map(|b| b.average().1).collect();
 
-    while in_vals.len() < 80 {
-        in_vals.push(0.0);
-    }
-
-    while out_vals.len() < 80 {
-        out_vals.push(0.0);
-    }
+    zero_pad_chart_values(&mut in_vals, 80);
+    zero_pad_chart_values(&mut out_vals, 80);
 
     let max_val = in_vals.iter().chain(out_vals.iter()).cloned().fold(0.0f64, f64::max);
     let max_val = if max_val == 0.0 { 1.0 } else { max_val };
@@ -85,7 +88,7 @@ fn normalize_buckets(buckets: &VecDeque<TimeBucket>) -> (Vec<f64>, Vec<f64>, f64
 /// Five evenly-spaced x-axis time labels for the given time range.
 fn x_axis_labels(range: TimeRange) -> [&'static str; 5] {
     match range {
-        TimeRange::Live => ["-80s", "-60s", "-40s", "-20s", "now"],
+        TimeRange::Live => ["", "", "", "", "now"],
         TimeRange::TenMin => ["-10m", "-7.5m", "-5m", "-2.5m", "now"],
         TimeRange::OneHour => ["-60m", "-45m", "-30m", "-15m", "now"],
         TimeRange::SixHours => ["-6h", "-4.5h", "-3h", "-1.5h", "now"],
