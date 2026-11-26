@@ -1,11 +1,8 @@
 FROM rust:latest AS builder
-WORKDIR /usr/src/emissary
 
-COPY . .
-
-WORKDIR /usr/src/emissary
-
-RUN apt-get update && \
+RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=locked,id=apt-lists-builder \
+    --mount=target=/var/cache/apt,type=cache,sharing=locked,id=apt-cache-builder \
+    apt-get update && \
     apt-get install -y \
         cmake \
         libfontconfig1-dev \
@@ -14,10 +11,14 @@ RUN apt-get update && \
         libwebkit2gtk-4.1-dev \
         libssl-dev \
         libxdo-dev \
-        libayatana-appindicator3-dev && \
-    rm -rf /var/lib/apt/lists/*
+        libayatana-appindicator3-dev
 
-RUN cargo build --release --bin emissary-cli
+WORKDIR /usr/src/emissary
+COPY . .
+RUN --mount=type=cache,target=/usr/src/emissary/target/,id=cargo-target-builder \
+    --mount=type=cache,target=/var/cache/cargo,id=cargo-cache-builder \
+    CARGO_HOME=/var/cache/cargo cargo build --release --bin emissary-cli && \
+    cp /usr/src/emissary/target/release/emissary-cli /emissary-cli
 
 FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
@@ -30,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     libayatana-appindicator3-1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/src/emissary/target/release/emissary-cli /usr/local/bin/emissary-cli
+COPY --from=builder /emissary-cli /usr/local/bin/emissary-cli
 RUN chmod +x /usr/local/bin/emissary-cli
 
 ENTRYPOINT ["/usr/local/bin/emissary-cli"]
